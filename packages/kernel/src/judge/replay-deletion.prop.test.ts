@@ -33,7 +33,7 @@ import {
   deletionResult,
   replayDeletion,
 } from "./replay-deletion.ts";
-import { type GivenBlock, givenByRecords } from "./restate.ts";
+import { type GivenBlock, givenByRecords, onlyCancelledGave } from "./restate.ts";
 import type { Stretch } from "./results.ts";
 import {
   type Decision,
@@ -444,7 +444,7 @@ function compare(
           second,
           first,
           before,
-          withoutFirst,
+          onlyCancelledGave(withoutFirst, once.restated, second),
           fromFirst,
           () => [],
           NO_GRACE,
@@ -523,7 +523,7 @@ function compare(
           first,
           second,
           before,
-          afterFirst,
+          onlyCancelledGave(afterFirst, then.restated, first),
           fromSecond,
           () => [],
           NO_GRACE,
@@ -561,7 +561,7 @@ function compare(
           new Set(),
           first,
           afterCB,
-          latestBoth,
+          onlyCancelledGave(latestBoth, [...once.restated, ...then.restated]),
           fromFirstThen,
           () => [],
           NO_GRACE,
@@ -1784,9 +1784,10 @@ describe.each(both)("%s table, reverts", (_, schema, isState) => {
 describe("an undo's write-backs after two deletions, the first cancelled (a property counterexample)", () => {
   // A take, then an undo of #70 on group {f2, f3}; S1 (#61) and S4 (#71, #81) deleted in turn. Both
   // indices of the undo's write-back on f2 were first given by the first deletion alone; after its
-  // cancellation the kernel keeps one as #0, the reference evaluator (clearing by ends) as #1.
-  // Status, interval and value agree: those two are compared without the index, every other item
-  // with it.
+  // cancellation the kernel restates both as dropped and numbers the write-back left #2 (09 §5.7),
+  // the reference evaluator (clearing by ends) keeps it as #1. Status, interval and value agree:
+  // the write-back is compared without the index, every other item with it. The kernel's indices
+  // are the fixed case in cancelled-index.test.ts.
   it("the state after the cancellation is the second deletion's alone, as the reference evaluator gives it", () => {
     const ops: Op[] = [
       {

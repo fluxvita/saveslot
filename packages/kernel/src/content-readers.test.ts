@@ -102,8 +102,13 @@ const ALLOWED: Record<string, { readonly why: string; readonly readers: Record<s
       readers: { confirmedChecksums: 2, entryChecksums: 1 },
     },
     "delete/positions.ts": {
-      why: "a deletion's positions: pending blocks included, on purpose",
-      readers: { tablesOf: 1, readPositionIndex: 5, readDeletionPositions: 1 },
+      why: "a deletion's positions: pending blocks included, on purpose; the indices only cancelled deletions gave (their restatements' identity and status, the operations' item paths)",
+      readers: {
+        tablesOf: 1,
+        readPositionIndex: 5,
+        readOnlyCancelled: 2,
+        readDeletionPositions: 1,
+      },
     },
     "delete/taken.ts": {
       why: "what a deletion's sources take away",

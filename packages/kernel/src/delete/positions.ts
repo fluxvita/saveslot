@@ -20,6 +20,9 @@
 //   5. a `sources/<f>/<k>` carrying a contribution taken away or an item restated as `dropped`,
 //      with the `fields/<f>/<k>` of the same item; a deletion event's `results/…` or
 //      `restated/<k>` carrying one taken away or restated, as for `deps`;
+//   4a. an index only cancelled deletions gave (§3.5 rule 1): once a block that gave it an interval
+//      is listed, the blocks resting on it, by `deps` or a carried item, are listed with it, to no
+//      new block; nothing is restated for it;
 //   6. what becomes invalid with them (§5.9 «随之失效的»): not worked out here yet, given by the
 //      caller (`invalidated`) until the rule is set;
 //   7. the event's own `summary`.
@@ -85,8 +88,22 @@ export interface PositionIndex {
   readonly bases: readonly BaseCitations[];
   /** The write heads of those operations. */
   readonly heads: readonly HeadBlocks[];
-  /** Dependency rows on the events with a contribution taken away or an item restated. */
+  /**
+   * Dependency rows on the events with a contribution taken away or an item restated, and on the
+   * indices only cancelled deletions gave (`onlyCancelled`).
+   */
   readonly deps: readonly DepHit[];
+  /**
+   * The indices only cancelled deletions gave (09 §5.7: not written by the operation, every block
+   * that gave an interval a cancelled deletion's `restated/<k>`), by `${event}/${target}/${k}`,
+   * each with the blocks that gave it an interval (`givers`) and every `restated/<k>` of it
+   * (`restating`: their index rows name the item they restate, not a dep), as `${seq} ${path}`.
+   * Absent: none.
+   */
+  readonly onlyCancelled?: ReadonlyMap<
+    string,
+    { readonly givers: readonly string[]; readonly restating: readonly string[] }
+  >;
 }
 
 export interface PositionsInput {
@@ -220,6 +237,24 @@ export function positionsOf(input: PositionsInput): BlockAddress[] {
       continue;
     }
     if (gone || re) add(d.seq, d.path);
+  }
+
+  // 4a. The indices only cancelled deletions gave, reached through a block that gave one an
+  // interval. The cancellation's own restatement as dropped has no deps: never listed so.
+  const only = index.onlyCancelled ?? new Map();
+  for (let size = -1; only.size > 0 && size !== out.size; ) {
+    size = out.size;
+    const reached = new Map([...only].filter(([, x]) => x.givers.some((b: string) => out.has(b))));
+    for (const d of index.deps) {
+      const x = reached.get(itemKey(d.event, d.target, d.k));
+      // A restatement of the index names it as the item it restates, not as a dep.
+      if (x === undefined || x.restating.includes(`${d.seq} ${d.path}`)) continue;
+      add(d.seq, d.path);
+      const carriedSources = /^sources\/(f\d+)\/(\d+)$/.exec(d.path);
+      if (d.kind === "carried" && carriedSources !== null) {
+        add(d.seq, `fields/${carriedSources[1]}/${carriedSources[2]}`);
+      }
+    }
   }
 
   // 6 and 7.
@@ -391,9 +426,17 @@ export async function readPositionIndex(
     heads.push({ op, paths: rows.map((r) => r.path), premiseRanges, premiseDeps, timeBlock });
   }
 
+  const onlyCancelled = await readOnlyCancelled(tx, input.slot);
+
   // Dependency rows on the events touched: by (event, target) for the deleted, by item for the
-  // restated; `positionsOf` tells them apart.
-  const depEvents = [...new Set([...deletedEvents, ...input.restated.map((r) => r.item.event)])];
+  // restated and the indices only cancelled deletions gave; `positionsOf` tells them apart.
+  const depEvents = [
+    ...new Set([
+      ...deletedEvents,
+      ...input.restated.map((r) => r.item.event),
+      ...[...onlyCancelled.keys()].map((x) => Number(x.split("/")[0])),
+    ]),
+  ];
   const deps = (
     await tx.query<{
       seq: unknown;
@@ -426,7 +469,61 @@ export async function readPositionIndex(
     bases: input.bases,
     heads,
     deps,
+    ...(onlyCancelled.size > 0 ? { onlyCancelled } : {}),
   };
+}
+
+/**
+ * The indices only cancelled deletions gave in the slot (`PositionIndex.onlyCancelled`), from the
+ * `restated/<k>` blocks of its deletion and cancellation events and the operations' own item
+ * blocks (`fields/<t>/<k>`, `existence/<k>`: an index as written has them).
+ */
+async function readOnlyCancelled(
+  tx: ReadTx,
+  slot: string,
+): Promise<Map<string, { givers: string[]; restating: string[] }>> {
+  const rows = (
+    await tx.query<{ seq: unknown; path: string; body: string; cancelled: unknown }>(
+      `SELECT c.seq, c.path, c.body, (d.state = 'cancelled') AS cancelled
+       FROM events e JOIN content c ON c.seq = e.seq
+       LEFT JOIN deletions d ON d.confirmed_seq = e.seq
+       WHERE e.slot = $1 AND e.type IN ('deletion.confirmed', 'deletion.cancelled')
+         AND c.path LIKE 'restated/%' AND c.body IS NOT NULL`,
+      [slot],
+    )
+  ).rows;
+  const givers = new Map<string, { givers: string[]; restating: string[] }>();
+  const restating = new Map<string, string[]>();
+  const counted = new Set<string>();
+  for (const r of rows) {
+    const b = JSON.parse(r.body) as Obj;
+    const target = typeof b["field"] === "string" ? b["field"] : "existence";
+    const k = typeof b["field"] === "string" ? b["k"] : b["existence"];
+    const item = itemKey(Number(b["event"]), target, Number(k));
+    restating.set(item, [...(restating.get(item) ?? []), `${Number(r.seq)} ${r.path}`]);
+    if (b["status"] === "dropped") continue;
+    if (r.cancelled !== true) {
+      counted.add(item);
+      continue;
+    }
+    const x = givers.get(item) ?? { givers: [], restating: [] };
+    x.givers.push(`${Number(r.seq)} ${r.path}`);
+    givers.set(item, x);
+  }
+  for (const item of counted) givers.delete(item);
+  for (const [item, x] of givers) x.restating = restating.get(item) ?? [];
+  if (givers.size === 0) return givers;
+  const events = [...new Set([...givers.keys()].map((x) => Number(x.split("/")[0])))];
+  const own = await tx.query<{ seq: unknown; path: string }>(
+    `SELECT seq, path FROM content WHERE seq = ANY($1)
+       AND (path LIKE 'fields/%' OR path LIKE 'existence/%')`,
+    [events as never],
+  );
+  for (const r of own.rows) {
+    const m = /^(?:fields\/(f\d+)|(existence))\/(\d+)$/.exec(r.path);
+    if (m !== null) givers.delete(itemKey(Number(r.seq), m[1] ?? "existence", Number(m[3])));
+  }
+  return givers;
 }
 
 /**

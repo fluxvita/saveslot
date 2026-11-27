@@ -7,7 +7,7 @@ import { advance } from "./fates.fixture.ts";
 import { itemsByRecords } from "./fates.ts";
 import type { OpRecord, Restatement, TableShape } from "./model.ts";
 import { type CancellationLog, cancellationResult, deletionResult } from "./replay-deletion.ts";
-import { type GivenBlock, givenByRecords, type LatestGiven } from "./restate.ts";
+import { type GivenBlock, givenByRecords, type LatestGiven, onlyCancelledGave } from "./restate.ts";
 import { deletedContributions } from "./scenarios.fixture.ts";
 import { RowState } from "./state.ts";
 
@@ -96,7 +96,7 @@ export function cancelBoth(
     ga,
     gb,
     g2,
-    afterA,
+    onlyCancelledGave(afterA, delB.replay.restated, ga),
     new Set(interval(delB.replay.restated)),
     () => [],
     NO_GRACE,
@@ -112,7 +112,10 @@ export function cancelBoth(
     new Set(),
     ga,
     g3,
-    laid(base, cB.replay.restated),
+    onlyCancelledGave(laid(base, cB.replay.restated), [
+      ...delA.replay.restated,
+      ...delB.replay.restated,
+    ]),
     new Set(interval(delA.replay.restated).filter((k) => !byCB.has(k))),
     () => [],
     NO_GRACE,
