@@ -301,6 +301,10 @@ Revert(record R, value position pos, this operation's number n, contribution set
                comes from a cancelled deletion) has no original interval and lands on no segment: the cancellation event restates it as dropped,
                it is not reused afterwards, and an item still split off at the same place gets a new number.
                "The largest index already used" is counted over the block that most recently gave each index, this dropped included.
+               In two cases the cancellation event does not write this dropped: another deletion that is still pending has already
+               restated this index as dropped (that block carries the number, and a result already given is not restated again);
+               the contributions of its (event, target) are removed by another deletion that is still pending (no item is numbered there).
+               When that deletion is later cancelled too, its cancellation event writes it.
                Original interval = the interval most recently given for this item in the log before this replay (its original interval block, or the restatement of an earlier deletion):
                search backwards in log order, skipping blocks given by the confirmation events of cancelled deletions (blocks given by a cancelled deletion count in no replay;
                the restatement of the cancellation event itself does count), and skipping those restated as dropped, and take the first block that gave an interval.
