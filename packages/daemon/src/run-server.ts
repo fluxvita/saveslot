@@ -143,6 +143,21 @@ export class CellUnreachable extends Error {
 }
 
 /**
+ * The cell's server refused to say which it is, otherwise than by giving no system identifier
+ * (which falls back to its address): its SQLSTATE, never the server's words.
+ */
+export class CellIdentityRefused extends Error {
+  override readonly name = "CellIdentityRefused";
+  readonly sqlState: string | undefined;
+  constructor(sqlState: string | undefined) {
+    super(
+      `the cell's database server refused to say which it is${sqlState !== undefined ? ` (SQLSTATE ${sqlState})` : ""}`,
+    );
+    this.sqlState = sqlState;
+  }
+}
+
+/**
  * One line on the standard output, resolved once it is handed to the system: while the output is
  * not read (a collector stopped), what waits counts against the call records' bound.
  */
@@ -240,17 +255,23 @@ export function cellBackend(
 
 /**
  * The cell's cluster as the fingerprint tells it apart: asked of the PostgreSQL backend; a backend
- * that cannot be asked (a test's own) gives the cell's address without its credentials.
+ * that cannot be asked (a test's own) gives the cell's address without its credentials. A server
+ * not reached, or whose connection broke, is `CellUnreachable` (to retry); any other failure is
+ * `CellIdentityRefused`, with its SQLSTATE (settled: a retry does not change it).
  */
-async function cellIdentityOf(
+export async function cellIdentityOf(
   backend: TenantPoolOptions["backend"],
   config: ServerConfig,
 ): Promise<CellIdentity> {
   if (backend instanceof PostgresBackend) {
     try {
       return await backend.clusterIdentity(config.cellName);
-    } catch {
-      throw new CellUnreachable("the cell's database server could not be asked which it is");
+    } catch (e) {
+      const code = (e as { code?: unknown }).code;
+      if (code === "connection_failed" || code === "connection_lost") {
+        throw new CellUnreachable("the cell's database server could not be asked which it is");
+      }
+      throw new CellIdentityRefused((e as { sqlState?: string }).sqlState);
     }
   }
   const c = config.cell;

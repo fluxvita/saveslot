@@ -35,6 +35,7 @@ import {
   checkDiscard,
   openControlDatabase,
   PostgresBackend,
+  PostgresStoreError,
 } from "@fluxvita/saveslot-store-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TEST_KEY } from "../../service/src/external-assertion.fixture.ts";
@@ -48,8 +49,11 @@ import {
 import { secondConnection } from "../../test-backend/src/second-connection.fixture.ts";
 import { SAMPLE_SLOT } from "./format-sample.fixture.ts";
 import {
+  CellIdentityRefused,
+  CellUnreachable,
   cellBackend,
   cellDiscarder,
+  cellIdentityOf,
   type RunningServer,
   type RunServerOptions,
   ServerAlreadyRunning,
@@ -3946,5 +3950,40 @@ describe("runServer: call records", () => {
     expect([...seen].filter((k) => !(CALL_RECORD_FIELDS as readonly string[]).includes(k))).toEqual(
       [],
     );
+  });
+});
+
+// Telling the cell's server apart (06-cli §4.1 «各进程相同的配置»): what a failure is answered as.
+describe("runServer: the cell's server told apart", () => {
+  class Asked extends PostgresBackend {
+    readonly answer: () => Promise<never>;
+    constructor(answer: () => Promise<never>) {
+      super({ cells: {} });
+      this.answer = answer;
+    }
+    override clusterIdentity(): Promise<never> {
+      return this.answer();
+    }
+  }
+  const failing = (code: string, sqlState?: string) =>
+    new Asked(() =>
+      Promise.reject(
+        new PostgresStoreError(
+          code as never,
+          "refused",
+          sqlState !== undefined ? { sqlState } : {},
+        ),
+      ),
+    );
+
+  it("not reached, or its connection broken: unreachable (to retry); any other refusal: refused, with its SQLSTATE", async () => {
+    for (const code of ["connection_failed", "connection_lost"]) {
+      await expect(cellIdentityOf(failing(code), config())).rejects.toBeInstanceOf(CellUnreachable);
+    }
+    const refused = await cellIdentityOf(failing("query_failed", "XX000"), config()).catch(
+      (e: unknown) => e,
+    );
+    expect(refused).toBeInstanceOf(CellIdentityRefused);
+    expect(refused).toMatchObject({ sqlState: "XX000" });
   });
 });

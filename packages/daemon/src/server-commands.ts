@@ -39,6 +39,7 @@ import {
 import { type ControlDatabase, openControlDatabase } from "@fluxvita/saveslot-store-postgres";
 import { daemonVersion } from "./main.ts";
 import {
+  CellIdentityRefused,
   CellUnreachable,
   ControlUnreachable,
   ControlUpgradeFailed,
@@ -421,6 +422,10 @@ async function serverStart(config: ServerConfig, io: ServerRestoreIO): Promise<n
     if (e instanceof CellUnreachable) {
       io.err(TEXTS.server.cellUnreachable);
       return 7;
+    }
+    if (e instanceof CellIdentityRefused) {
+      io.err(TEXTS.server.cellIdentityRefused(e.sqlState));
+      return 5;
     }
     if (e instanceof ControlUpgradeFailed) {
       io.err(TEXTS.server.controlUpgradeFailed(e.step, e.sqlState));

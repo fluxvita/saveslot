@@ -362,6 +362,8 @@ export const TEXTS = {
       `error: step ${step} of the control database's upgrade failed${sqlState !== undefined ? ` (SQLSTATE ${sqlState})` : ""}; the database is left at the format of its last step done, and the next start goes on from there`,
     cellUnreachable:
       "error: the database server of SAVESLOT_CELL_DATABASE_URL could not be reached to tell which it is",
+    cellIdentityRefused: (sqlState: string | undefined) =>
+      `error: the database server of SAVESLOT_CELL_DATABASE_URL refused to tell which it is${sqlState !== undefined ? ` (SQLSTATE ${sqlState})` : ""}: it was asked pg_control_system() on its maintenance database; check what the role may run there`,
     configDiffers: (
       differences: readonly {
         readonly item: string;

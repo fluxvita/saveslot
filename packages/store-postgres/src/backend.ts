@@ -157,6 +157,12 @@ function storeError(
   return e;
 }
 
+/**
+ * What a server answers `pg_control_system()` with when it will not give its system identifier:
+ * no permission (42501), no such function (42883), not supported (0A000).
+ */
+const NO_SYSTEM_IDENTIFIER: ReadonlySet<string | undefined> = new Set(["42501", "42883", "0A000"]);
+
 export class PostgresBackend implements StorageBackend {
   readonly #cells: Readonly<Record<string, PostgresCell>>;
   readonly #make: MakeClient | undefined;
@@ -176,8 +182,11 @@ export class PostgresBackend implements StorageBackend {
   /**
    * The cluster a cell is on, for the deployment's configuration fingerprint (06-cli §4.1
    * «各进程相同的配置»): its system identifier (`pg_control_system()`), the same whatever host
-   * name reaches it; when this role may not read it (42501), the cell's address without its
-   * credentials (`host:port/maintenance database`). Asked on a connection to the maintenance
+   * name reaches it; when the server will not give it, the cell's address without its
+   * credentials (`host:port/maintenance database`): this role may not read it (42501), or the server
+   * has no such function or does not support it (42883, 0A000, as some managed or forked servers).
+   * Each of these is the server's settled answer, so the way it is told apart does not change from
+   * one start to the next. Any other refusal fails (`query_failed`, with its SQLSTATE). Asked on a connection to the maintenance
    * database of its own, closed before it answers. A cell that cannot be reached fails as opening
    * would (`connection_failed`).
    */
@@ -202,7 +211,9 @@ export class PostgresBackend implements StorageBackend {
       if (typeof id !== "string" || id === "") throw new Error("no system identifier");
       return { by: "system_identifier", value: id };
     } catch (e) {
-      if (e instanceof Refused && e.sqlState === "42501") return { by: "url", value: url };
+      if (e instanceof Refused && NO_SYSTEM_IDENTIFIER.has(e.sqlState)) {
+        return { by: "url", value: url };
+      }
       throw storeError(e, "connection_lost");
     } finally {
       await conn.end().catch(() => {});
