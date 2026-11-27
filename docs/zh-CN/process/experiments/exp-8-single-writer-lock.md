@@ -219,6 +219,6 @@ B 一行：旧持有者在挂起前提交了 10 行，接手者共写了 148 行
 
 ## 没做的、要人做的
 
-- **musl（Alpine）**：saveslot 0.1.0 在 musl 上运行不了（见「Linux」一节的「musl（Alpine）」）。要支持，得给 `fs-native-extensions` 补 musl 预编译包，或在 musl 上换一种取锁办法；要不支持，至少应在启动时给出明确的报错，而不是未处理的调用栈。本文不做取舍。
+- **musl（Alpine）**：saveslot 0.1.0 在 musl 上运行不了（见「Linux」一节的「musl（Alpine）」）。要支持，得给 `fs-native-extensions` 补 musl 预编译包，或在 musl 上换一种取锁办法；要不支持，至少应在启动时给出明确的报错，而不是未处理的调用栈。本文不做取舍，已开 #152 待定。
 - **Bun**：没测。`fs-native-extensions` 在 Bun 下能否加载未核实。
 - 锁文件被删后重建这一失效路径：Linux 上已用真实服务进程测过（见「Linux」）；macOS 上的同一组测试没有正式跑。
