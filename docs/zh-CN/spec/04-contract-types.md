@@ -1318,9 +1318,9 @@ interface OpResult {
   deletion?: ItemId;             // pending_deletion：冻结这个键的删除；几项同时冻结时给最早确认的那一项
   ref_op?: number;               // ref_skipped：临时名所属的那个 op 的下标
   created_entity?: true;
-  /** created_entity 时：该表已有的实体键，最多 10 个。相近的键在前，其余按最近写入。 */
+  /** created_entity 时：该表已有的实体键，最多 10 个。相近的键在前，其余按最近写入（实体的最新版本，新的在前；data-model「相近的键」）。 */
   existing_keys?: EntityKeyText[];
-  /** created_entity 时：写法与新键相近的已有键，最多 5 个，按级别（fold、affix、edit）、编辑距离、最近写入、实体 ID 排序；没有时不给。
+  /** created_entity 时：写法与新键相近的已有键，最多 5 个，按级别（fold、affix、edit）、编辑距离、最近写入（实体的最新版本）、实体 ID 排序；没有时不给。
    *  判据 keymatch@1（data-model「相近的键」）。revoked：写入那一刻这个实体在任何时点都没有值（整体撤销，或者区间撤销盖住了全部有值的时段）。都出现在 existing_keys 的开头。 */
   similar_keys?: Array<{ key: EntityKeyText; match: "fold" | "affix" | "edit"; revoked?: true }>;
   /** 逐字段结果。revoke、以及目标是"存在"时键为 "*"。undo 时被跳过的部分不在这里，在 undo.skipped_superseded。
