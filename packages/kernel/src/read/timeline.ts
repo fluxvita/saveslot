@@ -450,7 +450,12 @@ export async function timelineInTx(
       const body = (block.body ?? {}) as Record<string, unknown>;
       const rows = items.get(itemKey(e.seq, fieldId, k)) ?? [];
       const latest = rows[0];
-      const status = (latest?.status ?? String(body["status"] ?? "")) as TimelineField["result"];
+      // An item whose content a deletion removed (its `fields` block pending or cleared) is
+      // `removed`, with `removed: true` below: its result is in that block, and the source table
+      // holds no row of it (taken away, or never in effect: a candidate, an awaiting item).
+      const status = (
+        block.removed ? "removed" : (latest?.status ?? String(body["status"] ?? ""))
+      ) as TimelineField["result"];
       // The item's interval: the latest given (source table), else the span block.
       let valid: Span | undefined;
       if (state) {
