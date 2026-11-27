@@ -3211,11 +3211,11 @@ describe.skipIf(TEST_BACKEND !== "postgres")(
 );
 
 // A tenant's storage of a newer format than this version knows (02-architecture §7): another version
-// upgraded it. The call is answered unavailable (stopping), to retry elsewhere, and this process
-// stops answering ready; its health says why. The store's refusal stood in for by a wrapped store.
+// upgraded it. The call is answered unavailable (stopping), to retry elsewhere, and logged; the
+// process stays ready, for its other tenants. The store's refusal stood in for by a wrapped store.
 describe("runServer: a storage newer than this version", () => {
   it(
-    "the call is unavailable (stopping, retry_after 1); /ready turns 503 with the reason, /health stays 200",
+    "the call is unavailable (stopping, retry_after 1) and logged; /ready stays 200",
     async () => {
       const c = await controlDb();
       const t = tenants();
@@ -3273,11 +3273,10 @@ describe("runServer: a storage newer than this version", () => {
         expect(JSON.parse(refused.body)).toMatchObject({
           error: { code: "unavailable", reason: "stopping", retry_after: 1 },
         });
+        expect(warned).toContain("tenant_format_too_new");
         const ready = await send(s, { path: "/ready" });
-        expect(ready.status).toBe(503);
-        expect(JSON.parse(ready.body)).toMatchObject({ reason: "storage_format_newer" });
-        expect((await send(s, { path: "/health" })).status).toBe(200);
-        expect(warned).toContain("server_outdated");
+        expect(ready.status).toBe(200);
+        expect(JSON.parse(ready.body)).not.toHaveProperty("reason");
       } finally {
         await s.close();
       }
