@@ -118,6 +118,33 @@ export const structuralPath = (path: string): string =>
     .map((s) => (/^\d+$/.test(s) || STRUCTURE.has(s) ? s : "*"))
     .join("/");
 
+/**
+ * A tenant store's connection gone under a use (02-architecture §7 «连接»), by the store's code: the
+ * error itself, or the one it was raised over. `connection_lost`: the transaction certainly did
+ * not commit; `commit_unknown`: its COMMIT was sent and no answer came, so it may have.
+ */
+export function lostConnectionOf(e: unknown): "connection_lost" | "commit_unknown" | undefined {
+  for (const x of [e, e instanceof Error ? e.cause : undefined]) {
+    const code = (x as { code?: unknown } | null | undefined)?.code;
+    if (code === "connection_lost" || code === "commit_unknown") return code;
+  }
+  return undefined;
+}
+
+/**
+ * A read-only operation that met its tenant's connection gone, nothing given yet: the caller's use
+ * lends the tenant once more (opened again) and runs it again, once (server-callers.ts).
+ */
+export class RetryOnLostConnection extends Error {
+  override readonly name = "RetryOnLostConnection";
+  constructor() {
+    super("the tenant's connection was gone; to be run once more on it opened again");
+  }
+}
+
+/** Seconds a call refused for its tenant's connection gone is tried again after. */
+const LOST_RETRY_AFTER = 1;
+
 /** A new incident reference: random, no user content. */
 export const newIncident = (): string => `inc_${randomBytes(8).toString("hex")}`;
 
@@ -129,8 +156,24 @@ export const newIncident = (): string => `inc_${randomBytes(8).toString("hex")}`
 export function contractError(
   e: unknown,
   warn: (event: string, fields: Readonly<Record<string, string>>) => void,
+  o: { readonly tenant?: string } = {},
 ): ContractError {
   if (e instanceof ContractError) return e;
+  const lost = e instanceof RetryOnLostConnection ? "connection_lost" : lostConnectionOf(e);
+  if (lost !== undefined) {
+    warn("tenant_connection_lost", {
+      ...(o.tenant !== undefined ? { tenant: o.tenant } : {}),
+      code: lost,
+    });
+    // Certainly not committed: nothing was recorded, and to retry is the answer (04-contract
+    // `unavailable`). Maybe committed is not that: internal, below.
+    if (lost === "connection_lost") {
+      return new ContractError("unavailable", "the tenant's connection was gone; try again", {
+        reason: "busy",
+        retry_after: LOST_RETRY_AFTER,
+      });
+    }
+  }
   if (isKernelError(e)) {
     const detail: Record<string, unknown> = { ...(e.detail ?? {}) };
     // The kernel's page position is the caller's `cursor`.

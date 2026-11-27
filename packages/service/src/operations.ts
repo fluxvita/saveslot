@@ -33,7 +33,12 @@ import {
 import type { Scope } from "./auth.ts";
 import type { ServedTenant } from "./callers.ts";
 import { contractResult, type KernelCall, type Operation } from "./calls.ts";
-import { ContractError, contractError } from "./contract-error.ts";
+import {
+  ContractError,
+  contractError,
+  lostConnectionOf,
+  RetryOnLostConnection,
+} from "./contract-error.ts";
 import type { CursorKeys } from "./cursor.ts";
 
 type Obj = Readonly<Record<string, unknown>>;
@@ -260,6 +265,25 @@ async function checkDecisionScope(o: {
 }
 
 /** Runs `call` as `operation`; resolves with the contract result, rejects with a ContractError. */
+/**
+ * The operations that only read: run once more on the tenant opened again when they meet its
+ * connection gone with nothing given yet (02-architecture §7 «连接»). No operation that appends to
+ * the log may be here; operations.test.ts holds that.
+ */
+export const READ_ONLY_OPERATIONS: ReadonlySet<Operation> = new Set<Operation>([
+  "catalog",
+  "query",
+  "history",
+  "sql",
+  "pending",
+  "policy.get",
+  "sources",
+  "connections.list",
+  "reads.list",
+  "log.verify",
+  "log.end",
+]);
+
 export async function runOperation(o: {
   /** The caller's tenant, lent for this call. */
   readonly tenant: ServedTenant;
@@ -402,7 +426,15 @@ export async function runOperation(o: {
         narrow_by: [],
       });
     }
-    const c = contractError(e, o.warn);
+    // A read meeting its tenant's connection gone, nothing given yet: once more, opened again.
+    if (
+      o.tenant.retryOnLost === true &&
+      READ_ONLY_OPERATIONS.has(o.operation) &&
+      lostConnectionOf(e) === "connection_lost"
+    ) {
+      throw new RetryOnLostConnection();
+    }
+    const c = contractError(e, o.warn, { tenant: o.tenant.tenant });
     // The item as it is now, with the decisions this credential may take.
     if (c.code === "confirmation_mismatch" && c.detail["current"] !== undefined)
       throw new ContractError(c.code, c.message, {

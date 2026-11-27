@@ -22,6 +22,7 @@ import {
   contractError,
   kernelCall,
   type Principal,
+  RetryOnLostConnection,
   releaseWithResponse,
   runOperation,
   type ServedTenant,
@@ -78,6 +79,11 @@ interface Caller {
    * `instructions` (05 §11): only then are the slots read to make them.
    */
   readonly handshake: boolean;
+  /**
+   * Set when a read-only tool met the tenant's connection gone with nothing given yet: the
+   * request is made once more on the tenant opened again (the use throws RetryOnLostConnection).
+   */
+  readonly lost: { hit: boolean };
 }
 
 /** The methods whose results carry `instructions` (05 §11). */
@@ -164,7 +170,7 @@ async function serverFor(caller: Caller, version: string): Promise<Server> {
 
 /** Calls the tool's operation: the result, or the contract's error as an error result. */
 async function call(
-  { principal, ctx, tenant }: Caller,
+  { principal, ctx, tenant, lost }: Caller,
   tool: Tool,
   args: Readonly<Record<string, unknown>>,
 ): Promise<CallToolResult> {
@@ -174,7 +180,9 @@ async function call(
     | { readonly error: Record<string, unknown> };
   try {
     // A tool call is what the per-tenant limit counts on MCP: refused, it is the tool's error.
-    ctx.rateLimit?.take(tenant.tenant);
+    // Taken once a call: not again when the call is made once more (its first try met the
+    // connection gone).
+    if (tenant.retryOnLost !== false) ctx.rateLimit?.take(tenant.tenant);
     // What MCP does not expose (05 §2) is refused here: the operation itself would take it.
     const withheld =
       Object.keys(args).find((k) => Object.hasOwn(tool.withheld, k)) ?? tool.refuse?.(args);
@@ -221,7 +229,12 @@ async function call(
       })) as Record<string, unknown>;
     outcome = { result: budget.finish(plain(await run(params))) };
   } catch (e) {
-    outcome = { error: errorBody(contractError(e, ctx.warn)) };
+    if (e instanceof RetryOnLostConnection) {
+      // Made once more by the use: this try is not told, nor answered.
+      lost.hit = true;
+      return { isError: true, content: [] };
+    }
+    outcome = { error: errorBody(contractError(e, ctx.warn, { tenant: tenant.tenant })) };
   }
   // Told once, after the call, outside it: an observer that fails changes nothing of the answer
   // (a write that took effect is not reported as an error), and is not told twice.
@@ -348,6 +361,7 @@ export function handleMcp(
       const headers = sdkHeaders(req.headers);
       // The whole response is made while the tenant is lent: its body is read before it goes back.
       const { response, body } = await resolved.use(async (tenant) => {
+        const lost = { hit: false };
         const response = await adapter.handler.fetch(
           new Request("http://local/mcp", {
             method: req.method ?? "GET",
@@ -365,6 +379,7 @@ export function handleMcp(
                   ctx,
                   tenant,
                   handshake: isHandshake(parsed),
+                  lost,
                 } satisfies Caller,
               },
             },
@@ -373,6 +388,8 @@ export function handleMcp(
         );
         const body =
           response.body === null ? undefined : new Uint8Array(await response.arrayBuffer());
+        // Nothing of it was sent: the request is made once more, on the tenant opened again.
+        if (lost.hit) throw new RetryOnLostConnection();
         return { response, body };
       });
       const out: Record<string, string> = { "cache-control": "no-store" };
