@@ -24,3 +24,21 @@
 | 写入耗时随表总行数增长 | 拼回执时读本次操作的块的语句扫描整张 `content` | 改为先取本次操作的事件，再按序号走 `content` 的主键 | 0.1.1 |
 | 同上 | 派生刷新对整张派生表重算 | 未改 | — |
 | `query` 的内存与耗时随命中行数增长、与 `limit` 无关 | 先取出全部匹配行再排序切页 | 未改 | — |
+
+## 脚本
+
+脚本在 [`experiments/exp9/`](../../../../experiments/exp9/)，用法写在各文件开头。上面两次运行用的是这些脚本当时的版本；之后在当前代码上能直接重跑，便于重量和二分查找。
+
+| 文件 | 做什么 |
+|---|---|
+| `run.ts` | 按形状（A、B、C、C-state）把一个库依次长到各规模点，每个点量一遍 |
+| `resume.ts` | 从已经长好的库接着量，不重建 |
+| `measure.ts` | 每个规模点的测量项 |
+| `shapes.ts` | 各形状的负载 |
+| `restart.ts`、`restart-child.ts` | 崩溃后重启耗时与表的个数的关系（`SIGKILL` 后重开，记就绪耗时与 host `fsync` 次数） |
+| `lib.ts` | 共用部分 |
+
+```sh
+node --conditions=source experiments/exp9/run.ts --shape C --points 500000,1000000 --dir <空目录> --min-free-gib 40
+node --conditions=source experiments/exp9/restart.ts --dir <空目录> --tables 0,10,100,1000 --rounds 5
+```
