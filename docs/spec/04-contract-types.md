@@ -140,6 +140,8 @@ interface Interval {
   valid_to: BizTime | null;        // null = continues indefinitely
   valid_to_inclusive?: DateStr;    // given only when the granularity is date and valid_to is not null: the last day in the interval
 }
+/** The interval of a history changes entry: as Interval, but an end that came from content a deletion still pending removed leaves its key out (left out is not null, which is open; valid_to_inclusive is left out with valid_to), and the entry is marked partially_deleted. */
+interface ChangeInterval { valid_from?: BizTime | null; valid_to?: BizTime | null; valid_to_inclusive?: DateStr }
 ```
 
 ### 1.4 Values
@@ -774,7 +776,7 @@ interface ChangesResult extends CommonResult, PageResult {
     intent: VersionIntent;       // includes deletion, deletion_cancelled: versions produced by a deletion confirmation or cancellation
     target: TargetRef;
     /** Lists only the fields whose value actually changed. Event tables, timeless tables: one object per field. State tables: each field is an array ordered by interval, each segment with its own interval (the same shape as TimelineField[] in timeline). "*" is whether this row / this segment exists, given when a revoke or the undo of a revoke changes it. */
-    fields: Record<FieldName | "*", ChangedField | Array<ChangedField & { valid: Interval }>>;
+    fields: Record<FieldName | "*", ChangedField | Array<ChangedField & { valid: ChangeInterval }>>;
     /** A field's before or after came from a contribution a deletion removed (in its grace period or carried out): that side is not given (data-model "Deletion · Version table"). */
     partially_deleted?: true;
   }>;
