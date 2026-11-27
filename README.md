@@ -9,10 +9,6 @@ English · [简体中文](README.zh-CN.md)
 
 **saveslot is the open-source database all your AI tools share.** Tell one agent you ran 5 km; ask another how far you ran this week. Every value keeps its sources and its history, and the data stays yours.
 
-## See it
-
-A short recording will go here: you tell one agent about a run, ask a second agent how far you ran this week, then ask how it knows, and it shows the sentence the number came from.
-
 ## Get started
 
 You need Node 24.22.1 or later on the 24 line, or 26.12.1 or later.
