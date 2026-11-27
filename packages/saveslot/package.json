@@ -22,7 +22,7 @@
     "url": "git+https://github.com/fluxvita/saveslot.git",
     "directory": "packages/saveslot"
   },
-  "homepage": "https://github.com/fluxvita/saveslot#readme",
+  "homepage": "https://saveslot.ai",
   "bugs": "https://github.com/fluxvita/saveslot/issues",
   "type": "module",
   "exports": {
