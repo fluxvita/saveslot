@@ -1,10 +1,11 @@
 // Read records (docs/zh-CN/spec/03-data-model/02-integrity-and-records.md «读取记录：read_log»;
 // 02-architecture.md §4 `audit`, §7 «read_log 的持久性», §8 `read_log`, `read_log_rows`, `last_read`).
 //
-// Reads are recorded in a buffer in the process that holds the tenant's storage, one buffer per open
-// store, and written to storage in a write transaction: at the start of any write transaction, at
-// each flush interval, and before the storage is closed. The caller (`ops`) opens the transaction;
-// this module only writes what it is given.
+// A store with `recordReads` (the server mode) has each read written before it answers. Otherwise
+// reads are recorded in a buffer in the process that holds the tenant's storage, one buffer per open
+// store, and written to storage in a write transaction: before any write transaction, at each flush
+// interval, and before the storage is closed. The caller (`ops`) opens the transaction; this module
+// only writes what it is given.
 //
 // A read records versions, never values: what it read (slot and `sv`, table, rows or entities with
 // the version read, or a table-level record), the structural fingerprint of its query, its business
@@ -238,13 +239,17 @@ export async function writeReads(tx: Tx, entries: readonly ReadEntry[]): Promise
         params,
       );
     }
+    // Only forward: reads recorded by several processes may come in an order not theirs, so the
+    // version last read is the one of the latest position (the restore count, then the operation),
+    // not of the latest record (02-architecture §7 «read_log 的持久性»).
     for (const x of e.lastRead) {
       await tx.query(
         `INSERT INTO last_read (actor, task, target, kind, op, restore_count, read_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (actor, task, target, kind)
          DO UPDATE SET op = EXCLUDED.op, restore_count = EXCLUDED.restore_count,
-           read_id = EXCLUDED.read_id`,
+           read_id = EXCLUDED.read_id
+         WHERE (last_read.restore_count, last_read.op) <= (EXCLUDED.restore_count, EXCLUDED.op)`,
         [e.actor, e.task ?? "", x.target, x.kind, x.op, x.restoreCount, e.read],
       );
     }

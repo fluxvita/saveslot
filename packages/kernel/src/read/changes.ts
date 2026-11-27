@@ -131,10 +131,12 @@ async function lastReadOf(
        ((l.operation NOT IN ('history', 'sql') AND (l.table_id = $3 OR EXISTS
          (SELECT 1 FROM read_log_rows x WHERE x.read_id = l.read_id AND x.table_id = $3)))
         OR (l.operation = 'history' AND l.shape = ANY($4)))`;
+  // The read of the latest position, not the latest recorded: reads recorded by several processes
+  // may come in an order not theirs (02-architecture §7 «read_log 的持久性»).
   const mine = await tx.query<{ pos: unknown }>(
     `SELECT l.pos FROM read_log l
      WHERE l.actor = $1 AND l.task IS NOT DISTINCT FROM $2::text AND ${counted}
-     ORDER BY l.n DESC LIMIT 1`,
+     ORDER BY l.pos DESC, l.n DESC LIMIT 1`,
     [actor, task, table, shapes] as never,
   );
   const x = mine.rows[0];
@@ -143,7 +145,7 @@ async function lastReadOf(
   const o = await tx.query<{ task: string | null }>(
     `SELECT l.task FROM read_log l
      WHERE l.actor = $1 AND l.task IS DISTINCT FROM $2::text AND ${counted}
-     ORDER BY l.n DESC LIMIT 1`,
+     ORDER BY l.pos DESC, l.n DESC LIMIT 1`,
     [actor, task, table, shapes] as never,
   );
   return o.rows[0] === undefined ? undefined : { other: o.rows[0].task };

@@ -181,7 +181,7 @@ let entityB: string;
 let seed: { events: object[]; content: object[]; tables: Record<string, string[]>; minute: number };
 
 beforeAll(async () => {
-  s = await openReusable("saveslot-query-");
+  s = await openReusable("saveslot-query-", { buffered: true });
   await written();
   seed = {
     ...(await s.store.read(async (tx) => ({

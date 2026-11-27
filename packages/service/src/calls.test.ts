@@ -7,6 +7,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSyn
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ReadNotRecorded } from "@fluxvita/saveslot-kernel";
 import { afterAll, describe, expect, it } from "vitest";
 import type { Principal } from "./auth.ts";
 import { contractResult, kernelCall } from "./calls.ts";
@@ -310,6 +311,19 @@ describe("contractError", () => {
     ).toEqual({
       param: "cursor",
     });
+  });
+
+  it("a read whose record could not be written: unavailable (busy), told by the cause's name and code only", () => {
+    warnings.length = 0;
+    const cause = Object.assign(new Error("connection to db.example.internal ended"), {
+      code: "connection_lost",
+    });
+    const e = contractError(new ReadNotRecorded(cause), warn);
+    expect([e.code, e.detail]).toEqual(["unavailable", { reason: "busy", retry_after: 1 }]);
+    expect(e.message).not.toContain("example");
+    expect(warnings).toEqual([
+      ["read_not_recorded", { cause: "Error", cause_code: "connection_lost" }],
+    ]);
   });
 
   it("a path not implemented yet: not_in_this_version, reason kept, reported by structure", () => {

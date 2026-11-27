@@ -127,7 +127,7 @@ beforeAll(async () => {
     destructive: false,
     auto: true,
   }));
-  s = await openReusable("saveslot-changes-");
+  s = await openReusable("saveslot-changes-", { buffered: true });
 }, T);
 afterAll(async () => {
   await s?.close();

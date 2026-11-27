@@ -10,7 +10,7 @@
 
 import { randomBytes } from "node:crypto";
 import { ERROR_CODES, type ErrorCode, type ErrorReason } from "@fluxvita/saveslot-contract";
-import type { KERNEL_OUTER_ERROR_REASONS } from "@fluxvita/saveslot-kernel";
+import { type KERNEL_OUTER_ERROR_REASONS, ReadNotRecorded } from "@fluxvita/saveslot-kernel";
 
 // The outer codes the kernel raises are the contract's, with the contract's reasons, but for
 // `internal`: its reasons (`not_implemented`, `inconsistent`) are the kernel's own, and are never
@@ -126,6 +126,9 @@ export const newIncident = (): string => `inc_${randomBytes(8).toString("hex")}`
  * (by its reason) and every internal error (by its incident and the error's own name and code,
  * never its message or detail, which may echo request content).
  */
+/** Seconds a read refused for its record not written is tried again after. */
+const READ_RETRY_AFTER = 1;
+
 export function contractError(
   e: unknown,
   warn: (event: string, fields: Readonly<Record<string, string>>) => void,
@@ -146,6 +149,21 @@ export function contractError(
       return new ContractError("not_in_this_version", e.message, detail);
     }
     if (e.code !== "internal") return new ContractError(e.code as ErrorCode, e.message, detail);
+  }
+  if (e instanceof ReadNotRecorded) {
+    // A read whose record could not be written is not given (02-architecture §7 «read_log 的持久性»):
+    // the caller tries again. What failed, by name and code only.
+    const cause = e.cause;
+    warn("read_not_recorded", {
+      ...(cause instanceof Error ? { cause: cause.name } : {}),
+      ...(typeof (cause as { code?: unknown })?.code === "string"
+        ? { cause_code: (cause as { code: string }).code }
+        : {}),
+    });
+    return new ContractError("unavailable", "the read could not be recorded; try again", {
+      reason: "busy",
+      retry_after: READ_RETRY_AFTER,
+    });
   }
   const incident = newIncident();
   // The error it was caused by, if any: by name and code too (an internal error raised over

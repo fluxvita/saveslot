@@ -121,7 +121,7 @@ const meal = async (name: string, evidence?: Any[]) =>
   ).ops[0];
 
 beforeAll(async () => {
-  s = await openReusable("saveslot-read-detail-");
+  s = await openReusable("saveslot-read-detail-", { buffered: true });
 }, T);
 afterAll(async () => {
   await s?.close();

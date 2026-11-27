@@ -166,8 +166,8 @@ let reused: ReusableStore;
 let opened: ReusableStore;
 let fresh: Awaited<ReturnType<typeof state>>;
 beforeAll(async () => {
-  reused = await openReusable("saveslot-reset-");
-  opened = await openReusable("saveslot-reset-fresh-");
+  reused = await openReusable("saveslot-reset-", { buffered: true });
+  opened = await openReusable("saveslot-reset-fresh-", { buffered: true });
   fresh = await state(opened.store);
 }, T);
 afterAll(async () => {

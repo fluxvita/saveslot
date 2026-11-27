@@ -657,6 +657,11 @@ export class PostgresTenantStore implements TenantStore {
     return this.#enqueue(() => this.#transaction("read", fn));
   }
 
+  /** The read records only: no tenant lock, no epoch (the port's `recordReads`). */
+  recordReads<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
+    return this.#enqueue(() => this.#transaction("reads", fn));
+  }
+
   async purgeResidue(): Promise<void> {
     throw new Error("purgeResidue is not implemented in v1 P0: its method is set by experiment 7");
   }
@@ -719,9 +724,15 @@ export class PostgresTenantStore implements TenantStore {
    * another process commits meanwhile (a new owner's writes) does not show between two of its
    * statements. A write takes the tenant's lock, then checks the ownership epoch under it.
    */
-  async #begin(mode: "read" | "write"): Promise<void> {
+  async #begin(mode: "read" | "write" | "reads"): Promise<void> {
     if (mode === "read") {
       await this._run("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY", undefined);
+      return;
+    }
+    // The read records: neither the lock nor the epoch, so that a read is recorded while another
+    // connection writes the tenant (02-architecture §7 «read_log 的持久性»).
+    if (mode === "reads") {
+      await this._run("BEGIN ISOLATION LEVEL READ COMMITTED", undefined);
       return;
     }
     await this._run("BEGIN", undefined);
@@ -746,7 +757,7 @@ export class PostgresTenantStore implements TenantStore {
     }
   }
 
-  async #transaction<T>(mode: "read" | "write", fn: (tx: Tx) => Promise<T>): Promise<T> {
+  async #transaction<T>(mode: "read" | "write" | "reads", fn: (tx: Tx) => Promise<T>): Promise<T> {
     this.#ensureUsable();
     await this.#begin(mode);
     const tx = new TxHandle(this);
@@ -770,7 +781,7 @@ export class PostgresTenantStore implements TenantStore {
       );
     }
     // Only a write's COMMIT leaves anything in doubt when the connection ends under it.
-    const done = await this._run("COMMIT", undefined, mode === "write");
+    const done = await this._run("COMMIT", undefined, mode !== "read");
     if (done.command === "ROLLBACK") {
       // The server answers COMMIT in an aborted transaction with ROLLBACK and no error: a
       // statement failed whose error the callback never waited for.

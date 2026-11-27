@@ -97,6 +97,8 @@ export interface Reusable<S extends TenantStore> {
 }
 
 export interface ReusableStore extends Reusable<PgliteTenantStore> {
+  /** The store's directory: on PostgreSQL, what names its database (`secondConnection`). */
+  readonly dir: string;
   close(): Promise<void>;
 }
 
@@ -125,9 +127,13 @@ export async function reusable<S extends TenantStore>(
   };
   const read = store.read.bind(store);
   const write = store.write.bind(store);
+  const recordReads = store.recordReads?.bind(store);
   Object.assign(store, {
     read: <T>(fn: (tx: ReadTx) => Promise<T>) => track(read(fn)),
     write: <T>(fn: (tx: Tx) => Promise<T>) => track(write(fn)),
+    ...(recordReads !== undefined
+      ? { recordReads: <T>(fn: (tx: Tx) => Promise<T>) => track(recordReads(fn)) }
+      : {}),
   });
   return {
     store,
@@ -178,14 +184,22 @@ export async function reusable<S extends TenantStore>(
   };
 }
 
-export async function openReusable(prefix: string): Promise<ReusableStore> {
+/**
+ * `buffered`: the store keeps its reads' records in the read buffer on either backend, as PGlite's
+ * does (PostgreSQL's `recordReads` hidden), for a test of what a read records, which looks at the
+ * buffer; when a record is written is reads-recorded.test.ts's.
+ */
+export async function openReusable(
+  prefix: string,
+  o: { readonly buffered?: boolean } = {},
+): Promise<ReusableStore> {
   const root = mkdtempSync(join(tmpdir(), prefix));
-  const store = await testBackend().open(
-    { kind: "pglite", dir: join(root, "tenant") },
-    { create: true },
-  );
+  const dir = join(root, "tenant");
+  const store = await testBackend().open({ kind: "pglite", dir }, { create: true });
+  if (o.buffered === true) Object.assign(store, { recordReads: undefined });
   return {
     ...(await reusable(store)),
+    dir,
     close: async () => {
       await store.close();
       rmSync(root, { recursive: true, force: true });

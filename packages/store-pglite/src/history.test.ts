@@ -113,7 +113,7 @@ let entity: string;
 const ops: Record<string, number> = {};
 
 beforeAll(async () => {
-  s = await openReusable("saveslot-history-");
+  s = await openReusable("saveslot-history-", { buffered: true });
 }, T);
 afterAll(async () => {
   await s?.close();

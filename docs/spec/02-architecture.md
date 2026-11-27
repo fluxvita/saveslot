@@ -436,13 +436,19 @@ This section describes how the service process runs: a tenant has only one write
 
 ### Durability of read_log
 
-Read records are buffered in the process (the main thread), and are flushed to disk at these moments:
+The two modes write the read records at different moments.
 
-- **At the start of any write transaction**, in the same transaction as this operation, so that the `ver` fallback can always see the reads just made. When an operation is rejected (no event is produced), this flush is still committed.
+**Server mode (PostgreSQL): written before the answer.** The read records a read produces are written into the tenant database before that request is answered, not buffered in the process. They are written in a write transaction of their own kind: it takes no advisory lock of the tenant and checks no epoch, so it neither waits for the tenant's writes nor makes them wait; it writes only the read records (`read_log`, `read_log_rows`, `last_read`), and no other write goes through it. When the records cannot be written, the read's content is not given and the answer is `unavailable` (`busy`, `retry_after` 1): a read that is not recorded is not handed to the caller. There is no window of loss: a process that exits unexpectedly loses no read it answered, and a write without `ver`, whichever process and connection it lands on, sees the same records when it falls back to "the version last read".
+
+**Local mode (PGlite): buffered in the process (the main thread)**, and written at these moments:
+
+- **Before any write transaction**, in a transaction of its own, and then the operation's transaction is opened, so that the `ver` fallback can always see the reads just made. When the operation is rejected (no event is produced), this flush has already been committed.
 - **Before closing a tenant and giving up ownership** (closing when idle, rolling deployment, routing migration).
 - At other times, at the flush interval (initial value 5 seconds).
 
 The loss window: a process crash, or ownership lost before the flush (the old process is then no longer the writer and the buffer cannot be flushed); at most the read records of the latest flush interval that have no write after them are lost.
+
+**"The latest read" is compared by the position read, not by the order the records were written in.** Records from several processes may not arrive in the order the reads were made: "the version last read" (`last_read`) only moves forward, compared by (restore count, operation number), and an earlier one does not overwrite a later one; "the changes since my last read" (`my_last_read`) takes the read of the latest position. Restoring a backup does not put an old record after a new read: the read records are in the same database as the log and go back with the backup; every read in the backup is at a position no later than the end of the backup's log, and every read after the restore comes after the "restored" event (§8).
 
 ### Background tasks
 
