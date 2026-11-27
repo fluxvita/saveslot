@@ -843,7 +843,13 @@ export async function asOfInTx(
       zone: target.named.slot.timezone,
       restoreCount: restore,
     });
-    for (const [i, r] of rows.entries()) rows[i] = { ...r, detail: d.details[i] as RowDetail };
+    for (const [i, r] of rows.entries()) {
+      // A ref summary that left out a value a removed contribution gave (03-deletion «版本表»).
+      const marks = d.partialRows.has(i)
+        ? { marks: { ...r.marks, partially_deleted: true as const } }
+        : {};
+      rows[i] = { ...r, ...marks, detail: d.details[i] as RowDetail };
+    }
     detailRead = d.read;
   }
   // Who made this version, when not the caller: every row here is of the one version.

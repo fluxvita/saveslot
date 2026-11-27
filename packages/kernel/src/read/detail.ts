@@ -81,7 +81,12 @@ export interface DetailInput {
 export async function rowDetails(
   tx: ReadTx,
   o: DetailInput,
-): Promise<{ details: Omit<RowDetail, "premises">[]; read: ReadRow[] }> {
+): Promise<{
+  details: Omit<RowDetail, "premises">[];
+  read: ReadRow[];
+  /** Read by record time: the page's rows a ref summary of which left a removed value out. */
+  partialRows: ReadonlySet<number>;
+}> {
   const t = o.table;
   const ids = [...new Set(o.page.map((r) => r.id))];
   const at = o.asOf ?? Number.MAX_SAFE_INTEGER;
@@ -159,6 +164,8 @@ export async function rowDetails(
   // The rows the ref fields read name, by target table; their summaries and versions.
   const summaries = await refSummaries(tx, o);
 
+  // The rows whose ref summary left a value out: marked `partially_deleted` by the caller.
+  const partialRows = new Set<number>();
   const details = o.page.map((r, i) => {
     const byField = itemsByRowField[i] as Map<string, Set<string>>;
     const fields: Record<string, RowDetail["fields"][string]> = Object.create(null);
@@ -172,6 +179,7 @@ export async function rowDetails(
       });
       const v = r.values[f.id];
       const ref = f.type === "ref" && typeof v === "string" ? summaries.values.get(v) : undefined;
+      if (ref !== undefined && summaries.partial.has(v as string)) partialRows.add(i);
       fields[f.name] = {
         field_id: f.id,
         ...literalOf(segments),
@@ -184,16 +192,18 @@ export async function rowDetails(
       fields,
     };
   });
-  return { details, read: summaries.read };
+  return { details, read: summaries.read, partialRows };
 }
 
 /** The summaries of the rows the page's ref fields read name, and those rows as read. */
 async function refSummaries(
   tx: ReadTx,
   o: DetailInput,
-): Promise<{ values: Map<string, Values>; read: ReadRow[] }> {
+): Promise<{ values: Map<string, Values>; read: ReadRow[]; partial: Set<string> }> {
   const values = new Map<string, Values>();
   const read: ReadRow[] = [];
+  // Read by record time: the referenced rows a value of which a removed contribution gave then.
+  const partial = new Set<string>();
   const named = new Map<TableId, Set<string>>();
   for (const f of o.fields) {
     if (f.type !== "ref") continue;
@@ -212,7 +222,7 @@ async function refSummaries(
     if (target?.kind !== "base") continue;
     const tb = target as CompiledBaseTable;
     const ids = [...set];
-    const cells = await cellsOfRows(tx, tb, ids, at);
+    const cells = await cellsOfRows(tx, tb, ids, at, { withheld: o.asOf !== undefined });
     const state = tb.time.type === "state";
     // A state entity: its value at the read's moment (the day in the slot's zone on a date table).
     const point =
@@ -234,6 +244,11 @@ async function refSummaries(
       const out: Record<string, Values[string]> = Object.create(null);
       for (const f of tb.fields) {
         const c = live.find((x) => x.field_id === f.id && valued(x));
+        // A value a removed contribution gave then: not given (03-deletion «版本表»).
+        if (c?.withheld === true) {
+          partial.add(rid);
+          continue;
+        }
         out[f.name] = valueOut(c === undefined ? null : cellValue(f, c, decode));
       }
       values.set(rid, out);
@@ -253,5 +268,5 @@ async function refSummaries(
       });
     }
   }
-  return { values, read };
+  return { values, read, partial };
 }

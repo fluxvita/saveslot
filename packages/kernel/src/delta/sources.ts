@@ -10,7 +10,7 @@ import type {
 } from "@fluxvita/saveslot-contract-core";
 import { INSTANT_TEXT, physical, selectOf } from "../store/layout.ts";
 import type { ReadTx } from "../store/ports.ts";
-import { READABLE_CONTENT } from "../store/readable-content.ts";
+import { cellWithheld, READABLE_CONTENT } from "../store/readable-content.ts";
 import { sameValue } from "./same-value.ts";
 
 /** A cell of one row or entity: field, business interval, revoke, `no_value`, raw value columns. */
@@ -64,7 +64,14 @@ export async function cellsOfRows(
   t: CompiledBaseTable,
   rowIds: readonly string[],
   ver: number,
-): Promise<Map<string, StateCell[]>> {
+  o: {
+    /**
+     * Each cell's `withheld`: its value a removed contribution gave (store/readable-content.ts
+     * `cellWithheld`), for a read by record time.
+     */
+    readonly withheld?: boolean;
+  } = {},
+): Promise<Map<string, (StateCell & { readonly withheld?: boolean | null })[]>> {
   const { versions } = physical(t);
   const interval =
     t.time.type === "state"
@@ -75,12 +82,12 @@ export async function cellsOfRows(
   const cols = t.fields.flatMap((f) => selectOf(f).map((x, i) => `${x} AS c_${f.id}_${i}`));
   const r = await tx.query<StateCell & { row_id: string }>(
     `SELECT row_id, field_id, ${interval}, revoked, no_value, src_event, src_field, src_k,
-       ${cols.join(", ")}
-     FROM ${versions}
+       ${o.withheld === true ? `${cellWithheld("v")} AS withheld, ` : ""}${cols.join(", ")}
+     FROM ${versions} v
      WHERE row_id = ANY($1) AND rec_from <= $2 AND (rec_to IS NULL OR rec_to > $2)`,
     [[...rowIds], ver] as never,
   );
-  const out = new Map<string, StateCell[]>();
+  const out = new Map<string, (StateCell & { readonly withheld?: boolean | null })[]>();
   for (const c of r.rows) {
     const list = out.get(c.row_id) ?? [];
     list.push(c);
