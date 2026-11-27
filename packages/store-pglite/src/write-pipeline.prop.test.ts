@@ -1200,6 +1200,256 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
       expect({ kind, resolved: (byKind[kind] ?? 0) > before }).toEqual({ kind, resolved: true });
     }
   });
+
+  // A confirmed include_later undo writes back "no value" on a field the first undo of the same
+  // write already left without one: same value, a new giver (02-architecture §8 版本表; 04-contract
+  // §2 `ver`: 值没变而这一格改由本次操作给出). The confirmation is a version; a later write naming
+  // the first undo's version names one that is no longer current.
+  it.runIf(!isState)("a confirmed undo re-giving a no-value cell gives a version", async () => {
+    const ops = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        fields: { f2: { value: "9", sources: ["S1"] } },
+      },
+      {
+        kind: "write",
+        op: 20,
+        event: 21,
+        seen: 10,
+        fields: { f3: { value: "1", sources: ["S4"] } },
+      },
+      { kind: "undo", op: 30, event: 31, target: 20, includeLater: false, seen: 20 },
+      { kind: "undo", op: 40, event: 41, target: 20, includeLater: true, seen: 30 },
+      {
+        kind: "write",
+        op: 50,
+        event: 51,
+        seen: 40,
+        fields: { f2: { value: "1", sources: ["S1"] } },
+      },
+    ] as unknown as Op[];
+    // The awaiting undo (op 40) confirmed right after it: 3 % 5 is the index of op 40.
+    const decisions: Decision[] = [{ after: 3, pick: 0, kind: "confirm", flag: 0, focus: false }];
+    await checkSample(ops, decisions);
+  });
+
+  it.runIf(isState)(
+    "a confirmed undo re-giving a cell with a new giver (value or no-value) gives a version",
+    async () => {
+      const g = (value: string) => ({ mode: "given", value });
+      const span = (from: string, to?: string) => ({
+        valid: { from: g(from), to: to === undefined ? { mode: "open" } : g(to) },
+      });
+      const cases: [string, Op[], Decision[]][] = [
+        // Valued stretch, optional field: f3 is left empty by op 30 (no_value), then again by the
+        // confirmed include_later undo (op 45). Same value (null), new giver -> new version.
+        [
+          "optional field no-value cell on a valued stretch",
+          [
+            {
+              kind: "write",
+              op: 10,
+              event: 11,
+              seen: 0,
+              ...span("2026-10-01"),
+              fields: { f2: { value: "9", sources: ["S1"] } },
+            },
+            {
+              kind: "write",
+              op: 20,
+              event: 21,
+              seen: 10,
+              ...span("2026-10-01"),
+              fields: { f3: { value: "1", sources: ["S4"] } },
+            },
+            { kind: "undo", op: 30, event: 31, target: 20, includeLater: false, seen: 20 },
+            { kind: "undo", op: 40, event: 41, target: 20, includeLater: true, seen: 30 },
+            {
+              kind: "write",
+              op: 50,
+              event: 51,
+              seen: 40,
+              ...span("2026-10-01"),
+              fields: { f2: { value: "1", sources: ["S1"] } },
+            },
+          ] as unknown as Op[],
+          [{ after: 3, pick: 0, kind: "confirm", flag: 0, focus: false }],
+        ],
+        // No-value stretch, defining field: f2 on [12-01, ..) gets a no_value cell from op 30,
+        // then a new one from the confirmed include_later undo (op 45).
+        [
+          "defining field no-value cell on a no-value stretch",
+          [
+            {
+              kind: "write",
+              op: 10,
+              event: 11,
+              seen: 0,
+              ...span("2026-10-01", "2026-11-01"),
+              fields: { f2: { value: "9", sources: ["S1"] } },
+            },
+            {
+              kind: "write",
+              op: 20,
+              event: 21,
+              seen: 10,
+              ...span("2026-12-01"),
+              fields: { f2: { value: "1", sources: ["S4"] } },
+            },
+            {
+              kind: "undo",
+              op: 30,
+              event: 31,
+              target: 20,
+              includeLater: false,
+              seen: 20,
+              acknowledge: ["overwrite"],
+            },
+            {
+              kind: "undo",
+              op: 40,
+              event: 41,
+              target: 20,
+              includeLater: true,
+              seen: 30,
+              acknowledge: ["overwrite"],
+            },
+            {
+              kind: "write",
+              op: 50,
+              event: 51,
+              seen: 40,
+              ...span("2026-10-01", "2026-11-01"),
+              fields: { f2: { value: "2", sources: ["S1"] } },
+            },
+          ] as unknown as Op[],
+          [{ after: 3, pick: 0, kind: "confirm", flag: 0, focus: false }],
+        ],
+        // Valued stretch, same non-null value, new giver: op 30 writes back f2 = "9", then the
+        // confirmed include_later undo (op 45) writes back f2 = "9" again (04-contract §2 `ver`).
+        [
+          "same non-null value with a new giver",
+          [
+            {
+              kind: "write",
+              op: 10,
+              event: 11,
+              seen: 0,
+              ...span("2026-10-01"),
+              fields: { f2: { value: "9", sources: ["S1"] } },
+            },
+            {
+              kind: "write",
+              op: 20,
+              event: 21,
+              seen: 10,
+              ...span("2026-10-01"),
+              fields: { f2: { value: "1", sources: ["S4"] } },
+            },
+            {
+              kind: "undo",
+              op: 30,
+              event: 31,
+              target: 20,
+              includeLater: false,
+              seen: 20,
+              acknowledge: ["overwrite"],
+            },
+            {
+              kind: "undo",
+              op: 40,
+              event: 41,
+              target: 20,
+              includeLater: true,
+              seen: 30,
+              acknowledge: ["overwrite"],
+            },
+            {
+              kind: "write",
+              op: 50,
+              event: 51,
+              seen: 40,
+              ...span("2026-10-01"),
+              fields: { f2: { value: "2", sources: ["S1"] } },
+            },
+          ] as unknown as Op[],
+          [{ after: 3, pick: 0, kind: "confirm", flag: 0, focus: false }],
+        ],
+      ];
+      for (const [name, ops, decisions] of cases) {
+        const before = { ...seen };
+        await checkSample(ops, decisions);
+        expect({
+          name,
+          sampled: seen.samples - before.samples,
+          decisions: seen.decisions - before.decisions,
+          steps: seen.steps - before.steps,
+        }).toEqual({ name, sampled: 1, decisions: 1, steps: ops.length + 1 });
+      }
+    },
+  );
+
+  it("take_previous re-giving a no-value cell gives a version", async () => {
+    const valid = isState
+      ? { valid: { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } } }
+      : {};
+    // Op 20 writes f3 = "1"; op 30 conflicts (candidate, merge base 10 where f3 had no value);
+    // op 40 undoes op 20, leaving f3 without a value (no_value by op 40) while refreshing the
+    // conflict item; op 45 resolves it with take_previous, writing back no_value again (new giver).
+    const ops = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        ...valid,
+        fields: { f2: { value: "9", sources: ["S1"] } },
+      },
+      {
+        kind: "write",
+        op: 20,
+        event: 21,
+        seen: 10,
+        ...valid,
+        fields: { f3: { value: "1", sources: ["S2"] } },
+      },
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        seen: 10,
+        ...valid,
+        fields: { f3: { value: "2", sources: ["S3"] } },
+      },
+      { kind: "undo", op: 40, event: 41, target: 20, includeLater: false, seen: 20 },
+      {
+        kind: "resolve",
+        op: 45,
+        event: 46,
+        decision: "take_previous",
+        candidates: [31],
+        unit: "f3",
+      },
+      {
+        kind: "write",
+        op: 50,
+        event: 51,
+        seen: 40,
+        ...valid,
+        fields: { f2: { value: "1", sources: ["S4"] } },
+      },
+    ] as unknown as Op[];
+    const before = { ...seen };
+    await checkSample(ops, []);
+    expect({
+      sampled: seen.samples - before.samples,
+      decisions: seen.decisions - before.decisions,
+      steps: seen.steps - before.steps,
+    }).toEqual({ sampled: 1, decisions: 1, steps: ops.length });
+  });
 });
 
 it("over both tables, the random samples send decisions through resolve", () => {
