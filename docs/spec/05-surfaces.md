@@ -303,7 +303,7 @@ When the writer is a connection that has been revoked or disabled (a principal f
 
 When the provenance is a value from a schema constant (filled in by the constant `backfill` at a switch, `sources.schema_const` of the contract): `timeline` and the receipt write "source: the backfilled value of schema v<n>"; there is no source data ID and no original text to expand.
 
-`as_of`: the first line gives "As of #41 (2026-11-03 21:05) · schema v1"; the `ver` of each row is written like `h41.0`, followed by "(a historical version, not for writing)". When the target did not exist at that time, "It did not exist yet." is written.
+`as_of`: the first line gives "As of #41 (2026-11-03 21:05) · schema v1"; the `ver` of each row is written like `h41.0`, followed by "(a historical version, not for writing)". When the target did not exist at that time, "It did not exist yet." is written. An end of a stretch left out (from deleted content) is written "(deleted)", not read as open: a start left out is not written "until a day", an end left out not "from a day"; with the start left out the period column is there as ever. When the result carries `partially_deleted`, a line says "Part of what was recorded then has since been deleted and is left out."; an empty result has only that line, not "It did not exist yet."
 
 ```
 runs r_01JC… · as of #41 (2026-11-03 21:05) · schema v2
