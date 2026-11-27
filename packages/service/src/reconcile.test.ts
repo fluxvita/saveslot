@@ -34,6 +34,8 @@ import { createServerTenant } from "./server-tenant.ts";
 import { TenantPool } from "./tenant-pool.ts";
 
 const T = 120_000;
+/** A case that drops a database: each DROP DATABASE waits for a checkpoint (see `removeStorage`). */
+const DROP_T = 300_000;
 const NOW = "2026-11-21T10:00:00.000Z";
 const CELL = "cell_a";
 const root = mkdtempSync(join(tmpdir(), "saveslot-reconcile-"));
@@ -273,12 +275,29 @@ describe("TenantReconciler, server mode", () => {
   );
 
   it(
+    "a scratch database dropped, as the host drops it, not emptied: the run ends with it gone",
+    async () => {
+      const e = await tenantOf(owner());
+      const p = pool();
+      // The one case whose scratch database is dropped. On PostgreSQL a DROP DATABASE waits for a
+      // checkpoint, behind every other file's under load: a case of its own, with time for that.
+      const s = scratch({ drop: true });
+      const r = new TenantReconciler({ scratch: s.scratch });
+      const result = await r.reconcile(e.id, (fn) => p.use(e.id, (t) => fn(t.store)));
+      expect(result.mismatches_total).toBe(0);
+      expect(s.c.discarded).toEqual([e.id, e.id]);
+      expect(existsSync(scratchDir(e.id))).toBe(false);
+      await p.closeAll();
+    },
+    DROP_T,
+  );
+
+  it(
     "an exclusive started during a run waits for the run",
     async () => {
       const e = await tenantOf(owner());
       const p = pool();
-      // The one case whose scratch database is dropped, as the host drops it, not emptied.
-      const s = scratch({ drop: true });
+      const s = scratch();
       const r = new TenantReconciler({ scratch: s.scratch });
       const order: string[] = [];
       const held = s.hold();
