@@ -34,7 +34,13 @@ import { ApplyError, confirmationHash, entryChecksums, internalDetailOf } from "
 import { lastRead, type ReadId } from "../audit/index.ts";
 import type { DerivedWrite } from "../derive/index.ts";
 import { JudgeError, type JudgeInput, judgeOp, reaches, type Unit } from "../judge/index.ts";
-import { type ActorAsOf as Actor, actorsAsOf, type NewEvent, readTail } from "../log/index.ts";
+import {
+  type ActorAsOf as Actor,
+  actorsAsOf,
+  type NewEvent,
+  noteEffect,
+  readTail,
+} from "../log/index.ts";
 import {
   actorsNow,
   closingOf,
@@ -344,7 +350,8 @@ async function readResolution(
     read !== undefined && o.derived !== undefined
       ? withDerived(read, o.derived, o.slot.compiled, o.slot.name)
       : read;
-  return {
+  // The triggered write's status, beside the receipt (log/effect.ts): the contract's receipt has none.
+  const receipt: ResolveReceipt = {
     id: t.item,
     type: item?.type ?? "conflict",
     decision: t.decision,
@@ -370,6 +377,14 @@ async function readResolution(
     ...(previous !== undefined ? { reverted_by_previous: previous } : {}),
     ...(o.replayed ? { replayed: true as const } : {}),
   };
+  return write !== undefined
+    ? noteEffect(receipt, {
+        effect: o.replayed ? "replayed" : "appended",
+        seq: op,
+        restores: o.restoreCount,
+        status: write.status,
+      })
+    : receipt;
 }
 
 /**

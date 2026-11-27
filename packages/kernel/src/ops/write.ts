@@ -5,6 +5,7 @@
 // or supersedes) are not produced, so the receipt and the log lack them until they are.
 
 import { readBufferOf } from "../audit/index.ts";
+import { noteEffect, restoresOf } from "../log/index.ts";
 import type { TenantStore } from "../store/ports.ts";
 import { type WriteReceipt, writeInTx } from "../write/index.ts";
 import { createOpsContext, type OpsContext } from "./context.ts";
@@ -23,8 +24,8 @@ export async function write(
   // The reads so far are written first, in a transaction of their own: they stay written even if
   // this write is refused and rolled back (02-architecture §7 «read_log 的持久性»).
   await flushReads(store, createOpsContext({ ...ctx, actor: "system", trigger: "flushReads" }));
-  return store.write((tx) =>
-    writeInTx(tx, {
+  return store.write(async (tx) => {
+    const r = await writeInTx(tx, {
       actor: ctx.actor,
       task: ctx.task,
       now: ctx.now,
@@ -33,6 +34,18 @@ export async function write(
       params,
       newId: (kind) => `${PREFIX[kind]}${randomCrockford(LENGTH[kind])}`,
       reads: readBufferOf(store),
-    }),
-  );
+    });
+    // No operation number: every op keyed by its source and unchanged or skipped, nothing appended.
+    return noteEffect(
+      r,
+      r.seq === undefined
+        ? { effect: "none" }
+        : {
+            effect: r.replayed === true ? "replayed" : "appended",
+            seq: r.seq,
+            restores: await restoresOf(store, tx),
+            status: r.status,
+          },
+    );
+  });
 }

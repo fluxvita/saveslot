@@ -7,7 +7,7 @@ import type {
 } from "@fluxvita/saveslot-contract-core";
 import { canonicalize } from "@fluxvita/saveslot-contract-core";
 import { ApplyError, applyEvents, eventsOf, internalDetailOf } from "../apply/index.ts";
-import { appendOperation, type NewEvent } from "../log/index.ts";
+import { appendOperation, effectOf, type NewEvent, noteEffect, restoresOf } from "../log/index.ts";
 import { evaluationRefusal, loadRsql, RULESET_VERSION } from "../rules/index.ts";
 import {
   changesByName,
@@ -180,12 +180,16 @@ export async function schemaDraft(
       );
       const created = (JSON.parse(kind.rows[0]?.body ?? "{}") as { creates_slot?: boolean })
         .creates_slot;
-      return created === false
-        ? replayChange(tx, Number(hit.op), true)
-        : replay(tx, Number(hit.op));
+      // Sent again: the first submission's result, a replay of its operation.
+      return noteEffect(
+        created === false
+          ? await replayChange(tx, Number(hit.op), true)
+          : await replay(tx, Number(hit.op)),
+        { effect: "replayed", seq: Number(hit.op), restores: await restoresOf(store, tx) },
+      );
     }
-    if (changing)
-      return draftChangeInTx(tx, ctx, {
+    if (changing) {
+      const changed = await draftChangeInTx(tx, ctx, {
         document: document as Record<string, unknown>,
         task: task ?? null,
         key:
@@ -193,6 +197,11 @@ export async function schemaDraft(
             ? { idempotency: { key, fingerprint: fingerprint as string } }
             : { request_key: { key } },
       });
+      const noted = effectOf(changed);
+      return noted === undefined
+        ? changed
+        : noteEffect(changed, { ...noted, restores: await restoresOf(store, tx) });
+    }
 
     const slotId = await unusedSlotId(tx);
     const result = compileNewSlot({ document, slotId: slotId as never, ...(await numbering(tx)) });
@@ -291,6 +300,10 @@ export async function schemaDraft(
         );
       throw e;
     }
-    return receiptOf(draft, document as JsonValue, compiled, result.changes, false);
+    return noteEffect(receiptOf(draft, document as JsonValue, compiled, result.changes, false), {
+      effect: "appended",
+      seq: op.op,
+      restores: await restoresOf(store, tx),
+    });
   });
 }
