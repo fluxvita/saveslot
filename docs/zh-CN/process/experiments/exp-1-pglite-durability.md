@@ -1,11 +1,11 @@
-# 实验 1：PGlite 持久性 · 结果（macOS，部分）
+# 实验 1：PGlite 持久性 · 结果（macOS、Linux，部分）
 
 > 实验的定义、做法与通过标准见 [`../decisions/pre-dev-w0-experiments.md`](../decisions/pre-dev-w0-experiments.md)「实验 1」。本文只报告结果，不改标准。
-> 运行日期：2026-11-12。只在一台 macOS 笔记本上跑了能在本机跑的部分；macOS 步骤一由用户用 root 补跑。
+> 运行日期：macOS 2026-11-12，只在一台 macOS 笔记本上跑了能在本机跑的部分，macOS 步骤一由用户用 root 补跑；Linux 步骤一、步骤二在一台 Ubuntu 24.04 aarch64 虚拟机里跑，见「Linux」。
 
 ## 结论
 
-- **实验 1 没有通过，也还不能判定。** 步骤一（系统调用跟踪）在 macOS 上已经补跑并**满足标准 1**：组 B 每次提交确认前，都对预写日志文件发出了 `F_FULLFSYNC`（见「步骤一 · macOS」）；Linux 上的步骤一还没做。步骤三（断电）需要 Linux 虚拟机和一台台式 Mac，也还没做。按实验规格，缺了步骤三就不能认为通过。
+- **实验 1 没有通过，也还不能判定。** 步骤一（系统调用跟踪）在 macOS 与 Linux 上都**满足标准 1**：组 B 每次提交确认前，都对预写日志文件发出了落盘调用，macOS 上是 `F_FULLFSYNC`（见「步骤一 · macOS」），Linux 上是 `fsync`（见「Linux」）。Linux 的步骤二已跑，强杀与事务进行中强杀没有丢失已确认提交。步骤三（断电）两个平台都还没做，Linux 推迟到第一版之后、与 macOS 真机断电一起做。按实验规格，缺了步骤三就不能认为通过。
 - 第一个产出（组 B 怎么配）已经有了，并有源码出处：PGlite 0.5.16 允许去掉 `-F`，但**光去掉 `-F` 不会让任何同步调用到达宿主**——Node 文件系统后端的 `fsync` 与 `fdatasync` 都是空操作。组 B 因此由 `store-pglite` 自己补上：把 PostgreSQL 的 `fsync()` 接到 Node 的 `fs.fsyncSync`（macOS 上 libuv 把它实现为 `fcntl(F_FULLFSYNC)`）。
 - 本机能跑的部分：步骤二（组 B）强杀 1,000 轮、只终止 DB Worker 200 轮、事务进行中强杀 200 轮，检查 1–6 全部通过，已确认提交丢失 0；组 A 的强杀对照 200 轮也全部通过（强杀测不出有没有落盘，这在预期之中）；提交延迟（组 B）p50 4.08 ms、p99 6.79 ms，满足标准 5。
 - 这些结果只说明"提交返回前数据已经写出进程、崩溃恢复正确"，**不说明数据真的落到了介质上**。
@@ -146,17 +146,57 @@
 
 原始跟踪在 `experiments/out/exp1-step1-macos-{B,A}/`，不进仓库。
 
+## Linux
+
+### 环境
+
+| 项 | 取值 |
+|---|---|
+| 提交 | `ec44083`（早于 `d7cb880`：那之后钩子对自上次宿主 `fsync` 以来没改过的文件不再转发 `fsync`，见 `02-architecture.md` §7「持久性」。这里的结果不覆盖那次改动） |
+| 系统 | Linux 6.8.0 aarch64，Ubuntu 24.04 虚拟机；测试跑在其中的 Debian bookworm 容器里，3 核、2 GiB 内存 |
+| Node | v24.22.3 |
+| strace | 6.1 |
+| 数据目录 | 挂进容器的 ext4 卷（`rw,relatime`），不在容器的 overlayfs 上 |
+
+### 步骤一 · Linux
+
+`experiments/exp1/step1-trace.sh B|A`，每组 100 个事务，strace 用 `-f -ttt -y` 从写入进程启动时开始跟踪。
+
+| | 组 B（`host-fsync`，默认） | 组 A（`pglite-default`，对照） |
+|---|---|---|
+| 提交 | 100 | 100 |
+| 确认前有落盘调用的提交 | 100 | 0 |
+| 其中落在 `pg_wal/` 上的 | 100 | 0 |
+| 描述符认不出路径的落盘调用 | 0 | 0 |
+| 落盘调用的种类 | 只有 `fsync`（1,497 次） | 只有 `fsync`（1,143 次） |
+
+提交窗口之外：组 B 在建库期间（`pgdata.creating/…`）约 1,400 次 `fsync`，之后 `pgdata/pg_wal` 103 次、`pgdata/base` 36 次。组 A 的 `fsync` 全部发生在建库期间，提交时一次都没有。与 macOS 一致。Linux 上用的是 `fsync`，不是 `fdatasync`（与第 10 条相符）。
+
+### 步骤二 · Linux
+
+规模同 macOS 的对应循环，都带 `--keep-going`：
+
+| 循环 | 轮数 | 结果 |
+|---|---|---|
+| 强杀，组 B | 1,000 | 最终检查全部通过 |
+| 事务进行中强杀，组 B | 200 | 最终检查全部通过 |
+| 强杀，组 A（对照） | 200 | 最终检查全部通过 |
+
+第一次运行即全部通过：没有丢失已确认提交，校验通过。没有逐轮的分项数字（每轮确认的事务数、检查进程打开耗时等），也没有跑"只终止 DB Worker"这一变体和两条延迟命令，所以 Linux 上标准 2 只覆盖了两个变体中的一个，标准 5 没有数字。
+
 ## 对照通过标准
 
 | # | 标准 | 状态 |
 |---|---|---|
-| 1 | 步骤一：组 B 下每次提交确认前都观察到针对预写日志的落盘调用；macOS 上必须是 `F_FULLFSYNC`（或书面接受只到普通 `fsync`） | macOS：**满足**（100/100 个提交在确认前对 `pg_wal/` 发出 `F_FULLFSYNC`，没有退到 `F_BARRIERFSYNC` 或 `fsync`；组 A 0 次）。**Linux 未做** |
-| 2 | 步骤二：1,000 轮加两个变体各 200 轮，检查 1–6 全过，已确认提交零丢失 | macOS：**满足**（0 / 1,400 轮不通过，丢失 0）。**Linux 未做** |
+| 1 | 步骤一：组 B 下每次提交确认前都观察到针对预写日志的落盘调用；macOS 上必须是 `F_FULLFSYNC`（或书面接受只到普通 `fsync`） | macOS：**满足**（100/100 个提交在确认前对 `pg_wal/` 发出 `F_FULLFSYNC`，没有退到 `F_BARRIERFSYNC` 或 `fsync`；组 A 0 次）。Linux：**满足**（100/100 个提交在确认前对 `pg_wal/` 发出 `fsync`；组 A 0 次；`ec44083`） |
+| 2 | 步骤二：1,000 轮加两个变体各 200 轮，检查 1–6 全过，已确认提交零丢失 | macOS：**满足**（0 / 1,400 轮不通过，丢失 0）。Linux：强杀 1,000 轮与事务进行中强杀 200 轮**全部通过**、丢失 0（组 A 对照 200 轮也通过；`ec44083`）；"只终止 DB Worker" 200 轮**未跑** |
 | 3 | 步骤三：组 B 下 Linux 100 轮、macOS 真机 20 轮，零丢失 | **未做**。macOS 真机部分**推迟**到第一次对外发布本机模式之前，标准不变 |
 | 4 | 步骤三的阳性对照：组 A 至少丢一次已确认提交 | **未做**。macOS 真机部分同上推迟 |
-| 5 | 组 B 提交延迟 p50 ≤ 20 ms、p99 ≤ 200 ms | macOS：**满足**（4.08 ms / 6.79 ms）。Linux 未做 |
+| 5 | 组 B 提交延迟 p50 ≤ 20 ms、p99 ≤ 200 ms | macOS：**满足**（4.08 ms / 6.79 ms）。**Linux 未测** |
 
-按实验规格，标准 1 不满足时，标准 2、3 即使全过也不算通过。标准 1 现在在 macOS 上满足；Linux 上的标准 1、2、5 与步骤三（标准 3、4）都还没做。**目前实验 1 不通过、未判定。**
+按实验规格，标准 1 不满足时，标准 2、3 即使全过也不算通过。标准 1 现在在 macOS 与 Linux 上都满足；Linux 上标准 2 还差"只终止 DB Worker"变体，标准 5 没测，步骤三（标准 3、4）两个平台都没做。**目前实验 1 不通过、未判定。**
+
+**Linux 标准 3、4 推迟**：Linux 真断电推迟到第一版之后，与 macOS 真机断电一起做，标准不变，做法见下面「要人做的」第 4 条。
 
 **macOS 标准 3、4 推迟**（[`../decisions/exp1-macos-power-loss-deferral.md`](../decisions/exp1-macos-power-loss-deferral.md)）：真机断电需要台式 Mac，现在没有，笔记本不能代替。P1 `store` 收尾时，macOS 以标准 1、2 为凭，Linux 虚拟机两组断电作佐证，Linux 的标准 1–5 仍须全部满足；macOS 真机断电在第一次对外发布本机模式之前补做，标准不变，不通过就不发布本机模式。
 
@@ -176,9 +216,9 @@
    ```
 
    脚本启动观察者与写入进程（100 个事务），在写入进程开始写之前用 `sudo fs_usage -w -f filesys <pid>` 附上去，结束后运行 `step1-analyze.ts`，把每个提交窗口（事务开始到提交返回）里的落盘调用计数写到 `analysis.json`。要记下：组 B 是否每个提交窗口都有 `F_FULLFSYNC`（`fcntl` 命令号 51；`F_BARRIERFSYNC` 是 85）或至少 `fsync`；组 A 是否一次都没有。`fs_usage` 不总是给出文件名，所以要人工翻看 `trace.txt`，确认这些调用落在 `pg_wal/` 下的文件上（对照描述符号）。`fs_usage` 打印 `fcntl` 命令的方式随系统版本不同，分析脚本按"FULLFSYNC"或数字 51 识别，认不出时以原始输出为准。系统完整性保护开启时 `dtruss` 不可用，`fs_usage` 可用（未核实，以实际为准）。
-2. **步骤一，Linux**（ext4，x86-64 或 arm64）：同样两条命令。脚本用 `strace -f -ttt -y -e trace=fsync,fdatasync,sync_file_range,msync,open,openat,fcntl` 从头跟踪写入进程，`-y` 解出描述符对应的路径，分析脚本据此判断是否落在 `pg_wal/` 上。预期组 B 每个提交窗口有一次对 `pg_wal/…` 的 `fsync`。
-3. **步骤二，Linux**：在同一台 Linux 上跑上面"本机跑了什么"表里的四条循环命令（1,000 + 200 + 200 + 对照 200 轮）与两条延迟命令。
-4. **步骤三，Linux 虚拟机**：宿主机上按 `experiments/exp1/power-loop-linux-vm.sh` 文件头的说明准备 libvirt 虚拟机（客户机里检出仓库并 `pnpm install`、宿主到客户机免密 ssh），磁盘缓存模式用 `none`（客户机的刷盘请求以 `fdatasync` 到达宿主文件），把实际模式写进报告；然后
+2. **步骤一，Linux**（ext4，x86-64 或 arm64）——**已完成**，结果见「Linux」：同样两条命令。脚本用 `strace -f -ttt -y -e trace=fsync,fdatasync,sync_file_range,msync,open,openat,fcntl` 从头跟踪写入进程，`-y` 解出描述符对应的路径，分析脚本据此判断是否落在 `pg_wal/` 上。预期组 B 每个提交窗口有一次对 `pg_wal/…` 的 `fsync`。
+3. **步骤二，Linux**——**部分完成**，结果见「Linux」：强杀 1,000 轮、事务进行中强杀 200 轮、组 A 对照 200 轮已跑；"只终止 DB Worker" 200 轮与两条延迟命令还没跑。
+4. **步骤三，Linux 虚拟机**（推迟到第一版之后，与第 5 条一起做）：宿主机上按 `experiments/exp1/power-loop-linux-vm.sh` 文件头的说明准备 libvirt 虚拟机（客户机里检出仓库并 `pnpm install`、宿主到客户机免密 ssh），磁盘缓存模式用 `none`（客户机的刷盘请求以 `fdatasync` 到达宿主文件），把实际模式写进报告；然后
 
    ```sh
    VM=… GUEST_SSH=… GUEST_REPO=… HOST_ADDR=… DISK_CACHE=none \
