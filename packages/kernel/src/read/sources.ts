@@ -18,17 +18,18 @@
 //   list its first 200 characters as `excerpt`.
 // - `correction`: the source is a value source of a write whose intent is `correct`
 //   (`isCorrection`, as `history`'s timeline marks it).
-// - Deletion: a source pending deletion or removed gives none of its content. Where that state
-//   comes from (the deletion's item and expiry, the removal's time and reason) is not in this
-//   version of the kernel: such a source in a slot the caller sees fails the whole call
-//   (`internal`, `not_implemented`), whatever the mode, the filters or the page, before anything
-//   is looked at, rather than being shown as present or left out.
+// - Deletion (04-contract-types `SourceDeletion`): a source pending deletion is listed and got as
+//   ever by what is not its content (ID, kind, level, slot, recorded time, actor, `correction`),
+//   with `deletion: { state: "pending", item, expires_at }`; its own blocks (`text`, `file`,
+//   `request`, `stated_at`) are read through READABLE_CONTENT and so not given, nor what it
+//   produced. A search, by those blocks, never finds it. A removed one (a carried-out deletion,
+//   not applied in this version) fails the call that reads it (`internal`, `not_implemented`).
 // - A slot the caller sees only in part (some of its tables): none of its sources, in any mode,
 //   as if there were none (`get`: `not_found`, as above). A source's text may name any table.
 // - Recorded in the read log as `sources`: the mode and the opaque IDs (the slot filtered by, the
 //   source read); never the search text (04-write-and-read «读取记录里记什么形状»).
 
-import type { SlotId, SourceId } from "@fluxvita/saveslot-contract-core";
+import type { ItemId, SlotId, SourceId } from "@fluxvita/saveslot-contract-core";
 import { canonicalize, SOURCE_KINDS } from "@fluxvita/saveslot-contract-core";
 import type { ReadEntry } from "../audit/index.ts";
 import { actorsNow } from "../pending/index.ts";
@@ -84,6 +85,14 @@ export interface SourcesListItem {
   readonly correction?: true;
   readonly excerpt?: string;
   readonly file?: FileOut;
+  readonly deletion?: SourceDeletion;
+}
+
+/** 04-contract-types `SourceDeletion`: only `pending` in this version. */
+export interface SourceDeletion {
+  readonly state: "pending";
+  readonly item: ItemId;
+  readonly expires_at: string;
 }
 
 export interface SourcesListResult {
@@ -115,6 +124,7 @@ export interface SourcesGetResult {
     readonly fields: readonly string[];
     readonly role: "value" | "operation" | "interval";
   }[];
+  readonly deletion?: SourceDeletion;
 }
 
 export type SourcesResult = SourcesListResult | SourcesGetResult;
@@ -182,6 +192,51 @@ export const searchForm = (s: string): string =>
 /** The first `EXCERPT` code points. */
 const excerptOf = (s: string): string => Array.from(s).slice(0, EXCERPT).join("");
 
+/** A removed source: not in this version (its removal's time and reason come with execution). */
+function refuseRemoved(row: { readonly state: string }): void {
+  if (row.state === "removed") throw notImplemented("sources", "a removed source");
+}
+
+/** A source pending deletion with no deletion listing its blocks: the store disagrees with itself. */
+function pendingKnown(
+  row: { readonly state: string; readonly seq: number },
+  pendingBy: ReadonlyMap<number, unknown>,
+): void {
+  if (row.state === "pending_deletion" && !pendingBy.has(row.seq)) {
+    throw new ReadError("internal", "a source pending deletion that no pending deletion lists");
+  }
+}
+
+/**
+ * The pending deletion of each of these sources pending deletion: the one listing its blocks, the
+ * one confirmed first when several do; its ID and when it falls due.
+ */
+async function pendingDeletions(
+  tx: ReadTx,
+  seqs: readonly number[],
+): Promise<Map<number, { item: string; expiresAt: string }>> {
+  const out = new Map<number, { item: string; expiresAt: string }>();
+  if (seqs.length === 0) return out;
+  const r = await tx.query<{ seq: unknown; id: string; due_at: string }>(
+    `SELECT DISTINCT ON (p.seq) p.seq, d.id, d.due_at FROM pending_blocks p
+     JOIN deletions d ON d.confirmed_seq = p.deletion_seq
+     WHERE p.seq = ANY($1) ORDER BY p.seq, p.deletion_seq`,
+    [[...seqs]] as never,
+  );
+  for (const x of r.rows) out.set(Number(x.seq), { item: x.id, expiresAt: x.due_at });
+  return out;
+}
+
+const deletionOf = (
+  pendingBy: ReadonlyMap<number, { item: string; expiresAt: string }>,
+  seq: number,
+): { deletion?: SourceDeletion } => {
+  const d = pendingBy.get(seq);
+  return d === undefined
+    ? {}
+    : { deletion: { state: "pending", item: d.item as ItemId, expires_at: d.expiresAt } };
+};
+
 /** Which of these sources a write whose intent is `correct` took a value from. */
 async function corrections(tx: ReadTx, seqs: readonly number[]): Promise<Set<number>> {
   const out = new Set<number>();
@@ -236,15 +291,6 @@ export async function sourcesInTx(
   // in part has no sources for the caller (08-open-questions).
   const whole = slots.filter((s) => seesWhole(input.visibility, s.slot));
   const bySlot = new Map<string, VisibleSlot>(whole.map((s) => [s.slot, s]));
-  // A source not present in those slots fails the whole call, before anything else is looked at:
-  // whatever the mode, filters or page (this version cannot say what such a source is).
-  const absent = await tx.query<{ n: unknown }>(
-    `SELECT 1 AS n FROM sources WHERE slot_id = ANY($1) AND deletion_state <> 'present' LIMIT 1`,
-    [whole.map((s) => s.slot)] as never,
-  );
-  if (absent.rows.length > 0) {
-    throw notImplemented("sources", "a source pending deletion or removed");
-  }
   const latest = await logPosition(tx);
   const entryOf = (o: { pos: number; slot?: SlotId; source?: SourceId }): ReadEntry => ({
     read: input.read as never,
@@ -376,7 +422,9 @@ export async function sourcesInTx(
       tx,
       rows.map((x) => x.seq),
     );
-    for (const row of rows) taken.push({ row, blocks: blocks.get(row.seq) });
+    for (const row of rows) {
+      taken.push({ row, blocks: row.state === "present" ? blocks.get(row.seq) : undefined });
+    }
     more = taken.length > limit;
     taken.splice(limit);
   } else {
@@ -390,7 +438,8 @@ export async function sourcesInTx(
       );
       let full = false;
       for (const row of rows) {
-        const b = blocks.get(row.seq);
+        // A source not present is never searched by its content, whatever its blocks say.
+        const b = row.state === "present" ? blocks.get(row.seq) : undefined;
         const f = fileOf(b);
         const haystacks = [
           textOf(row.kind, b),
@@ -419,6 +468,12 @@ export async function sourcesInTx(
     }
   }
 
+  for (const { row } of taken) refuseRemoved(row);
+  const pendingBy = await pendingDeletions(
+    tx,
+    taken.map((x) => x.row.seq),
+  );
+  for (const { row } of taken) pendingKnown(row, pendingBy);
   const fixes = await corrections(
     tx,
     taken.map((x) => x.row.seq),
@@ -443,6 +498,7 @@ export async function sourcesInTx(
       ...(f !== undefined
         ? { file: { name: String(f["name"]), mime: String(f["mime"]), size: Number(f["size"]) } }
         : {}),
+      ...deletionOf(pendingBy, row.seq),
     };
   });
   // The next page starts after the last given; a search cut by its scan, after the last looked at.
@@ -491,7 +547,12 @@ async function getOne(
   };
   const slot = bySlot.get(row.slot);
   if (slot === undefined) throw notFound();
-  const blocks = (await contentOf(tx, [row.seq])).get(row.seq);
+  refuseRemoved(row);
+  const pendingBy = await pendingDeletions(tx, [row.seq]);
+  pendingKnown(row, pendingBy);
+  // A source not present gives none of its own blocks, whatever they say.
+  const blocks =
+    row.state === "present" ? (await contentOf(tx, [row.seq])).get(row.seq) : undefined;
   const t = textOf(row.kind, blocks);
   const f = fileOf(blocks);
   const stated = statedOf(blocks);
@@ -572,7 +633,9 @@ async function getOne(
           },
         }
       : {}),
-    ...(groups.size > 0 ? { produced: [...groups.values()] } : {}),
+    // A source pending deletion: what it produced is not given either (04-contract-types).
+    ...(groups.size > 0 && !pendingBy.has(row.seq) ? { produced: [...groups.values()] } : {}),
+    ...deletionOf(pendingBy, row.seq),
   };
   return { result, entry: entryOf({ pos: latest, slot: slot.slot, source: row.id as SourceId }) };
 }

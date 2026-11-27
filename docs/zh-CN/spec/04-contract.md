@@ -482,7 +482,7 @@
 
 - `list`（默认）、`search`（`q` 必填；第一版是子串匹配）、`get`（`id` 必填）。`from` / `to` 按记录时间，`[from, to)`。`kind` 的取值含 saveslot 生成的 `api_call`；被纠错写入用作值来源的带 `correction: true`。只返回可见 slot 的源数据；`slot` 过滤指向不存在或不可见的 slot 报 `not_found`（`slot`），不可见的源数据 ID 报 `not_found`。调用方对某个 slot 的可见范围不是整个 slot（只到其中一部分表）时，第一版里这个 slot 的源数据对它一律不存在：`list` 与 `search` 不给，`get` 报与不存在相同的 `not_found`，按名字过滤这个 slot 得到空列表（slot 本身仍可见）——源数据属于 slot，原文与 `api_call` 的请求里可以提到这个 slot 的任何表（[`08-open-questions.md`](08-open-questions.md)）。`list` 与 `search` 按 `seq` 倒序（日志里的先后，不按记录时刻：时钟回拨时记录时刻不单调），翻页的键也是它。`search` 比对原文、`file_ref` 的名字与摘录、`api_call` 的请求文本，不比 slot 名与写入者；两边先做 NFC，只折叠 ASCII 字母 A–Z（与名字的比较同一口径，不做 Unicode 大小写折叠），`q` 为空或 NFC 之后为空报 `invalid_argument`；一次调用扫过的条数有上限，所以一页可能不满却仍给出下一页。
 - `get` 返回原文或文件引用、所属 slot、记录时间、写入者，以及它产生了哪些数据（只列调用方可见的表）。`api_call` 没有原文：`get` 的 `text` 给它的请求的 JCS 文本，列表的 `excerpt` 给这段文本的前 200 个字符。`correction: true` 指它是某次意图为 `correct` 的写入的值来源。三种模式都记入 read_log，只记操作、模式与 ID，搜索词不记。
-- **宽限期内待删除的**不返回内容，带 `deletion: {state: "pending", item, expires_at}`；**已物理删除的**带 `deletion: {state: "removed", at, reason}`。列表里同样处理。**0.1.0 的限制**：0.1.0 没有隐私删除，源数据只会处于现存状态，所以 `deletion` 字段不会出现。内核遇到一条不是现存状态的源数据时，三种模式的每次调用都整次报 `not_in_this_version`（`reason` 是 `not_implemented`）——在看模式、过滤与翻页之前就报，不给任何内容。
+- **宽限期内待删除的**不返回内容，带 `deletion: {state: "pending", item, expires_at}`；**已物理删除的**带 `deletion: {state: "removed", at, reason}`。列表里同样处理。待删除的照给的只有不属于它内容的部分：ID、种类、来源级别、slot、记录时间、写入者、`correction`；它自己的块（原文、文件、请求、陈述时间 `stated_at`）不给，`get` 也不给 `produced`。`search` 按原文匹配，待删除的原文读不到，所以搜不到它；排序只按记录次序、`from` / `to` 只按记录时间，读不到的 `stated_at` 不参与定位置与筛选。**这一版的限制**：这一版不落账删除的执行，源数据不会处于已物理删除的状态；内核遇到这样一条时，读到它的那次调用报 `not_in_this_version`（`reason` 是 `not_implemented`），不给它的任何内容。
 
 ### `deletion_preview`
 
