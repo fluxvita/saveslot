@@ -1,7 +1,7 @@
 // The in-place upgrade of a store on a PostgreSQL server (02-architecture §8 «格式版本、导出、导入与恢复»;
-// kernel store/upgrade.ts): opened by a version of a later format, a store is upgraded once the
-// ownership epoch is taken, each step a write transaction under the tenant's lock whose last
-// statement sets the format. The kernel has no step yet (format 5 is the only one); these cases give
+// kernel store/upgrade.ts): opened by a version of a later format, a store is upgraded, its format
+// read again under the tenant's lock first, each step a write transaction under that lock whose
+// last statement sets the format. The kernel has no step yet (format 5 is the only one); these cases give
 // the backend a format and steps of their own (PostgresBackendOptions `formatUpgrade`).
 
 import { META_KEYS, STORAGE_FORMAT_VERSION, type UpgradeStep } from "@fluxvita/saveslot-kernel";
