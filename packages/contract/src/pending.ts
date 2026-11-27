@@ -179,7 +179,11 @@ export interface AwaitingDetail extends ItemBase {
     revert?: { undo: Seq; include_later?: boolean };
     valid?: Interval;
   };
-  current: { values?: Values; spans?: Span[] };
+  /**
+   * The row at the item version's operation. `partially_deleted`: a value there a deletion still
+   * pending removed is left out (not null): a closed item's version is not moved by a later deletion.
+   */
+  current: { values?: Values; spans?: Span[]; partially_deleted?: true };
   impact: AwaitingImpact;
 }
 
@@ -192,6 +196,8 @@ export interface FlaggedDetail extends ItemBase {
   /** The `duplicate_keys` group that matched. */
   keys: FieldName[];
   matched_values?: Values;
+  /** A value of `matched_values` a deletion still pending removed is left out (not null). */
+  partially_deleted?: true;
 }
 
 /** 04-contract-types §4.8 `Candidate`. */
@@ -223,6 +229,8 @@ export interface ConflictDetail extends ItemBase {
     values?: Values;
     spans?: Array<Span & { seq?: Seq; actor?: Actor }>;
     exists: boolean;
+    /** A value there a deletion still pending removed is left out (not null): a closed item's version is not moved by a later deletion. */
+    partially_deleted?: true;
   };
   candidates: Candidate[];
   /** Reason `restored_candidate`: the item the candidate came from. */

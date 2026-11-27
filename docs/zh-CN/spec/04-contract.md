@@ -373,7 +373,7 @@
 | `corrected` | 该行被纠错过。状态类表上按段给：这一段里所读字段的值出自纠错写入（合并的段里任一段是即可） |
 | `revoked` | 该行已撤销；只在 `include_revoked: true` 时出现 |
 | `possibly_affected` | 本连接实例之前读过的版本后来受影响；值后来恢复则撤掉 |
-| `partially_deleted` | 按时刻读（`history` 的 `as_of`、`query` 的后续页）、还原时，当时的部分数据已删除：出自被删除去掉的贡献的值不给。`history` 的 `changes` 里同名字段标在一条上，表示那一侧不给；冲突事项详情的 `previous` 上的同名字段，表示合并基那一刻有值不给（`take_previous` 写回的是删除之后那个位置上的状态） |
+| `partially_deleted` | 按时刻读（`history` 的 `as_of`、`query` 的后续页）、还原时，当时的部分数据已删除：出自被删除去掉的贡献的值不给。`history` 的 `changes` 里同名字段标在一条上，表示那一侧不给；冲突事项详情的 `previous` 上的同名字段，表示合并基那一刻有值不给（`take_previous` 写回的是删除之后那个位置上的状态）；事项详情的 `effective`、`current`，以及 flagged 事项详情上的同名字段，表示那一侧（flagged 是 `matched_values`）有值不给 |
 | `pending_deletion` | 这一行受一项可撤回的删除影响（判据见 data-model「删除 · 撤回与宽限期」的"受影响"；这段时间里它上面的事项不能处理、写入不能 `undo`） |
 | `dangling_ref` | 这一行的某个 `ref` 字段指向的行 / 实体已撤销或已被隐私删除；引用方的值不变，只标出来。带字段与状态（`revoked` / `deleted`） |
 | `premise_changed` | 这一行当前的值所用到的前提（5.1）后来变了；值没有动，是否仍然成立由读方判断。**任何读取方**都看得到。带前提所在的行、声明的字段、声明时所见的版本、原因、使它变了的操作号、本行里由这条声明覆盖的字段、哪次写入声明的 |

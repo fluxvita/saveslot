@@ -379,7 +379,7 @@ pi_7C… conflict · runs r_01JC… distance · opened 1 d ago · version iv_4f�
   Choices: keep_effective (keep 5 km) / take_candidate candidate=0 or 1 / take_previous (back to the 15 km as of #41; it reverts #57)
 ```
 
-When `previous` carries `partially_deleted`, the merge base line and the `take_previous` choice say "part of it has since been deleted and is left out; take_previous writes back what is there after the deletion", so that the missing fields do not read as "no value then".
+When `previous` carries `partially_deleted`, the merge base line and the `take_previous` choice say "part of it has since been deleted and is left out; take_previous writes back what is there after the deletion", so that the missing fields do not read as "no value then". When a closed item's `effective` or `current`, or a flagged item's details, carry `partially_deleted`, that line says "part of it has since been deleted and is left out" too.
 
 The detail of an item awaiting confirmation must write out `impact` (the segments that would be overwritten / the gaps that would be filled / the writes that would be reverted / the rows that still reference the row), as much as the write receipt gives:
 

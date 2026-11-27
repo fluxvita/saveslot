@@ -150,6 +150,10 @@ function impactOf(x: unknown, deep: boolean): Line[] {
   return out;
 }
 
+/** A side part of which a deletion has since removed (`partially_deleted`): not "no value then". */
+const sideDeleted = (x: R): Part[] =>
+  x["partially_deleted"] === true ? t`; part of it has since been deleted and is left out` : [];
+
 /**
  * A side's values over its spans, or its values. On a state table a stretch without a value is all
  * there is to a revoke (05-time): `no value` there, never `no row`. `no row` when an event or
@@ -189,7 +193,8 @@ export function pendingDetail(r: PendingDetailResult, now: Date): Line[] {
     out.push(
       t`  proposed: ${codeOf(p["intent"], INTENTS)} ${what}${period} (${op(p["seq"])}, ${actorOf(p["actor"])})`,
     );
-    out.push(t`  in effect now: ${sideOf(obj(x["current"]))}`);
+    const current = obj(x["current"]);
+    out.push(t`  in effect now: ${sideOf(current)}${sideDeleted(current)}`);
     const impact = impactOf(x["impact"], false);
     if (impact.length > 0) out.push(t`  what taking effect would change:`, ...impact);
     if (x["status"] === "open")
@@ -198,7 +203,7 @@ export function pendingDetail(r: PendingDetailResult, now: Date): Line[] {
   if (type === "conflict") {
     const e = obj(x["effective"]);
     const by = e["seq"] !== undefined ? t` (${op(e["seq"])}, ${actorOf(e["actor"])})` : [];
-    out.push(t`  in effect: ${sideOf(e)}${by}`);
+    out.push(t`  in effect: ${sideOf(e)}${by}${sideDeleted(e)}`);
     const impacts = obj(x["candidate_impact"]);
     for (const c of arr(x["candidates"])) {
       const cd = obj(c);
@@ -227,7 +232,7 @@ export function pendingDetail(r: PendingDetailResult, now: Date): Line[] {
   }
   if (type === "flagged") {
     out.push(
-      t`  matched on: ${join(arr(x["keys"]).map(fieldOf), t`, `)}${isObj(x["matched_values"]) ? t` (${namedValues(x["matched_values"])})` : []}`,
+      t`  matched on: ${join(arr(x["keys"]).map(fieldOf), t`, `)}${isObj(x["matched_values"]) ? t` (${namedValues(x["matched_values"])})` : []}${sideDeleted(x)}`,
     );
     for (const rel of arr(x["related"])) out.push(t`  may duplicate ${targetOf(rel)}`);
   }
