@@ -469,31 +469,14 @@ function compare(
             ...Object.keys(view(c.replay.state).fields),
           ]),
         ];
-        // One exception to comparing indices: an index the cancelled deletion alone gave (no
-        // block in the records as written, a block from the first deletion's restatements, none
-        // from the second's). Whether it survives depends on whether the second deletion gave its
-        // block again (09 §5.9 rule 2), which the kernel reads from `deps` and the reference
-        // approximates by ends (see `graceCover`); status, interval and value are still compared.
-        // Whether such an index counts as used when new items are numbered (09 §5.7) is open.
-        const at = (x: { event: number; target: string; k: number }) =>
-          `${x.event}/${x.target}/${x.k}`;
-        const givenAgain = new Set(
-          then.restated.filter((r) => r.status !== "dropped").map((r) => at(r.item)),
-        );
-        const written = givenByRecords(records);
-        const firstAlone = new Set(
-          once.restated
-            .filter(
-              (r) =>
-                r.status !== "dropped" &&
-                !givenAgain.has(at(r.item)) &&
-                !(written.get(`${r.item.event}/${r.item.target}`) ?? []).some(
-                  (x) => x.k === r.item.k,
-                ),
-            )
-            .map((r) => at(r.item)),
-        );
-        const indexed = (x: { event: number; target: string; k: number }) => !firstAlone.has(at(x));
+        // Indices are not compared after a cancellation; status, interval and value are. An index
+        // the cancelled deletion alone gave is left without a block, and the kernel and the
+        // reference number the items left on that target differently, one 0 and the other 1
+        // (decision record `index-given-only-by-cancelled-deletion.md` §1). Its §7: "撤回之后的性质
+        // 比较继续不比下标". The second part of that decision (spec, kernel, reference) restates
+        // such an index as dropped and gives the item left a new number; its fixed cases (§8)
+        // compare the indices again then. Seed -1335765174 is held below.
+        const indexed = () => false;
         expect({
           items: itemKeys(
             c.replay.state.items.filter((x) => !proposalsC.has(x.event)),
@@ -510,7 +493,9 @@ function compare(
         );
         // The second deletion cancelled instead (the one confirmed after): the state is the
         // first's alone, as the reference evaluator gives it; then the first cancelled too: the
-        // records' state and items, as the reference gives both cancellations.
+        // records' state and items, as the reference gives both cancellations. Without indices, as
+        // above: after a cancellation the two may number the items left otherwise
+        // (`index-given-only-by-cancelled-deletion.md` §1, §7).
         const sameAsRef = (state: RowState, ref: ReturnType<typeof evaluateLog>["final"]): void => {
           const proposals = new Set(
             state.records
@@ -521,10 +506,13 @@ function compare(
             ...new Set([...Object.keys(ref.fields), ...Object.keys(view(state).fields)]),
           ];
           expect({
-            items: itemKeys(state.items.filter((x) => !proposals.has(x.event))),
+            items: itemKeys(
+              state.items.filter((x) => !proposals.has(x.event)),
+              () => false,
+            ),
             fields: timelines(view(state).fields as never, names),
           }).toEqual({
-            items: itemKeys(ref.items),
+            items: itemKeys(ref.items, () => false),
             fields: timelines(ref.fields as never, names),
           });
         };
@@ -1407,6 +1395,61 @@ describe("a group value past a field's seen interval (a property counterexample)
       },
     ] as Op[];
     compare({ ...STATE, groups: GROUPS }, true, ops, [], 112260546, [60]);
+  });
+});
+
+describe("two deletions, the first cancelled: the items left numbered otherwise (a property counterexample)", () => {
+  // State table, seed -1335765174 of the reverts property. #61 takes the previous value against
+  // #41 and #51; #71 writes f2 = 2 from 11-01 to the next change; the decision inserts an undo
+  // (event 74) of #61 with nothing to write back on f2 when written. Deleting S40 (#41) gives 74 a
+  // first write-back on f2, index 0, [11-03, 11-07) = 3, from the deletion alone. Deleting S3 (#71)
+  // too and cancelling the first leaves 74 two write-backs on f2, [11-01, 11-03) = 2 and
+  // [11-03, 11-07) = 3: the same status, interval and value on both sides, the kernel numbering
+  // them 0 and 1, the reference 1 and 0 (decision record `index-given-only-by-cancelled-deletion.md`
+  // §1). Indices are not compared after a cancellation (its §7); the second part of that decision
+  // numbers them again, and this case compares them then.
+  it("the deletion's replay and both cancellations leave what the reference evaluator gives", () => {
+    const span = (from: string, to: string) => ({
+      from: { mode: "given", value: from },
+      to: { mode: "given", value: to },
+    });
+    const write = (op: number, seen: number, valid: unknown, v: string, ack = true) => ({
+      kind: "write",
+      op,
+      event: op + 1,
+      seen,
+      valid,
+      fields: { f2: { value: v, sources: [`S${op}`] } },
+      ...(ack ? { acknowledge: ["overwrite"] } : {}),
+    });
+    const ops = [
+      write(10, 0, { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } }, "1"),
+      write(20, 10, span("2026-11-01", "2026-11-07"), "2"),
+      write(30, 20, span("2026-11-03", "2026-11-09"), "3"),
+      write(40, 10, span("2026-11-01", "2026-11-05"), "4", false),
+      write(50, 20, span("2026-11-03", "2026-11-07"), "5", false),
+      {
+        kind: "resolve",
+        op: 60,
+        event: 61,
+        decision: "take_previous",
+        candidates: [41, 51],
+        unit: "f2",
+      },
+      {
+        kind: "write",
+        op: 70,
+        event: 71,
+        seen: 60,
+        valid: { from: { mode: "given", value: "2026-11-01" }, to: { mode: "next_change" } },
+        fields: { f2: { value: "2", sources: ["S3", "S4"], explicit: true } },
+        acknowledge: ["overwrite"],
+      },
+    ] as Op[];
+    const decisions: Decision[] = [
+      { after: 303906791, pick: 0, kind: "undo", flag: 0, focus: true },
+    ];
+    compare(STATE, true, ops, decisions, ["S40", "S3"]);
   });
 });
 
