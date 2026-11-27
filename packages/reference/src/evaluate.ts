@@ -2757,14 +2757,12 @@ class Replay {
       if (added.length > 0)
         this.rec.history.set(key, [...(this.rec.history.get(key) ?? []), ...added]);
     }
-    // A cancellation also says such an index on an (event, target) left with no item, unless a
-    // deletion still pending takes the whole of it away (its number is no longer needed there).
+    // A cancellation also says such an index on an (event, target) left with no item. On one a
+    // deletion still pending removes whole, the result lists no dropped item (`deletedItem`) and
+    // the number counts either way.
     if (cancelled === undefined) return;
     for (const key of [...this.rec.history.keys()]) {
       if (groups.has(key)) continue;
-      const cut = key.indexOf("/");
-      if (this.deletedItem(Number(key.slice(0, cut)) as Seq, key.slice(cut + 1) as Target))
-        continue;
       const dropped = this.onlyCancelledGave(key).map(
         (k): HistoryEntry => ({ k, valid: [], by, dropped: true }),
       );
