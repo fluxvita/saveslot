@@ -22,6 +22,7 @@
     "docs:links": "node scripts/check-doc-links.ts",
     "docs:json": "node scripts/check-json-examples.ts",
     "docs:translations": "node scripts/check-translations.ts",
+    "changesets:check": "node scripts/check-changesets.ts",
     "docs:claims": "node scripts/check-claims.ts",
     "docs:spec-refs": "node scripts/check-spec-refs.ts",
     "conflict-markers": "node scripts/check-conflict-markers.ts",
