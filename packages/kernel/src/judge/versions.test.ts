@@ -3,9 +3,11 @@
 // either changes or stays as it was.
 
 import type { BizPoint, FieldId } from "@fluxvita/saveslot-contract-core";
+import { EVENT } from "@fluxvita/saveslot-reference/testing";
 import { describe, expect, it } from "vitest";
 import { emptyState, judgeOp } from "./judge.ts";
 import type { JudgeInput, TableShape } from "./model.ts";
+import { judged } from "./scenarios.fixture.ts";
 import type { RowState } from "./state.ts";
 import { cellsOf, givesVersion } from "./versions.ts";
 
@@ -336,5 +338,61 @@ describe("givesVersion and cellsOf", () => {
         (x) => x.event === 31 && x.target === ("f3" as FieldId) && x.status === "candidate",
       ),
     ).toBe(true);
+  });
+
+  it("event table: a restore on a row that neither exists nor is revoked gives no version", () => {
+    // f2 is required and never applied: the row only ever has cells while revoked. Op 33 revokes it
+    // (a revoked row with cells), op 53 takes the previous back on f2's candidate (a restore: the
+    // row leaves the version table), op 63 does so again on the next candidate (a restore on a row
+    // with no cells before or after: nothing changes).
+    const write = (op: number, seen: number, field: string, value: string, source: string) => ({
+      kind: "write" as const,
+      op,
+      event: op + 1,
+      seen,
+      fields: { [field]: { value, sources: [source], explicit: false } },
+      acknowledge: ["overwrite" as const],
+    });
+    const previous = { pick: 0, kind: "previous" as const, flag: 0, focus: false };
+    const { steps } = judged(
+      EVENT,
+      [
+        write(20, 10, "f3", "1", "S5"),
+        write(30, 20, "f3", "1", "S6"),
+        write(40, 30, "f2", "1", "S4"),
+        write(50, 40, "f2", "1", "S2"),
+        { ...write(60, 20, "f2", "9", "S5"), acknowledge: [] },
+        write(70, 60, "f2", "9", "S1"),
+        write(80, 70, "f2", "9", "S1"),
+        {
+          kind: "undo",
+          op: 90,
+          event: 91,
+          target: 80,
+          includeLater: false,
+          seen: 80,
+          acknowledge: ["overwrite"],
+        },
+      ] as never,
+      [
+        { after: 140523945, pick: 0, kind: "revoke", flag: 0, focus: false },
+        { after: 717448851, ...previous },
+        { after: 398313780, ...previous },
+      ] as never,
+    );
+    const kinds = steps.map((x) => x.op.kind);
+    expect(kinds.slice(0, 7)).toEqual([
+      "write",
+      "write",
+      "revoke",
+      "write",
+      "resolve",
+      "write",
+      "resolve",
+    ]);
+    const gives = steps.map((x, n) => givesVersion(steps[n - 1]?.state, x));
+    expect(gives[2]).toBe(true);
+    expect(gives[4]).toBe(true);
+    expect(gives[6]).toBe(false);
   });
 });
