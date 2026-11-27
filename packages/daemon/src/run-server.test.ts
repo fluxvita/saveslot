@@ -2100,10 +2100,15 @@ describe("runServer: closing in three steps", () => {
   it(
     "during the drain: /ready 503 and /health stopping, while /v1 and MCP are served as before; then new connections are refused",
     async () => {
-      const { s, token } = await serverWithUser({ drainMs: 1500 });
+      // The drain held by the case: long enough never to end on its own while the requests below
+      // are made (the first use opens the tenant, slow on a loaded machine), ended by hurry().
+      const { s, token } = await serverWithUser({ drainMs: 60_000 });
       const auth = { authorization: `Bearer ${token}` };
-      const t0 = performance.now();
       const closing = s.close();
+      let closed = false;
+      void closing.then(() => {
+        closed = true;
+      });
       const ready = await send(s, { path: "/ready" });
       expect(ready.status).toBe(503);
       expect(ready.headers["cache-control"]).toBe("no-store");
@@ -2133,9 +2138,10 @@ describe("runServer: closing in three steps", () => {
         }),
       });
       expect(mcp.status).toBe(200);
-      expect(performance.now() - t0).toBeLessThan(1500);
+      // Still draining: the closing waits for the drain.
+      expect(closed).toBe(false);
+      s.hurry();
       await closing;
-      expect(performance.now() - t0).toBeGreaterThanOrEqual(1400);
       // Past the drain the server listens no more.
       await expect(send(s, { path: "/ready" })).rejects.toMatchObject({ code: "ECONNREFUSED" });
     },
@@ -2266,6 +2272,18 @@ describe("runServer: closing in three steps", () => {
       } finally {
         agent.destroy();
       }
+    },
+    T,
+  );
+
+  it(
+    "with nothing in flight, the closing waits the drain out",
+    async () => {
+      const { s } = await serverWithUser({ drainMs: 300 });
+      const t0 = performance.now();
+      await s.close();
+      // A lower bound only: a loaded machine makes it longer, never shorter.
+      expect(performance.now() - t0).toBeGreaterThanOrEqual(250);
     },
     T,
   );
