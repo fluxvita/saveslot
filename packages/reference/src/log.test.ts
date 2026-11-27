@@ -9,6 +9,13 @@ import type { Evaluation, LogEntry, Op, TableSchema, ToParam, WriteOp } from "./
 import { itemsOf, segments, stateWithoutIndices, timeline } from "./views.ts";
 
 const STATE: TableSchema = { kind: "state", required: ["f2"] };
+/**
+ * Decisions and `undo` in the grace period on a row a pending deletion affects, allowed: the rule
+ * the decision record grace-period-no-decisions.md sets aside for a later version ("之后要放开时"),
+ * not the first version's spec, which refuses them (03-deletion «撤回与宽限期»). The cases passing
+ * it test that rule, which the evaluator keeps; none of them is compared with the kernel.
+ */
+const ALLOWED = { graceDecisions: "allowed" } as const;
 const d = (md: string) => `2026-${md}` as BizPoint;
 const short = (xs: string[]) => xs.map((s) => s.replaceAll("2026-", ""));
 const tl = (ev: Evaluation, f: FieldId = "f2") => short(timeline(ev, f));
@@ -77,7 +84,7 @@ describe("operations after a deletion are judged on the state it leaves", () => 
       del(16, "pi_a", ["s16"]),
       { kind: "undo", op: 20, event: 21, target: 14 },
     ];
-    const ev = evaluateLog(STATE, log).final;
+    const ev = evaluateLog(STATE, log, ALLOWED).final;
     expect(items(ev, 15)).toEqual(['f2/0 applied [10-01, inf) "10"']);
     expect(ev.reverts).toEqual([
       { op: 20, event: 21, status: "applied", record: [{ event: 15, target: "f2" }] },
@@ -415,7 +422,7 @@ describe("a candidate put back as a corroboration", () => {
   it("is a corroboration at its own write number, without endpoints", () => {
     // A put-back corroboration only closes the candidate and adds sources: its endpoints are no
     // blocking points (05-time «挡点»), so #29's default end does not stop at 11-01.
-    const ev = evaluateLog(STATE, log).final;
+    const ev = evaluateLog(STATE, log, ALLOWED).final;
     expect(items(ev, 15)).toEqual(['f2/0 corroborated [10-01, 11-01) "8"']);
     expect(items(ev, 29)).toEqual(['f2/0 applied [10-15, inf) "7"']);
     expect(tl(ev)).toEqual(['[10-01, 10-15) "8"', '[10-15, inf) "7"']);
@@ -437,7 +444,7 @@ describe("a candidate put back as a corroboration", () => {
       },
       cancel(26, "pi_a"),
     ];
-    const ev = evaluateLog(STATE, circular).final;
+    const ev = evaluateLog(STATE, circular, ALLOWED).final;
     expect(items(ev, 15)).toEqual(['f2/0 candidate [10-01, 11-01) "8"']);
     expect(items(ev, 25)).toEqual(['f2/0 applied [10-15, inf) "7"']);
     expect(tl(ev)).toEqual(['[10-01, 10-15) "8"', '[10-15, inf) "7"']);
@@ -487,13 +494,11 @@ describe("a put-back corroboration gives no value and no blocking point", () => 
     },
   ];
   const run = (from41: string, after: LogEntry[] = []) =>
-    evaluateLog(STATE, [
-      ...prefix(from41),
-      del(50, "pi_d", ["S2", "S5"]),
-      ...grace,
-      cancel(80, "pi_d"),
-      ...after,
-    ]);
+    evaluateLog(
+      STATE,
+      [...prefix(from41), del(50, "pi_d", ["S2", "S5"]), ...grace, cancel(80, "pi_d"), ...after],
+      ALLOWED,
+    );
   /** The replay as never deleted, with what the cancellation kept (03-deletion «撤回还原»). */
   const neverDeleted = (
     from41: string,
@@ -501,6 +506,7 @@ describe("a put-back corroboration gives no value and no blocking point", () => 
     after: LogEntry[] = [],
   ) =>
     evaluateLog(STATE, [...prefix(from41), ...grace, ...after], {
+      ...ALLOWED,
       forcedEffective: r.steps.at(-1 - after.length)?.keptEffective ?? [],
       forcedSuperseded: r.steps.at(-1 - after.length)?.keptSuperseded ?? [],
     }).final;
@@ -528,7 +534,7 @@ describe("a put-back corroboration gives no value and no blocking point", () => 
     const r = run("11-01", after);
     expect(items(r.final, 21)).toEqual(['f2/0 candidate [11-01, 11-03) "3" (closed)']);
     expect(items(neverDeleted("11-01", r), 21)).toEqual(
-      items(evaluateLog(STATE, [...prefix("11-01"), ...grace, ...after]).final, 21),
+      items(evaluateLog(STATE, [...prefix("11-01"), ...grace, ...after], ALLOWED).final, 21),
     );
     expect(tl(r.final)).toEqual(['[10-01, inf) "1"']);
   });
@@ -696,7 +702,11 @@ describe("review cases", () => {
         take: 71,
       },
     ];
-    const run = evaluateLog(STATE, [...prefix, del(60, "d", ["S1"]), ...grace, cancel(100, "d")]);
+    const run = evaluateLog(
+      STATE,
+      [...prefix, del(60, "d", ["S1"]), ...grace, cancel(100, "d")],
+      ALLOWED,
+    );
     const step = run.steps.at(-1);
     expect(step?.putBack).toEqual([]);
     expect(step?.keptEffective).toEqual([{ event: 21, target: "f2" }]);
@@ -710,6 +720,7 @@ describe("review cases", () => {
       },
     ]);
     const base = evaluateLog(STATE, [...prefix, ...grace], {
+      ...ALLOWED,
       forcedEffective: [{ event: 21, target: "f2" }],
     });
     expect(tl(run.final)).toEqual(tl(base.final));
@@ -782,7 +793,7 @@ describe("review cases", () => {
       },
       cancel(24, "d"),
     ];
-    const run = evaluateLog(STATE, log);
+    const run = evaluateLog(STATE, log, ALLOWED);
     expect(run.steps.at(-1)?.putBack).toEqual([{ event: 15, target: "f2", judged: "candidate" }]);
     expect(items(run.final, 15)).toEqual([
       'f2/0 candidate [10-01, 11-01) "9"',
@@ -935,7 +946,7 @@ describe("undo of a revert", () => {
       del(35, "d", ["S_X"]),
       { kind: "undo", op: 40, event: 42, target: 30 },
     ];
-    const during = evaluateLog(STATE, pending).final;
+    const during = evaluateLog(STATE, pending, ALLOWED).final;
     expect(during.reverts.find((r) => r.op === 40)).toEqual({
       op: 40,
       event: 42,
@@ -943,9 +954,9 @@ describe("undo of a revert", () => {
       record: [{ event: 32, target: "f2" }],
     });
     expect(items(during, 42)).toEqual(['f2/0 applied [11-02, 11-20) "3000" carried #22/f2/0']);
-    const ev = evaluateLog(STATE, [...pending, cancel(45, "d")]).final;
+    const ev = evaluateLog(STATE, [...pending, cancel(45, "d")], ALLOWED).final;
     expect(items(ev, 42)).toEqual(["f2/0 dropped"]);
-    expect(tl(ev)).toEqual(tl(evaluateLog(STATE, head).final));
+    expect(tl(ev)).toEqual(tl(evaluateLog(STATE, head, ALLOWED).final));
   });
 
   it("event table: a revert with no write-back cannot be undone", () => {
@@ -1228,13 +1239,17 @@ describe("order independence compares state and items, not restatement indices",
           ...(ack ? { acknowledge: ["overwrite"] } : {}),
         },
       ];
-      const ab = evaluateLog(STATE, [...log, a, b, ...further]).final;
-      const ba = evaluateLog(STATE, [...log, { ...b, op: 61 }, { ...a, op: 62 }, ...further]).final;
-      const once = evaluateLog(STATE, [
-        ...log,
-        del(61, "pi_ab", ["S4", "S1", "S2"]),
-        ...further,
-      ]).final;
+      const ab = evaluateLog(STATE, [...log, a, b, ...further], ALLOWED).final;
+      const ba = evaluateLog(
+        STATE,
+        [...log, { ...b, op: 61 }, { ...a, op: 62 }, ...further],
+        ALLOWED,
+      ).final;
+      const once = evaluateLog(
+        STATE,
+        [...log, del(61, "pi_ab", ["S4", "S1", "S2"]), ...further],
+        ALLOWED,
+      ).final;
       expect(ab.reverts.at(-1)?.record).toEqual([
         { event: 61, target: "f2" },
         { event: 61, target: "f3" },
@@ -1265,7 +1280,7 @@ describe("original items landing in one segment merge, in every order of the del
   };
 
   it("before the deletions: three items; the undo lists the write's (event, target)", () => {
-    const ev = evaluateLog(STATE, log).final;
+    const ev = evaluateLog(STATE, log, ALLOWED).final;
     expect(f2Items(ev, 41)).toEqual([
       'f2/0 candidate [11-01, 11-03) "3"',
       'f2/1 corroborated [11-03, 11-05) "3"',
@@ -1278,7 +1293,7 @@ describe("original items landing in one segment merge, in every order of the del
   });
 
   it.each(Object.entries(orders))("%s: one candidate item", (_, ds) => {
-    const ev = evaluateLog(STATE, [...log, ...ds]).final;
+    const ev = evaluateLog(STATE, [...log, ...ds], ALLOWED).final;
     expect(f2Items(ev, 41)).toEqual([
       'f2/0 candidate [11-01, inf) "3"',
       "f2/1 dropped",
@@ -1290,7 +1305,7 @@ describe("original items landing in one segment merge, in every order of the del
   it("the three orders give the same state and items, also after an undo of the undo", () => {
     for (const further of [[], [{ kind: "undo", op: 60, event: 61, target: 50 }]] as LogEntry[][]) {
       const [x, ...rest] = Object.values(orders).map((ds) =>
-        stateWithoutIndices(evaluateLog(STATE, [...log, ...ds, ...further]).final),
+        stateWithoutIndices(evaluateLog(STATE, [...log, ...ds, ...further], ALLOWED).final),
       );
       for (const y of rest) expect(y).toEqual(x);
     }
@@ -1306,7 +1321,7 @@ describe("original items landing in one segment merge, in every order of the del
     ];
     // Dropped entries are restatement bookkeeping (03-deletion «推论» «顺序无关»), left out.
     const items41 = (entries: LogEntry[]) =>
-      f2Items(evaluateLog(STATE, [...withS5, ...entries]).final, 41).filter(
+      f2Items(evaluateLog(STATE, [...withS5, ...entries], ALLOWED).final, 41).filter(
         (x) => !x.endsWith("dropped"),
       );
     const only = items41([del(51, "pi_b", ["S3", "S5"])]);
@@ -1593,7 +1608,7 @@ it("an undo of a revert takes back all of that revert's write-back items, also o
     { kind: "undo", op: 90, event: 91, target: 70 },
     cancel(100, "pi_x"),
   ];
-  const run = evaluateLog(STATE, log);
+  const run = evaluateLog(STATE, log, ALLOWED);
   expect(run.steps[8]?.state.reverts.at(-1)?.record).toEqual([{ event: 71, target: "f2" }]);
   expect(short(segments(run.final, "f2"))).toEqual([
     '[11-01, 11-03) "1" by #91/f2/0',
@@ -1741,12 +1756,11 @@ it("a deletion that brings the entity back ends the refusal of writes to it", ()
     ["S1", "S5"],
     ["S5", "S1"],
   ] as const) {
-    const run = evaluateLog(STATE, [
-      ...log,
-      del(51, "pi_1", [first]),
-      del(52, "pi_2", [second]),
-      undo,
-    ]);
+    const run = evaluateLog(
+      STATE,
+      [...log, del(51, "pi_1", [first]), del(52, "pi_2", [second]), undo],
+      ALLOWED,
+    );
     expect(run.steps[5]?.state.exists).toBe(first === "S5");
     expect(run.steps[6]?.state.exists).toBe(true);
     expect(run.steps[7]?.refused).toBe(false);
@@ -1888,7 +1902,7 @@ describe("revert statuses are decided one by one in operation order, each as if 
       { kind: "undo", op: 70, event: 71, target: 20, includeLater: true },
       del(82, "pi_0", ["S4", "S6"]),
     ];
-    const run = evaluateLog(STATE, log);
+    const run = evaluateLog(STATE, log, ALLOWED);
     // Awaiting when written: it lists #41's f2 as `later`, whose range is not empty. Deleting S4
     // and S6 removes the undone write #21 altogether: D(#41) is empty, no item marked `later` has a
     // range, so the undo is no longer high-impact and takes effect at its own number (05-time
@@ -2891,30 +2905,34 @@ describe("a conflict resolution is recorded by operation: K by (event, unit), ta
     // #31 (to the next change) is a candidate on [11-01, 11-05), its item kept as it was; #51 is a
     // candidate on [11-05, 11-10) in another item. Deleting S2 removes #21's change point: #31
     // runs on, closed, over #51's stretch. take_previous on #51's item takes back #26 there only.
-    const ev = evaluateLog(STATE, [
-      write(10, f2("1", "S1"), g("10-01", "open")),
-      write(20, f2("2", "S2"), g("11-05", "open"), { seen: 10, ...ack }),
-      write(25, f2("4", "S4"), g("11-01", "open"), { seen: 20, ...ack }),
-      write(30, f2("3", "S3"), g("11-01", "next"), { seen: 10 }),
-      {
-        kind: "resolve",
-        op: 40,
-        event: 41,
-        decision: "keep_effective",
-        candidates: [31],
-        unit: "f2",
-      },
-      write(50, f2("6", "S6"), g("11-05", "11-10"), { seen: 20 }),
-      del(60, "pi_1", ["S2"]),
-      {
-        kind: "resolve",
-        op: 70,
-        event: 71,
-        decision: "take_previous",
-        candidates: [51],
-        unit: "f2",
-      },
-    ]).final;
+    const ev = evaluateLog(
+      STATE,
+      [
+        write(10, f2("1", "S1"), g("10-01", "open")),
+        write(20, f2("2", "S2"), g("11-05", "open"), { seen: 10, ...ack }),
+        write(25, f2("4", "S4"), g("11-01", "open"), { seen: 20, ...ack }),
+        write(30, f2("3", "S3"), g("11-01", "next"), { seen: 10 }),
+        {
+          kind: "resolve",
+          op: 40,
+          event: 41,
+          decision: "keep_effective",
+          candidates: [31],
+          unit: "f2",
+        },
+        write(50, f2("6", "S6"), g("11-05", "11-10"), { seen: 20 }),
+        del(60, "pi_1", ["S2"]),
+        {
+          kind: "resolve",
+          op: 70,
+          event: 71,
+          decision: "take_previous",
+          candidates: [51],
+          unit: "f2",
+        },
+      ],
+      ALLOWED,
+    ).final;
     expect(items(ev, 31)).toEqual(['f2/0 candidate [11-01, inf) "3" (closed)']);
     expect(tl(ev)).toEqual([
       '[10-01, 11-01) "1"',
@@ -3385,15 +3403,14 @@ describe("a take on existence, a take in a replay, and what covers a take", () =
       del(40, "pi_1", ["S2"]),
       take(45, [31, 36], "f2", 36),
     ];
-    const taken = evaluateLog(STATE, pre).final;
+    const taken = evaluateLog(STATE, pre, ALLOWED).final;
     expect(tl(taken)).toEqual(['[10-01, inf) "6"']);
     expect(items(taken, 21)).toEqual(["existence/0 applied [11-01, 11-10) revoke"]);
-    const ev = evaluateLog(STATE, [
-      ...pre,
-      del(50, "pi_9", ["S9"]),
-      cancel(55, "pi_1"),
-      del(60, "pi_3", ["S2"]),
-    ]).final;
+    const ev = evaluateLog(
+      STATE,
+      [...pre, del(50, "pi_9", ["S9"]), cancel(55, "pi_1"), del(60, "pi_3", ["S2"])],
+      ALLOWED,
+    ).final;
     expect(tl(ev)).toEqual(['[10-01, inf) "6"']);
     expect(items(ev, 21)).toEqual(["existence/0 applied [11-01, 11-10) revoke"]);
   });
@@ -3478,17 +3495,17 @@ describe("a take on existence, a take in a replay, and what covers a take", () =
   ];
 
   it("a write awaiting when written that a deletion made a candidate is in K of its successor item", () => {
-    expect(items(evaluateLog(STATE, turned.slice(0, 5)).final, 21)).toEqual([
+    expect(items(evaluateLog(STATE, turned.slice(0, 5), ALLOWED).final, 21)).toEqual([
       'f2/0 awaiting [10-01, inf) "3"',
     ]);
-    const ev = evaluateLog(STATE, turned);
+    const ev = evaluateLog(STATE, turned, ALLOWED);
     expect(ev.steps.some((x) => x.refused)).toBe(false);
     expect(items(ev.final, 41)).toEqual(['f2/0 applied [10-01, inf) "3" carried #21/f2/0']);
     expect(tl(ev.final)).toEqual(['[10-01, inf) "3"']);
   });
 
   it("... and when that deletion is cancelled, the take made in its grace period stays in effect", () => {
-    const ev = evaluateLog(STATE, [...turned, cancel(50, "pi_6")]).final;
+    const ev = evaluateLog(STATE, [...turned, cancel(50, "pi_6")], ALLOWED).final;
     expect(tl(ev)).toEqual(['[10-01, inf) "3"']);
     expect(items(ev, 21).some((x) => x.includes("awaiting"))).toBe(false);
   });
@@ -3531,18 +3548,22 @@ describe("a take on existence, a take in a replay, and what covers a take", () =
       required: ["f2"],
       groups: [["f2" as FieldId, "f3" as FieldId]],
     };
-    const run = evaluateLog(G, [
-      w(10, { f2: ["1", "S1"], f3: ["a", "S1"] }, g("10-01", "open")),
-      w(20, { f2: ["2", "S2"], f3: ["b", "S2"] }, g("10-01", "open"), { seen: 10, ...ack }),
-      w(30, { f2: ["3", "SX"], f3: ["c", "SY"] }, g("11-01", "11-10"), {
-        seen: 10,
-        validSources: ["SV"],
-      }),
-      w(40, { f2: ["4", "S4"] }, g("11-01", "11-10"), { seen: 10 }),
-      del(50, "pi_1", ["SX"]),
-      res(60, "keep_effective", [31, 41], ["f2" as FieldId, "f3" as FieldId]),
-      cancel(70, "pi_1"),
-    ]);
+    const run = evaluateLog(
+      G,
+      [
+        w(10, { f2: ["1", "S1"], f3: ["a", "S1"] }, g("10-01", "open")),
+        w(20, { f2: ["2", "S2"], f3: ["b", "S2"] }, g("10-01", "open"), { seen: 10, ...ack }),
+        w(30, { f2: ["3", "SX"], f3: ["c", "SY"] }, g("11-01", "11-10"), {
+          seen: 10,
+          validSources: ["SV"],
+        }),
+        w(40, { f2: ["4", "S4"] }, g("11-01", "11-10"), { seen: 10 }),
+        del(50, "pi_1", ["SX"]),
+        res(60, "keep_effective", [31, 41], ["f2" as FieldId, "f3" as FieldId]),
+        cancel(70, "pi_1"),
+      ],
+      ALLOWED,
+    );
     const put = run.steps.at(-1)?.putBack ?? [];
     if (put.some((x) => x.judged === "candidate")) {
       expect(items(run.final, 31).filter((x) => x.startsWith("f2/"))).toEqual([
@@ -3571,53 +3592,61 @@ describe("a take on existence, a take in a replay, and what covers a take", () =
   });
 
   it("R2-9b a put-back candidate is not in K of a take on existence made before the cancellation", () => {
-    const ev = evaluateLog(STATE, [
-      w(10, { f2: ["1", "S1"], f3: ["a", "S1"] }, g("10-01", "open")),
-      rv(20, "11-25", "11-28", "SR", 10),
-      w(30, { f2: ["3", "SX"], f3: ["c", "SY"] }, g("11-20", "open"), {
-        seen: 10,
-        validSources: ["SV"],
-      }),
-      w(40, { f2: ["4", "S4"] }, g("11-20", "open"), { seen: 10 }),
-      del(50, "pi_1", ["SX"]),
-      take(60, [31, 41], "existence", 31),
-      cancel(70, "pi_1"),
-    ]).final;
+    const ev = evaluateLog(
+      STATE,
+      [
+        w(10, { f2: ["1", "S1"], f3: ["a", "S1"] }, g("10-01", "open")),
+        rv(20, "11-25", "11-28", "SR", 10),
+        w(30, { f2: ["3", "SX"], f3: ["c", "SY"] }, g("11-20", "open"), {
+          seen: 10,
+          validSources: ["SV"],
+        }),
+        w(40, { f2: ["4", "S4"] }, g("11-20", "open"), { seen: 10 }),
+        del(50, "pi_1", ["SX"]),
+        take(60, [31, 41], "existence", 31),
+        cancel(70, "pi_1"),
+      ],
+      ALLOWED,
+    ).final;
     expect(tl(ev)).toEqual(['[10-01, inf) "1"']);
   });
   it("R2-1a a take of a write awaiting when written stays after the deletion that made it a candidate is cancelled", () => {
-    const ev = evaluateLog(STATE, [
-      w(10, { f2: ["1", "S1"] }, g("10-01", "open")),
-      w(12, { f2: ["7", "S7"] }, g("11-01", "open"), { seen: 10, ...ack }),
-      w(14, { f2: ["4", "S4"] }, g("10-01", "10-15"), { seen: 12, ...ack }),
-      w(16, { f2: ["3", "S6"] }, g("10-01", "10-15"), { seen: 14, ...ack }),
-      w(20, { f2: ["3", "S3"] }, g("10-01", "open"), { seen: 12 }),
-      del(30, "pi_6", ["S6"]),
-      take(40, [21], "f2", 21),
-      cancel(50, "pi_6"),
-    ]).final;
+    const ev = evaluateLog(
+      STATE,
+      [
+        w(10, { f2: ["1", "S1"] }, g("10-01", "open")),
+        w(12, { f2: ["7", "S7"] }, g("11-01", "open"), { seen: 10, ...ack }),
+        w(14, { f2: ["4", "S4"] }, g("10-01", "10-15"), { seen: 12, ...ack }),
+        w(16, { f2: ["3", "S6"] }, g("10-01", "10-15"), { seen: 14, ...ack }),
+        w(20, { f2: ["3", "S3"] }, g("10-01", "open"), { seen: 12 }),
+        del(30, "pi_6", ["S6"]),
+        take(40, [21], "f2", 21),
+        cancel(50, "pi_6"),
+      ],
+      ALLOWED,
+    ).final;
     expect(tl(ev)).toEqual(['[10-01, inf) "3"']);
     expect(items(ev, 21).some((x) => x.includes("awaiting"))).toBe(false);
   });
 
   it("R2-1b ... and after another deletion removes the write that made it a candidate", () => {
-    const ev = evaluateLog(STATE, [...turned, del(50, "pi_9", ["S9"])]).final;
+    const ev = evaluateLog(STATE, [...turned, del(50, "pi_9", ["S9"])], ALLOWED).final;
     expect(tl(ev)).toEqual(['[10-01, inf) "3"']);
     expect(items(ev, 21).some((x) => x.includes("awaiting"))).toBe(false);
-    const kept = evaluateLog(STATE, [
-      ...turned.slice(0, 6),
-      res(40, "keep_effective", [21], "f2"),
-      del(50, "pi_9", ["S9"]),
-    ]).final;
+    const kept = evaluateLog(
+      STATE,
+      [...turned.slice(0, 6), res(40, "keep_effective", [21], "f2"), del(50, "pi_9", ["S9"])],
+      ALLOWED,
+    ).final;
     expect(items(kept, 21).some((x) => x.includes("awaiting"))).toBe(false);
   });
 
   it("R2-1c a take_previous of such an item: what it took back stays taken back after the cancellation", () => {
-    const ev = evaluateLog(STATE, [
-      ...turned.slice(0, 6),
-      res(40, "take_previous", [21], "f2"),
-      cancel(50, "pi_6"),
-    ]).final;
+    const ev = evaluateLog(
+      STATE,
+      [...turned.slice(0, 6), res(40, "take_previous", [21], "f2"), cancel(50, "pi_6")],
+      ALLOWED,
+    ).final;
     expect(tl(ev)).toEqual(['[10-01, 10-15) "6"', '[10-15, 11-01) "1"', '[11-01, inf) "7"']);
     expect(items(ev, 21)).toEqual(['f2/0 candidate [10-01, inf) "3" (closed)']);
     expect(items(ev, 41)).toEqual(['f2/0 applied [10-01, 10-15) "6" carried #14/f2/0']);
@@ -3639,35 +3668,43 @@ describe("a take on existence, a take in a replay, and what covers a take", () =
   });
 
   it("R2-1d a confirmation of a write a deletion made awaiting stays after that deletion is cancelled", () => {
-    const ev = evaluateLog(STATE, [...toAwait, decide("confirm"), cancel(50, "pi")]).final;
+    const ev = evaluateLog(STATE, [...toAwait, decide("confirm"), cancel(50, "pi")], ALLOWED).final;
     expect(tl(ev)).toEqual(['[10-01, inf) "3"']);
     expect(items(ev, 41)).toEqual(['f2/0 applied [10-01, inf) "3" carried #21/f2/0']);
     expect(items(ev, 21)).toEqual(['f2/0 awaiting [10-01, inf) "3" (closed)']);
   });
 
   it("R2-1e ... and after another deletion", () => {
-    const ev = evaluateLog(STATE, [...toAwait, decide("confirm"), del(50, "pi_7", ["S7"])]).final;
+    const ev = evaluateLog(
+      STATE,
+      [...toAwait, decide("confirm"), del(50, "pi_7", ["S7"])],
+      ALLOWED,
+    ).final;
     expect(tl(ev)).toEqual(['[10-01, inf) "3"']);
     expect(items(ev, 21)).toEqual(['f2/0 awaiting [10-01, inf) "3" (closed)']);
   });
 
   it("R2-1f a rejection of such a write stays: not in effect, not reopened as a candidate", () => {
     for (const tail of [[cancel(50, "pi")], [del(50, "pi_7", ["S7"])]]) {
-      const ev = evaluateLog(STATE, [...toAwait, decide("reject"), ...tail]).final;
+      const ev = evaluateLog(STATE, [...toAwait, decide("reject"), ...tail], ALLOWED).final;
       expect(items(ev, 21)).toEqual(['f2/0 awaiting [10-01, inf) "3" (closed)']);
       expect(tl(ev).some((x) => x.endsWith('"3"'))).toBe(false);
     }
   });
   it("R2-2 a take in the grace period: the revoke the cancelled deletion brings back does not cover it", () => {
-    const ev = evaluateLog(STATE, [
-      w(10, { f2: ["1", "S1"] }, g("10-01", "open")),
-      w(20, { f2: ["2", "S2"] }, g("10-01", "open"), { seen: 10, ...ack }),
-      w(30, { f2: ["5", "S5"] }, g("10-01", "open"), { seen: 10 }),
-      rv(40, "11-01", "11-10", "SR", 30),
-      del(50, "pi", ["SR"]),
-      take(60, [31], "f2", 31),
-      cancel(70, "pi"),
-    ]).final;
+    const ev = evaluateLog(
+      STATE,
+      [
+        w(10, { f2: ["1", "S1"] }, g("10-01", "open")),
+        w(20, { f2: ["2", "S2"] }, g("10-01", "open"), { seen: 10, ...ack }),
+        w(30, { f2: ["5", "S5"] }, g("10-01", "open"), { seen: 10 }),
+        rv(40, "11-01", "11-10", "SR", 30),
+        del(50, "pi", ["SR"]),
+        take(60, [31], "f2", 31),
+        cancel(70, "pi"),
+      ],
+      ALLOWED,
+    ).final;
     expect(tl(ev)).toEqual(['[10-01, inf) "5"']);
   });
 
@@ -3683,7 +3720,7 @@ describe("a take on existence, a take in a replay, and what covers a take", () =
   ];
 
   it("R2-2b a value a pending deletion removed, back after the cancellation, does not cover the take", () => {
-    expect(tl(evaluateLog(STATE, [...graceTake(30), cancel(70, "pi")]).final)).toEqual([
+    expect(tl(evaluateLog(STATE, [...graceTake(30), cancel(70, "pi")], ALLOWED).final)).toEqual([
       '[10-01, inf) "5"',
     ]);
   });
@@ -3691,34 +3728,42 @@ describe("a take on existence, a take in a replay, and what covers a take", () =
   it("R2-2c ... unless it is back not in effect and takes effect through another deletion", () => {
     // #41 erases #26's change point at 11-05: awaiting when written, so no candidate of #31's
     // item and not put back. Deleting S4 removes #26: #41 takes effect at 40 and covers the take.
-    const ev = evaluateLog(STATE, [
-      w(10, { f2: ["1", "S1"] }, g("10-01", "open")),
-      w(20, { f2: ["2", "S2"] }, g("10-01", "open"), { seen: 10, ...ack }),
-      w(25, { f2: ["4", "S4"] }, g("11-05", "open"), { seen: 20, ...ack }),
-      w(30, { f2: ["5", "S5"] }, g("10-01", "open"), { seen: 10 }),
-      w(40, { f2: ["9", "S9"] }, g("11-01", "11-10"), { seen: 30 }),
-      del(50, "pi", ["S9"]),
-      take(60, [31], "f2", 31),
-      cancel(70, "pi"),
-      del(80, "pi_4", ["S4"]),
-    ]).final;
+    const ev = evaluateLog(
+      STATE,
+      [
+        w(10, { f2: ["1", "S1"] }, g("10-01", "open")),
+        w(20, { f2: ["2", "S2"] }, g("10-01", "open"), { seen: 10, ...ack }),
+        w(25, { f2: ["4", "S4"] }, g("11-05", "open"), { seen: 20, ...ack }),
+        w(30, { f2: ["5", "S5"] }, g("10-01", "open"), { seen: 10 }),
+        w(40, { f2: ["9", "S9"] }, g("11-01", "11-10"), { seen: 30 }),
+        del(50, "pi", ["S9"]),
+        take(60, [31], "f2", 31),
+        cancel(70, "pi"),
+        del(80, "pi_4", ["S4"]),
+      ],
+      ALLOWED,
+    ).final;
     expect(tl(ev)).toEqual(['[10-01, 11-01) "5"', '[11-01, 11-10) "9"', '[11-10, inf) "5"']);
   });
 
   it("R2-2d ... and with the deletion not cancelled nothing comes back", () => {
-    expect(tl(evaluateLog(STATE, graceTake(30)).final)).toEqual(['[10-01, inf) "5"']);
+    expect(tl(evaluateLog(STATE, graceTake(30), ALLOWED).final)).toEqual(['[10-01, inf) "5"']);
   });
 
   it("R2-2e on existence: a value a pending deletion removed, back after the cancellation, does not cover the taken revoke", () => {
-    const ev = evaluateLog(STATE, [
-      w(10, { f2: ["1", "S1"] }, g("10-01", "open")),
-      w(20, { f2: ["2", "S2"] }, g("11-01", "11-10"), { seen: 10, ...ack }),
-      rv(30, "11-01", "11-10", "S3", 10),
-      w(40, { f2: ["9", "S9"] }, g("11-02", "11-04"), { seen: 30, ...ack }),
-      del(50, "pi", ["S9"]),
-      take(60, [31], "existence", 31),
-      cancel(70, "pi"),
-    ]).final;
+    const ev = evaluateLog(
+      STATE,
+      [
+        w(10, { f2: ["1", "S1"] }, g("10-01", "open")),
+        w(20, { f2: ["2", "S2"] }, g("11-01", "11-10"), { seen: 10, ...ack }),
+        rv(30, "11-01", "11-10", "S3", 10),
+        w(40, { f2: ["9", "S9"] }, g("11-02", "11-04"), { seen: 30, ...ack }),
+        del(50, "pi", ["S9"]),
+        take(60, [31], "existence", 31),
+        cancel(70, "pi"),
+      ],
+      ALLOWED,
+    ).final;
     expect(tl(ev)).toEqual(['[10-01, 11-01) "1"', '[11-10, inf) "1"']);
   });
   it("R2-5 event table: a field write outside O does not cover a taken revoke", () => {
@@ -3818,15 +3863,19 @@ describe("a take on existence, a take in a replay, and what covers a take", () =
         seen,
         fields: { f2: { value: v, sources: [src], ...extra } },
       }) as WriteOp;
-    const ev = evaluateLog(E, [
-      { ...ew(10, "1", "S1", 0), acknowledge: ["overwrite"] } as WriteOp,
-      ew(20, "5", "S2", 0),
-      ew(30, "3", "S4", 20),
-      ew(40, "1", "S1", 30),
-      del(50, "pi_50", ["S4"]),
-      take(60, [21], "f2", 21),
-      cancel(70, "pi_50"),
-    ]).final;
+    const ev = evaluateLog(
+      E,
+      [
+        { ...ew(10, "1", "S1", 0), acknowledge: ["overwrite"] } as WriteOp,
+        ew(20, "5", "S2", 0),
+        ew(30, "3", "S4", 20),
+        ew(40, "1", "S1", 30),
+        del(50, "pi_50", ["S4"]),
+        take(60, [21], "f2", 21),
+        cancel(70, "pi_50"),
+      ],
+      ALLOWED,
+    ).final;
     expect(ev.fields["f2"]?.[0]?.by?.event).toBe(61);
   });
 
@@ -3897,7 +3946,7 @@ describe("a take on existence, a take in a replay, and what covers a take", () =
       ["the deletion cancelled", [cancel(1200, "pi_0")]],
     ];
     for (const [label, tail] of tails) {
-      const ev = evaluateLog(STATE, [...awaitingTaken, ...tail]).final;
+      const ev = evaluateLog(STATE, [...awaitingTaken, ...tail], ALLOWED).final;
       expect(tl(ev), label).toEqual(['[10-01, 11-05) "3"', '[11-05, inf) "2"']);
       expect(items(ev, 1101), label).toEqual(['f2/0 applied [11-05, inf) "2" carried #61/f2/0']);
     }
@@ -4152,7 +4201,7 @@ describe("a take on existence, a take in a replay, and what covers a take", () =
   // written. Confirming #21 carries out f2; deleting SB puts f3 in effect at the confirmation;
   // the undo takes back f3 too, whether it comes after the deletion or before.
   it("#82 an undo of a confirmation lists every target of the confirmed write", () => {
-    const run = evaluateLog(STATE, [...confirmedThenFreed("confirm"), undo(50, 30)]);
+    const run = evaluateLog(STATE, [...confirmedThenFreed("confirm"), undo(50, 30)], ALLOWED);
     expect(run.final.reverts.at(-1)?.record).toEqual([
       { event: 31, target: "f2" },
       { event: 31, target: "f3" },
@@ -4762,5 +4811,97 @@ describe("保持已被取代 ②: a write's change judged as it was when written
         ]).final,
       ),
     ).toEqual(onlyB);
+  });
+});
+
+// The first version (03-deletion «撤回与宽限期»; 04-contract `resolve` step 3 and `undo`): in a
+// deletion's grace period, no decision and no `undo` on a row the pending deletion affects, refused
+// as `invalid_argument` (`pending_deletion_target`) with the pending deletions touching it, and
+// nothing appended. On a row it does not affect, decisions go ahead. After the cancellation a
+// candidate the deletion removed is back in its item, still open: nothing put back, nothing
+// judged again. The cases of the rule set aside for later pass `ALLOWED` above.
+describe("in the grace period, decisions and undo on the affected row are refused (first version)", () => {
+  // #13 (seen #11) and #15, #17 (seen #11, the version before #13): #15 and #17 candidates of one
+  // item. Deleting s15 removes #15: the row is affected.
+  const candidates: LogEntry[] = [
+    put(10, 11, "9", ["s11"], "10-01", "open"),
+    put(12, 13, "9.5", ["s13"], "10-01", "open", { seen: 10 }),
+    put(14, 15, "9", ["s15"], "10-01", "open", { seen: 10, explicit: true }),
+    put(16, 17, "8", ["s17"], "10-01", "open", { seen: 10 }),
+  ];
+  const resolve = (decision: string, extra: object = {}): LogEntry =>
+    ({
+      kind: "resolve",
+      op: 22,
+      event: 23,
+      decision,
+      candidates: [17],
+      unit: "f2",
+      ...extra,
+    }) as LogEntry;
+  // #13 9.5 over [11-01, 11-05); #15 (seen #13) writes 9 there again, erasing #13's change points
+  // without acknowledging: awaiting (high impact ①). #17 writes 7 over [11-07, 11-09). Deleting s17
+  // removes #17 and leaves #15 awaiting: the row is affected.
+  const awaiting: LogEntry[] = [
+    put(10, 11, "9", ["s11"], "10-01", "open"),
+    put(12, 13, "9.5", ["s13"], "11-01", "11-05", { seen: 10, acknowledge: ["overwrite"] }),
+    put(14, 15, "9", ["s15"], "11-01", "11-05", { seen: 12 }),
+    put(16, 17, "7", ["s17"], "11-07", "11-09", { seen: 14, acknowledge: ["overwrite"] }),
+  ];
+  const cases: [string, LogEntry[], string[], LogEntry][] = [
+    ["keep_effective", candidates, ["s15"], resolve("keep_effective")],
+    ["take_previous", candidates, ["s15"], resolve("take_previous")],
+    ["take_candidate", candidates, ["s15"], resolve("take_candidate", { take: 17 })],
+    ["confirm", awaiting, ["s17"], { kind: "confirm", op: 22, event: 23, target: 15 }],
+    ["reject", awaiting, ["s17"], { kind: "reject", op: 22, event: 23, target: 15 }],
+    ["undo", candidates, ["s15"], { kind: "undo", op: 22, event: 23, target: 12 }],
+  ];
+  it.each(cases)("%s: refused, the pending deletion named", (_, head, sources, decision) => {
+    // The decision is valid on the state after the deletion: refused for the row, not for itself.
+    const after = evaluateLog(STATE, [...head, del(20, "d", sources)]).final;
+    if (decision.kind === "confirm" || decision.kind === "reject") {
+      expect(items(after, 15).some((x) => x.includes(" awaiting "))).toBe(true);
+    }
+    const run = evaluateLog(STATE, [...head, del(20, "d", sources), decision]);
+    const step = run.steps.at(-1);
+    expect({ refused: step?.refused, by: step?.pendingDeletionTarget }).toEqual({
+      refused: true,
+      by: ["d"],
+    });
+    // Nothing appended: the state is the one after the deletion.
+    expect(stateWithoutIndices(run.final)).toEqual(
+      stateWithoutIndices(evaluateLog(STATE, [...head, del(20, "d", sources)]).final),
+    );
+  });
+  it.each(cases)(
+    '%s: the same with `graceDecisions: "allowed"` goes ahead',
+    (_, head, sources, decision) => {
+      const step = evaluateLog(STATE, [...head, del(20, "d", sources), decision], ALLOWED).steps.at(
+        -1,
+      );
+      expect(step?.refused).toBe(false);
+    },
+  );
+  it("on a row the pending deletion does not affect, a decision goes ahead", () => {
+    // s99 is cited nowhere on this row: the two replays are the same.
+    const run = evaluateLog(STATE, [
+      ...candidates,
+      del(20, "d", ["s99"]),
+      resolve("keep_effective"),
+    ]);
+    expect(run.steps.at(-1)?.refused).toBe(false);
+    expect(run.steps.at(-1)?.decided).toEqual(["17/f2"]);
+  });
+  it("cancelled: the candidate the deletion removed is back in its open item, nothing put back", () => {
+    const run = evaluateLog(STATE, [
+      ...candidates,
+      del(20, "d", ["s15"]),
+      resolve("keep_effective"),
+      cancel(24, "d"),
+    ]);
+    expect(run.steps.at(-1)?.putBack ?? []).toEqual([]);
+    expect(stateWithoutIndices(run.final)).toEqual(
+      stateWithoutIndices(evaluateLog(STATE, candidates).final),
+    );
   });
 });
