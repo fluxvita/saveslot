@@ -11,6 +11,7 @@
 // memory; the middle one is the history target. Then measure.ts at --point, each step with a
 // start and an end line. The data directory is kept.
 
+import type { QueryReadResult } from "@fluxvita/saveslot-kernel";
 import { loadRsql } from "../../packages/kernel/src/rules/index.ts";
 import { arg } from "../lib/util.ts";
 import { backend, Clock, type Home, op } from "./lib.ts";
@@ -32,7 +33,9 @@ const store = await step("open", () => backend.open({ kind: "pglite", dir }, {})
 await loadRsql();
 const found = await step("read_store_state", () =>
   store.read(async (tx) => {
-    const meta = await tx.query<{ value: string }>(`SELECT value FROM meta WHERE key = 'tenant_id'`);
+    const meta = await tx.query<{ value: string }>(
+      `SELECT value FROM meta WHERE key = 'tenant_id'`,
+    );
     const head = await tx.query<{ actor: string; at: string }>(
       `SELECT actor, header::json->>'at' AS at FROM events ORDER BY seq DESC LIMIT 1`,
     );
@@ -68,9 +71,9 @@ await step("rebuild_sample", async () => {
         { field: "day", op: "=", value: dayOf("2016-01-01", Math.floor(i / 1440)) },
         { field: "minute", op: "=", value: String(i % 1440) },
       ],
-    })) as { rows: { row: string; ver: string }[] };
+    })) as QueryReadResult;
     const x = r.rows[0];
-    if (x === undefined) throw new Error(`row ${i} not found`);
+    if (x?.row === undefined || x.ver === undefined) throw new Error(`row ${i} not found`);
     shape.sampled(x.row, x.ver);
   }
 });
