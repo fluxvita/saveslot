@@ -473,9 +473,16 @@ async function actorsOfOps(tx: ReadTx, ops: readonly number[]): Promise<Map<numb
  * The row behind the item as of operation `op`, limited to its spans and unit (./item-state.ts):
  * state tables by piece, each with the write that gave it; event and timeless tables whole.
  */
-async function sideOf(tx: ReadTx, e: ItemEntries, n: N, table: Table, op: number) {
+async function sideOf(
+  tx: ReadTx,
+  e: ItemEntries,
+  n: N,
+  table: Table,
+  op: number,
+  o: { readonly withheld?: boolean } = {},
+) {
   const t = table as CompiledBaseTable;
-  const cells = await rowCellsAsOf(tx, t, e.row as string, op);
+  const cells = await rowCellsAsOf(tx, t, e.row as string, op, o);
   if (n.isState) {
     const pieces = piecesOver(t, cells, e.scope, e.unit);
     const who = await actorsOfOps(
@@ -576,18 +583,28 @@ async function conflictOf(tx: ReadTx, e: ItemEntries, n: N, table: Table, versio
   if (e.mergeBase === undefined) {
     throw new ReadError("internal", "a conflict item without a merge base");
   }
-  const base = await sideOf(tx, e, n, table, e.mergeBase);
+  // The merge base is a past operation: its cells as recorded then, less what a deletion still
+  // pending removed (03-data-model/03-deletion «版本表»): such a field is left out of the values
+  // and `previous` is marked. Not the state at that place in the replay, which `take_previous`
+  // writes back: with the mark, the two may differ.
+  const base = await sideOf(tx, e, n, table, e.mergeBase, { withheld: true });
+  const partial =
+    base.kind === "state"
+      ? base.pieces.some((p) => p.withheld === true)
+      : base.row.withheld === true;
   const previous =
     base.kind === "state"
       ? {
           seq: e.mergeBase,
           exists: base.pieces.some((p) => p.values !== null),
           spans: base.pieces.map((p) => pieceOut(n, p)),
+          ...(partial ? { partially_deleted: true as const } : {}),
         }
       : {
           seq: e.mergeBase,
           exists: base.row.exists,
           ...(base.row.values !== undefined ? { values: valuesOut(base.row.values) } : {}),
+          ...(partial ? { partially_deleted: true as const } : {}),
         };
   return {
     effective,

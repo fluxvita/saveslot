@@ -1415,6 +1415,16 @@ function openFor(opened: unknown, now: Date): Part[] {
 }
 
 /**
+ * A merge base part of which a deletion has since removed (04-contract-types
+ * `ConflictDetail.previous.partially_deleted`): the missing values are not "no value then", and
+ * take_previous writes back what is there after the deletion.
+ */
+const previousDeleted = (x: R): Part[] =>
+  x["partially_deleted"] === true
+    ? t`; part of it has since been deleted and is left out, and take_previous writes back what is there after the deletion`
+    : [];
+
+/**
  * A side of an item (its effective side, the merge base, an awaiting item's current values): a
  * state table's by stretch, each with the write that gave it when the stretch says so; other
  * tables' by field. `no value` for a stretch without one: on a state table a stretch without a value
@@ -1469,7 +1479,7 @@ function conflictChoices(r: R): Line[] {
       }
     } else if (d === "take_previous") {
       out.push(
-        t`    take_previous: go back to the value at ${op(prev["seq"])} (${sideOf(prev)})${undoes}`,
+        t`    take_previous: go back to the value at ${op(prev["seq"])} (${sideOf(prev)}${previousDeleted(prev)})${undoes}`,
       );
     } else out.push(t`    ${codeIn(d, DECISIONS)}`);
   }
@@ -1622,7 +1632,7 @@ function pending(r: R, now: Date): Line[] {
     }
     if (isObj(r["previous"])) {
       const p = r["previous"];
-      out.push(t`  Before (${op(p["seq"])}): ${sideOf(p)}`);
+      out.push(t`  Before (${op(p["seq"])}): ${sideOf(p)}${previousDeleted(p)}`);
     }
     const reverted = arr(r["reverted_by_previous"]);
     if (reverted.length > 0) {

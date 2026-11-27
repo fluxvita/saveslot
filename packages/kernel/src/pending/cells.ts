@@ -12,6 +12,7 @@
 import type { CompiledBaseTable, FieldId } from "@fluxvita/saveslot-contract-core";
 import { INSTANT_TEXT, physical, selectOf } from "../store/layout.ts";
 import type { ReadTx } from "../store/ports.ts";
+import { cellWithheld, withholdingIn } from "../store/readable-content.ts";
 import type { Span } from "./detail.ts";
 
 /** A cell of one row or entity: field, business interval, revoke, its contribution, raw values. */
@@ -27,6 +28,8 @@ export type RowCell = {
   readonly src_event: unknown;
   readonly src_field: string | null;
   readonly src_k: number | null;
+  /** Only when asked for (`withheld`): its value a deletion removed (`cellWithheld`). */
+  readonly withheld?: boolean;
 } & Readonly<Record<string, unknown>>;
 
 /**
@@ -39,6 +42,8 @@ export async function rowCellsAt(
   t: CompiledBaseTable,
   id: string,
   op: number,
+  /** Read whether each cell's value a deletion removed (`cellWithheld`): for a past operation. */
+  o: { readonly withheld?: boolean } = {},
 ): Promise<RowCell[]> {
   const { versions } = physical(t);
   const state = t.time.type === "state";
@@ -54,7 +59,7 @@ export async function rowCellsAt(
   const r = await tx.query<RowCell>(
     `SELECT v.field_id, ${interval}, v.revoked, v.no_value, v.src_event, v.src_field, v.src_k,
        (SELECT e.op FROM events e WHERE e.seq = v.src_event) AS src_op,
-       ${cols.join(", ")} FROM ${versions} v
+       ${o.withheld === true ? `${cellWithheld("v", await withholdingIn(tx))} AS withheld, ` : ""}${cols.join(", ")} FROM ${versions} v
      WHERE v.row_id = $1 AND v.rec_from <= $2 AND (v.rec_to IS NULL OR v.rec_to > $2)`,
     [id, op],
   );

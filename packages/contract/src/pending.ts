@@ -227,8 +227,18 @@ export interface ConflictDetail extends ItemBase {
   candidates: Candidate[];
   /** Reason `restored_candidate`: the item the candidate came from. */
   related_item?: ItemId;
-  /** What `take_previous` returns to: the merge base. */
-  previous: { seq: Seq; exists: boolean; values?: Values; spans?: Span[] };
+  /**
+   * The row at the merge base, as recorded then. `partially_deleted`: a value there a deletion
+   * still pending removed is left out (not null); `take_previous` writes back the state at that
+   * place after the deletion, which may differ.
+   */
+  previous: {
+    seq: Seq;
+    exists: boolean;
+    values?: Values;
+    spans?: Span[];
+    partially_deleted?: true;
+  };
   /**
    * The writes after the merge base whose result a reader would see change if `take_previous` were
    * decided now, by the rule `AwaitingImpact.reverted` follows (03-data-model/04-write-and-read

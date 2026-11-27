@@ -1119,8 +1119,10 @@ interface ConflictDetail extends ItemBase {
   candidates: Candidate[];
   /** 成因是 restored_candidate 时：候选原来所在的那个事项。@later */
   related_item?: ItemId;
-  /** take_previous 会回到的样子：合并基（各候选所带 ver 中最早的那个版本）上的值，按合并基的操作号读这一行，范围同 effective。 */
-  previous: { seq: Seq; exists: boolean; values?: Values; spans?: Span[] };
+  /** take_previous 会回到的样子：合并基（各候选所带 ver 中最早的那个版本）上的值，按合并基的操作号读这一行，范围同 effective。
+   *  partially_deleted：合并基那一刻有值出自仍待执行的删除去掉的贡献，那些字段不出现在 values（或各段的 values）里，不写成 null；
+   *  这里是合并基那一刻记下的样子去掉被删内容，不是重放之后的样子，take_previous 写回的是重放里那个位置上的状态，两者可以不同（data-model「删除」的「版本表」）。 */
+  previous: { seq: Seq; exists: boolean; values?: Values; spans?: Span[]; partially_deleted?: true };
   /** take_previous 会回掉的写入：合并基之后在这个冲突单元上生效过的全部写入；以及单元外、合并基之后在事项区间里给出值、
    *  会随 take_previous 让这一段回到无值而失去值的写入（合并基处这一段是无值时，见「时间 · 高影响写入」④ 的第三种成因）。 */
   reverted_by_previous: Array<{ seq: Seq; actor: Actor; fields: Array<FieldName | "*"> }>;   // 此刻回到合并基会让读到的结果变的、晚于合并基的写入；口径同 AwaitingImpact.reverted（write-and-read「撤回某次写入」按读得到的结果判那一条），同形

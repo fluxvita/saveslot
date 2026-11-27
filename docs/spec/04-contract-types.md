@@ -1117,8 +1117,10 @@ interface ConflictDetail extends ItemBase {
   candidates: Candidate[];
   /** When the cause is restored_candidate: the item the candidate was originally in. @later */
   related_item?: ItemId;
-  /** What take_previous would go back to: the values at the merge base (the earliest of the ver values the candidates carry), this row read at the operation number of the merge base, with the same range as effective. */
-  previous: { seq: Seq; exists: boolean; values?: Values; spans?: Span[] };
+  /** What take_previous would go back to: the values at the merge base (the earliest of the ver values the candidates carry), this row read at the operation number of the merge base, with the same range as effective.
+   *  partially_deleted: a value at the merge base came from a contribution a deletion still pending removed; those fields are not in values (or in each span's values), and are not written as null.
+   *  This is the merge base as recorded then less the deleted content, not the state after the replay; take_previous writes back the state at that place in the replay, and the two may differ (data-model "Deletion", "Version table"). */
+  previous: { seq: Seq; exists: boolean; values?: Values; spans?: Span[]; partially_deleted?: true };
   /** The writes that take_previous would revert: all writes that took effect on this conflict unit after the merge base; and the writes outside the unit that gave a value within the item's interval after the merge base
    *  and would lose their value when take_previous returns this segment to having no value (when this segment has no value at the merge base, see cause three of ④ in "Time · High-impact writes"). */
   reverted_by_previous: Array<{ seq: Seq; actor: Actor; fields: Array<FieldName | "*"> }>;   // writes later than the merge base whose result as read would change if the row went back to the merge base now; the same basis as AwaitingImpact.reverted (write-and-read, "Undoing a write" judges that one by the result that can be read), and the same shape

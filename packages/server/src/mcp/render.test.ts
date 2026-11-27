@@ -483,6 +483,23 @@ describe("what 05 §6 asks for", () => {
     );
   });
 
+  it("pending: a merge base part of which a deletion removed says so, at Before and at take_previous", () => {
+    const s = sample("pending_detail");
+    const prev = s.result["previous"] as R;
+    const plain = renderResult(s.tool, s.result);
+    expect(plain).not.toContain("has since been deleted");
+    const d = renderResult(s.tool, {
+      ...s.result,
+      previous: { ...prev, values: {}, partially_deleted: true },
+    });
+    const note =
+      "part of it has since been deleted and is left out, and take_previous writes back what is there after the deletion";
+    expect(d).toMatch(new RegExp(`\\n  Before \\(#7\\): [^\\n]*${note}`));
+    expect(d).toMatch(
+      new RegExp(`\\n    take_previous: go back to the value at #7 \\([^\\n]*${note}`),
+    );
+  });
+
   it("pending: a resolved item says which candidate was taken, by the index it is listed with", () => {
     const s = sample("pending_detail");
     const resolved = (resolution: R) =>
