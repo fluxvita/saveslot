@@ -45,6 +45,7 @@ import {
   testBackend,
 } from "../../test-backend/src/index.fixture.ts";
 import { secondConnection } from "../../test-backend/src/second-connection.fixture.ts";
+import { SAMPLE_SLOT } from "./format-sample.fixture.ts";
 import {
   cellBackend,
   cellDiscarder,
@@ -2630,6 +2631,454 @@ describe.skipIf(TEST_BACKEND !== "postgres")("runServer: a tenant's connection g
         ).toBe(true);
       } finally {
         await s.close();
+      }
+    },
+    T,
+  );
+});
+
+// A tenant's connection gone under a use (02-architecture §7 «连接»): the store learns it only when
+// the socket's end comes in, so a use can be lent it in between and meet it at its first statement.
+// The wrapping backend holds that moment: its stores report usable until they have failed once.
+// Certainly not committed (`connection_lost`): unavailable (busy), and a read-only operation is run
+// once more on the tenant opened again. Maybe committed (`commit_unknown`): internal, as before.
+describe.skipIf(TEST_BACKEND !== "postgres")("runServer: a use meets its connection gone", () => {
+  const pg = testPostgres(cellFromEnv());
+  const lost = (code: "connection_lost" | "commit_unknown") =>
+    Object.assign(new Error("the connection is gone"), { code });
+
+  /**
+   * A server on PostgreSQL whose tenant stores are wrapped: `usable` stays true until a store has
+   * failed once (the moment before the socket's end comes in); `failNext` makes the next store
+   * transaction fail as given (`connection_lost` before it runs; `commit_unknown` after it
+   * committed), `failEveryOpened` makes every store opened from then on fail its first one.
+   */
+  async function lostServer() {
+    const name = pg.name();
+    const db = await openControlDatabase(pg.cell, name, { create: true });
+    const cp = await initControlPlane(db);
+    await initOAuthTables(db);
+    const accounts = await initLocalAccounts(db);
+    const real = new PostgresBackend({ cells: { [CELL]: pg.cell } });
+    const named = new Map<string, string>();
+    const runs = (database: string) => {
+      let n = named.get(database);
+      if (n === undefined) {
+        n = pg.name();
+        named.set(database, n);
+      }
+      return n;
+    };
+    const k = {
+      opened: 0,
+      failNext: undefined as "connection_lost" | "commit_unknown" | undefined,
+      /** Only a write transaction takes `failNext`: the request's reads (its authentication) pass. */
+      writesOnly: false,
+      /** Transactions let through before `failNext` is taken (a request's authentication). */
+      passFirst: 0,
+      /** `failNext` set to `connection_lost` once a write transaction has committed. */
+      afterWrite: false,
+      /** Only a read transaction takes `failNext`. */
+      readsOnly: false,
+      failEveryOpened: false,
+    };
+    type Store = Awaited<ReturnType<TenantPoolOptions["backend"]["open"]>>;
+    const wrap = (store: Store): Store => {
+      let failed = false;
+      let failFirst = k.failEveryOpened;
+      const run = async <T>(go: () => Promise<T>, write: boolean): Promise<T> => {
+        // Failed is final, as the store's own failed state is: every call after it refused.
+        if (failed) throw lost("connection_lost");
+        let armed = k.failNext !== undefined && (write ? !k.readsOnly : !k.writesOnly);
+        if (armed && k.passFirst > 0) {
+          k.passFirst--;
+          armed = false;
+        }
+        if (failFirst || (armed && k.failNext === "connection_lost")) {
+          failFirst = false;
+          k.failNext = undefined;
+          failed = true;
+          throw lost("connection_lost");
+        }
+        try {
+          const r = await go();
+          if (write && k.afterWrite) {
+            k.afterWrite = false;
+            k.readsOnly = true;
+            k.failNext = "connection_lost";
+          }
+          if (armed && k.failNext === "commit_unknown") {
+            k.failNext = undefined;
+            failed = true;
+            throw lost("commit_unknown");
+          }
+          return r;
+        } catch (e) {
+          failed = true;
+          throw e;
+        }
+      };
+      return {
+        write: (fn) => run(() => store.write(fn), true),
+        read: (fn) => run(() => store.read(fn), false),
+        purgeResidue: () => store.purgeResidue(),
+        snapshot: () => store.snapshot(),
+        formatVersion: store.formatVersion,
+        ...(store.enforcesStatementTimeout !== undefined
+          ? { enforcesStatementTimeout: store.enforcesStatementTimeout }
+          : {}),
+        close: () => store.close(),
+        // Not the store's own: true until it has failed once, as before the socket's end comes in.
+        get usable() {
+          return !failed;
+        },
+      };
+    };
+    const backend: TenantPoolOptions["backend"] = {
+      open: async (ref, opts) => {
+        if (ref.kind !== "postgres") throw new Error("a server tenant's storage is a database");
+        const store = await real.open({ ...ref, database: runs(ref.database) }, opts);
+        k.opened++;
+        return wrap(store);
+      },
+    };
+    const { user } = await addLocalUser(accounts, {
+      control: cp,
+      backend,
+      name: "quinn",
+      password: "correct horse battery",
+      cell: CELL,
+      cells: new Set([CELL]),
+      now: NOW,
+    });
+    const token = await db.write((tx) =>
+      writeUserSession(tx, user, { expiresAt: "2099-01-01T00:00:00.000Z" }),
+    );
+    const tenantDb = runs(databaseOf((await cp.tenantOf(user))?.id as TenantId));
+    const cfg = config();
+    await CursorKeys.createFile(cfg.handleKeyFile);
+    const warned: string[] = [];
+    const s = await runServer({
+      config: cfg,
+      version: "0.0.0-test",
+      openControl: async () => db,
+      backend,
+      now: () => NOW,
+      warn: (event, fields) => warned.push(`${event} ${JSON.stringify(fields)}`),
+    });
+    const auth = { authorization: `Bearer ${token}` };
+    /** Ends the tenant's connection from outside. */
+    const terminate = async () => {
+      await pg.admin(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()",
+        [tenantDb],
+      );
+    };
+    const json = (method: string, path: string, body: unknown, more: Record<string, string> = {}) =>
+      send(s, {
+        method,
+        path,
+        headers: { ...auth, "content-type": "application/json", ...more },
+        body: JSON.stringify(body),
+      });
+    const reopened = () => warned.filter((w) => w.startsWith("tenant_reopened")).length;
+    /** The connections met gone, as logged: one line each, whether the call then succeeded. */
+    const lostLines = () => warned.filter((w) => w.startsWith("tenant_connection_lost"));
+    /** An MCP POST of `body` as it is: one message, or an array of them. */
+    const mcpBody = (body: unknown) =>
+      send(s, {
+        method: "POST",
+        path: "/mcp",
+        headers: {
+          ...auth,
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          "mcp-protocol-version": "2025-11-25",
+        },
+        body: JSON.stringify(body),
+      });
+    return { s, k, auth, warned, terminate, json, reopened, lostLines, mcpBody };
+  }
+
+  const INSERT = {
+    sv: 1,
+    ops: [
+      {
+        intent: "insert",
+        table: "household.expenses",
+        set: { date: "2026-11-02", amount: 45, note: "lunch" },
+      },
+    ],
+  };
+  const rows = async (x: Awaited<ReturnType<typeof lostServer>>) => {
+    const r = await x.json("POST", "/v1/query", { table: "household.expenses" });
+    expect(r.status).toBe(200);
+    return (JSON.parse(r.body) as { rows: unknown[] }).rows.length;
+  };
+
+  it(
+    "a read whose connection was ended a moment before: answered, the tenant opened again once",
+    async () => {
+      const x = await lostServer();
+      try {
+        expect((await send(x.s, { path: "/v1/slots", headers: x.auth })).status).toBe(200);
+        const opened = x.k.opened;
+        // Ended from outside; the store does not know it yet when the next request is lent it.
+        await x.terminate();
+        const after = await send(x.s, { path: "/v1/slots", headers: x.auth });
+        expect([after.status, after.body.slice(0, 200)]).toEqual([200, expect.any(String)]);
+        expect(x.k.opened).toBe(opened + 1);
+        expect(x.reopened()).toBe(1);
+        expect(x.lostLines()).toEqual([
+          expect.stringMatching(/"tenant":"tn_.*"code":"connection_lost"/),
+        ]);
+        expect(x.warned.some((w) => w.startsWith("internal"))).toBe(false);
+      } finally {
+        await x.s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "a read whose operation meets it, its authentication done: run once more, answered",
+    async () => {
+      const x = await lostServer();
+      try {
+        expect((await send(x.s, { path: "/v1/slots", headers: x.auth })).status).toBe(200);
+        const opened = x.k.opened;
+        x.k.passFirst = 1;
+        x.k.failNext = "connection_lost";
+        const after = await send(x.s, { path: "/v1/slots", headers: x.auth });
+        expect([after.status, after.body.slice(0, 200)]).toEqual([200, expect.any(String)]);
+        expect(x.k.opened).toBe(opened + 1);
+        expect(x.reopened()).toBe(1);
+        expect(x.lostLines()).toHaveLength(1);
+      } finally {
+        await x.s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "a write that meets it: unavailable (busy) to retry, nothing written; sent again, written once",
+    async () => {
+      const x = await lostServer();
+      try {
+        expect((await x.json("POST", "/v1/drafts", { document: SAMPLE_SLOT })).status).toBe(200);
+        // Met by the write's own transaction (its authentication read before it, as it was).
+        x.k.writesOnly = true;
+        x.k.failNext = "connection_lost";
+        const refused = await x.json("POST", "/v1/writes", INSERT);
+        expect(refused.status).toBe(503);
+        expect(JSON.parse(refused.body)).toMatchObject({
+          error: { code: "unavailable", reason: "busy", retry_after: 1 },
+        });
+        expect(x.lostLines()).toEqual([expect.stringContaining('"code":"connection_lost"')]);
+        expect((await x.json("POST", "/v1/writes", INSERT)).status).toBe(200);
+        expect(await rows(x)).toBe(1);
+      } finally {
+        await x.s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "a write that committed, its answer's reads meeting it: internal, not busy; in the log once",
+    async () => {
+      const x = await lostServer();
+      try {
+        expect((await x.json("POST", "/v1/drafts", { document: SAMPLE_SLOT })).status).toBe(200);
+        // Every read after the write's commit meets it: the notices its answer reads.
+        x.k.afterWrite = true;
+        const r = await x.json("POST", "/v1/writes", INSERT);
+        expect(r.status).toBe(500);
+        expect(JSON.parse(r.body)).toMatchObject({ error: { code: "internal" } });
+        expect(x.lostLines()).toEqual([expect.stringContaining('"after":"effect"')]);
+        expect(await rows(x)).toBe(1);
+      } finally {
+        await x.s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "a write whose commit went unanswered: internal, as before; sent again with its key, the receipt given then",
+    async () => {
+      const x = await lostServer();
+      try {
+        expect((await x.json("POST", "/v1/drafts", { document: SAMPLE_SLOT })).status).toBe(200);
+        const key = { "idempotency-key": "lunch-2026-11-02" };
+        // Committed, and the answer lost on the way back.
+        x.k.writesOnly = true;
+        x.k.failNext = "commit_unknown";
+        const unknown = await x.json("POST", "/v1/writes", INSERT, key);
+        expect(unknown.status).toBe(500);
+        expect(JSON.parse(unknown.body)).toMatchObject({ error: { code: "internal" } });
+        expect(x.lostLines()).toEqual([expect.stringContaining('"code":"commit_unknown"')]);
+        const again = await x.json("POST", "/v1/writes", INSERT, key);
+        expect(again.status).toBe(200);
+        expect(await rows(x)).toBe(1);
+      } finally {
+        await x.s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "a read whose second try meets it too: unavailable (busy), and no third",
+    async () => {
+      const x = await lostServer();
+      try {
+        expect((await send(x.s, { path: "/v1/slots", headers: x.auth })).status).toBe(200);
+        const opened = x.k.opened;
+        x.k.failNext = "connection_lost";
+        x.k.failEveryOpened = true;
+        const after = await send(x.s, { path: "/v1/slots", headers: x.auth });
+        expect(after.status).toBe(503);
+        expect(JSON.parse(after.body)).toMatchObject({
+          error: { code: "unavailable", reason: "busy", retry_after: 1 },
+        });
+        expect(x.k.opened).toBe(opened + 1);
+        // Met twice, told twice.
+        expect(x.lostLines()).toHaveLength(2);
+      } finally {
+        await x.s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "an MCP tool whose operation meets it: the request made once more, answered",
+    async () => {
+      const x = await lostServer();
+      const mcp = (method: string, params: unknown, id: number) =>
+        send(x.s, {
+          method: "POST",
+          path: "/mcp",
+          headers: {
+            ...x.auth,
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+            "mcp-protocol-version": "2025-11-25",
+          },
+          body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+        });
+      try {
+        expect((await send(x.s, { path: "/v1/slots", headers: x.auth })).status).toBe(200);
+        const opened = x.k.opened;
+        x.k.passFirst = 1;
+        x.k.failNext = "connection_lost";
+        const r = await mcp("tools/call", { name: "saveslot_catalog", arguments: {} }, 2);
+        expect(r.status).toBe(200);
+        expect(r.body).not.toContain('"isError":true');
+        expect(x.k.opened).toBe(opened + 1);
+        expect(x.lostLines()).toHaveLength(1);
+      } finally {
+        await x.s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "an MCP request of a write and a read, meeting it after the write committed: not made again; the write once, answered by its first run",
+    async () => {
+      const x = await lostServer();
+      try {
+        expect((await x.json("POST", "/v1/drafts", { document: SAMPLE_SLOT })).status).toBe(200);
+        const opened = x.k.opened;
+        x.k.afterWrite = true;
+        const r = await x.mcpBody([
+          {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: { name: "saveslot_write", arguments: INSERT },
+          },
+          {
+            jsonrpc: "2.0",
+            id: 2,
+            method: "tools/call",
+            params: { name: "saveslot_catalog", arguments: {} },
+          },
+        ]);
+        const said = `${r.status} ${r.body}`;
+        // Not made once more: the tenant not opened again within the request, the write in the
+        // log once. Met twice (the write's answer, after it committed; the read), told twice.
+        expect(x.k.opened).toBe(opened);
+        expect(await rows(x)).toBe(1);
+        expect(x.lostLines()).toHaveLength(2);
+        // Answered by its first and only run: the write internal (it took effect, its answer was
+        // not made), the read busy.
+        expect(r.status).toBe(200);
+        const answers = said
+          .split("\n")
+          .filter((l) => l.startsWith("data:"))
+          .map(
+            (l) =>
+              JSON.parse(l.slice(5)) as {
+                id: number;
+                result: { isError?: boolean; content: { text: string }[] };
+              },
+          );
+        const byId = new Map(answers.map((a) => [a.id, a.result]));
+        expect(byId.get(1)?.isError).toBe(true);
+        expect(byId.get(1)?.content[0]?.text).toContain("internal");
+        expect(byId.get(2)?.isError).toBe(true);
+        expect(byId.get(2)?.content[0]?.text).toContain("busy");
+      } finally {
+        await x.s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "an MCP read that meets it: answered, not an error, the tenant opened again once",
+    async () => {
+      const x = await lostServer();
+      const mcp = (method: string, params: unknown, id: number) =>
+        send(x.s, {
+          method: "POST",
+          path: "/mcp",
+          headers: {
+            ...x.auth,
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+            "mcp-protocol-version": "2025-11-25",
+          },
+          body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+        });
+      try {
+        expect(
+          (
+            await mcp(
+              "initialize",
+              {
+                protocolVersion: "2025-11-25",
+                capabilities: {},
+                clientInfo: { name: "example-host", version: "1" },
+              },
+              1,
+            )
+          ).status,
+        ).toBe(200);
+        expect((await send(x.s, { path: "/v1/slots", headers: x.auth })).status).toBe(200);
+        const opened = x.k.opened;
+        await x.terminate();
+        const r = await mcp("tools/call", { name: "saveslot_catalog", arguments: {} }, 2);
+        expect(r.status).toBe(200);
+        expect(r.body).not.toContain('"isError":true');
+        expect(x.k.opened).toBe(opened + 1);
+        expect(x.lostLines()).toHaveLength(1);
+      } finally {
+        await x.s.close();
       }
     },
     T,

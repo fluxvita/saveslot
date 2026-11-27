@@ -13,6 +13,7 @@
 // then have to reach it in every process.
 
 import { type AuthFailure, type Principal, principalFromRow, principalRow } from "./auth.ts";
+import { LostConnectionOf, lostConnectionOf } from "./contract-error.ts";
 import type { ControlPlane, CredentialEntry, TenantEntry, TenantId } from "./control-plane.ts";
 import type { IdentityProvider } from "./identity.ts";
 import { isInstant } from "./server-control-plane.ts";
@@ -85,19 +86,25 @@ export async function authenticateServer(o: {
   if (state !== "active") return { code: "unauthenticated", reason: "invalid" };
   // Held inside this use, so that it is never idle between this use and the operation's.
   let release: (() => void) | undefined;
-  const principal = await o.pool.use(
-    entry.tenant,
-    async (t) => {
-      const p = principalFromRow(
-        entry.kind,
-        entry.principal,
-        await principalRow(t.store, entry.principal),
-      );
-      if ("kind" in p) release = o.pool.hold(entry.tenant);
-      return p;
-    },
-    tenant !== undefined ? { entry: tenant } : {},
-  );
+  const principal = await o.pool
+    .use(
+      entry.tenant,
+      async (t) => {
+        const p = principalFromRow(
+          entry.kind,
+          entry.principal,
+          await principalRow(t.store, entry.principal),
+        );
+        if ("kind" in p) release = o.pool.hold(entry.tenant);
+        return p;
+      },
+      tenant !== undefined ? { entry: tenant } : {},
+    )
+    .catch((e: unknown) => {
+      // Its tenant's connection gone: said with the tenant, for the log (server-callers.ts).
+      if (lostConnectionOf(e) === undefined) throw e;
+      throw new LostConnectionOf(entry.tenant, e);
+    });
   return "kind" in principal && release !== undefined
     ? {
         tenant: entry.tenant,

@@ -22,6 +22,11 @@ export interface ServedTenant {
   readonly store: TenantStore;
   /** `connections.issue` and `connections.revoke`, as the mode keeps the tokens' hashes. */
   readonly connections: ConnectionIssuer;
+  /**
+   * The server mode's first lending of a request's tenant: a read-only operation that meets the
+   * connection gone throws `RetryOnLostConnection`, and the use lends it once more (opened again).
+   */
+  readonly retryOnLost?: boolean;
 }
 
 export interface ConnectionIssuer {
