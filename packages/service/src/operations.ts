@@ -268,6 +268,17 @@ async function checkDecisionScope(o: {
 }
 
 /** Runs `call` as `operation`; resolves with the contract result, rejects with a ContractError. */
+/** The operations that append to the log: each says what it did (log/effect.ts) when it succeeds. */
+export const APPENDING_OPERATIONS: ReadonlySet<Operation> = new Set<Operation>([
+  "write",
+  "resolve",
+  "schema_draft",
+  "connections.issue",
+  "connections.update",
+  "connections.revoke",
+  "slots.remove",
+]);
+
 /**
  * The operations that only read: run once more on the tenant opened again when they meet its
  * connection gone with nothing given yet (02-architecture §7 «连接»). No operation that appends to
@@ -439,6 +450,11 @@ export async function runOperation(o: {
       ctx.now,
     );
     if (effect !== undefined) o.onEffect?.(effect);
+    // An operation that appends always says what it did (02-architecture §9 «调用记录»): a success
+    // with no effect is a defect, told so it is seen, not guessed at in the record.
+    else if (APPENDING_OPERATIONS.has(o.operation)) {
+      o.warn("call_effect_missing", { operation: o.operation });
+    }
     return answer;
   } catch (e) {
     if (e instanceof NothingKept) {

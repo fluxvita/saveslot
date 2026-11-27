@@ -823,7 +823,7 @@ interface AnchorStore {
 | `effect` | 会追加事件的操作（`write`、`resolve`、`schema_draft`、`connections.issue` / `update` / `revoke`、`slots.remove`）成功时有：这次调用在租户日志里追加了头事件是 `appended`；是重发、回放了原结果是 `replayed`；什么都没追加是 `none` |
 | `status` | `write` 与 `resolve` 触发的写入：`saved` / `pending` |
 | `seq` | `effect` 是 `appended` 时追加的操作号，`replayed` 时原来那次的操作号 |
-| `restores` | 有 `seq` 时，租户的恢复次数 |
+| `restores` | 有 `seq` 时，那次操作当时租户的恢复次数：`appended` 是现在的，`replayed` 是原来那次追加时的（所以恢复之前发过的请求在恢复之后重发，去重键不变） |
 | `complete` | 只在流式应答的操作（导出）上：流正常结束 `true`，中途断开 `false` |
 
 记录里没有凭证，没有请求体与应答体里的任何内容，没有 slot、表、字段的名字与 ID，没有连接实例的名字、账户名、外部登录的账户标识，没有任务标识与幂等键（也没有由它们算出的东西），没有错误附带的 `param` 一类指向用户所起名字的项，没有查询条件与来源地址。不读 `User-Agent`。

@@ -27,12 +27,13 @@ export function connectionSource(via: string | null, client: string | null): Cal
   if (client === CLI_CLIENT_ID || client === CONSOLE_CLIENT_ID) {
     return { via: "oauth", registration: "builtin", client };
   }
-  // A client document: its ID is an HTTPS URL; the origin is what the authorization vouched for.
+  // A client document: its ID is an HTTPS URL (`clientIdUrl` takes no other); the origin is what
+  // the authorization vouched for.
   // Dynamic registration (RFC 7591) is not in this version: when it is, its client IDs are
   // recognized here (`registration: "dynamic"`, no `client`), by the form that registration gives.
   try {
     const url = new URL(client);
-    if (url.protocol === "https:" || url.protocol === "http:") {
+    if (url.protocol === "https:") {
       return { via: "oauth", registration: "document", client: url.origin };
     }
   } catch {

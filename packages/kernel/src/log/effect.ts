@@ -6,7 +6,7 @@
 // returned, before the service turns that result into the contract's.
 
 import type { ReadTx } from "../store/ports.ts";
-import { restoreCount } from "../store/restore-point.ts";
+import { restoreCount, restorePoint } from "../store/restore-point.ts";
 
 export interface CallEffect {
   /** `appended`: a head event; `replayed`: an earlier result given again; `none`: nothing. */
@@ -50,4 +50,21 @@ export async function restoresOf(store: object, tx: ReadTx): Promise<number> {
 /** Forgets a store's restore count: a restore or an import just appended its event on it. */
 export function forgetRestores(store: object): void {
   restores.delete(store);
+}
+
+/**
+ * Where the paths of an operation hand its effect back to the operation's entry, which notes it on
+ * the result it returns (log/effect.ts): explicitly, not through the identity of an object a path
+ * may copy on the way (a receipt given warnings is a new object).
+ */
+export interface EffectSlot {
+  effect?: CallEffect;
+}
+
+/**
+ * The restore count in force when operation `op` was appended: what a replay of it carries, so
+ * that (restores, seq) names that operation even after a restore since. One read, on replays only.
+ */
+export async function restoresAt(tx: ReadTx, op: number): Promise<number> {
+  return (await restorePoint(tx, { before: op as never })).restoreCount;
 }

@@ -154,7 +154,7 @@ describe("an operation's effect, beside its result", () => {
   );
 
   it(
-    "a write after a restore on the same store: the new restore count, not the one kept from before",
+    "after a restore on the same store: a new write the new restore count; the same request again replayed with the first one's",
     async () => {
       await schemaDraft(s.store, ctx(), { document: DOCUMENT });
       const insert = (note: string) =>
@@ -162,7 +162,8 @@ describe("an operation's effect, beside its result", () => {
           sv: 1,
           ops: [{ table: "expenses", intent: "insert", set: { date: "2026-11-01", note } }],
         });
-      expect(effectOf(await insert("before"))).toMatchObject({ restores: 0 });
+      const before = effectOf(await insert("before"));
+      expect(before).toMatchObject({ effect: "appended", restores: 0 });
       const dir = mkdtempSync(join(tmpdir(), "saveslot-call-effects-anchor-"));
       try {
         const anchor = openFileAnchorStore(join(dir, "anchor.json"));
@@ -171,6 +172,9 @@ describe("an operation's effect, beside its result", () => {
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
+      // The same request again, after the restore: a replay of the first, with its operation and
+      // the restore count in force when it was appended, so (restores, seq) names one operation.
+      expect(effectOf(await insert("before"))).toEqual({ ...before, effect: "replayed" });
       expect(effectOf(await insert("after"))).toMatchObject({
         effect: "appended",
         seq: await lastOp(),

@@ -821,7 +821,7 @@ With them the deployer answers "which tenant, which caller, did what, did it suc
 | `effect` | On success of an operation that appends events (`write`, `resolve`, `schema_draft`, `connections.issue` / `update` / `revoke`, `slots.remove`): `appended` when the call appended a head event to the tenant's log; `replayed` when it was sent again and the original result was given back; `none` when nothing was appended |
 | `status` | For `write` and a write `resolve` triggered: `saved` / `pending` |
 | `seq` | With `effect` `appended`, the operation number appended; with `replayed`, the original one's |
-| `restores` | With `seq`, the tenant's restore count |
+| `restores` | With `seq`, the tenant's restore count at that operation's time: the current one for `appended`, the one in force when the original was appended for `replayed` (so a request from before a restore sent again after it keeps the same dedupe key) |
 | `complete` | Only on a streamed operation (export): `true` when the stream ended normally, `false` when it was cut off |
 
 A record holds no credential, nothing of the request or response bodies, no slot, table or field names or IDs, no connection instance names, account names or external login identifiers, no task identifier or idempotency key (nor anything computed from them), no item of an error such as `param` that points at a name a user gave, no query condition and no source address. `User-Agent` is not read.

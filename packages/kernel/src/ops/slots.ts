@@ -4,7 +4,7 @@
 
 import { isId, type SlotId } from "@fluxvita/saveslot-contract-core";
 import { applyEvents, eventsOf } from "../apply/index.ts";
-import { appendOperation, noteEffect, restoresOf } from "../log/index.ts";
+import { appendOperation, noteEffect, restoresAt, restoresOf } from "../log/index.ts";
 import { RULESET_VERSION } from "../rules/version.ts";
 import type { ReadTx, TenantStore } from "../store/ports.ts";
 import type { OpsContext } from "./context.ts";
@@ -162,7 +162,7 @@ export async function removeSlot(
       return noteEffect(before.result, {
         effect: "replayed",
         seq: before.op,
-        restores: await restoresOf(store, tx),
+        restores: await restoresAt(tx, before.op),
       });
     }
     const row = (

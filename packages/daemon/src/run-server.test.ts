@@ -3236,6 +3236,7 @@ describe("runServer: call records", () => {
     const token = await sessionFor(c.store, user);
     const lines: string[] = [];
     const logged: Record<string, unknown>[] = [];
+    const warned: string[] = [];
     const s = await runServer({
       config: cfg,
       version: "0.0.0-test",
@@ -3243,6 +3244,7 @@ describe("runServer: call records", () => {
       backend: t.backend,
       now: () => NOW,
       log: (f) => logged.push({ ...f }),
+      warn: (event) => warned.push(event),
       callRecordSink: async (line) => {
         lines.push(line);
       },
@@ -3273,7 +3275,7 @@ describe("runServer: call records", () => {
         },
         body: JSON.stringify(body),
       });
-    return { s, token, auth, lines, logged, records, json, mcp };
+    return { s, token, auth, lines, logged, warned, records, json, mcp };
   }
   const INSERT = (note: string) => ({
     sv: 1,
@@ -3541,6 +3543,205 @@ describe("runServer: call records", () => {
         expect(x.lines).toEqual([]);
       } finally {
         await x.s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "every operation that appends gives its record an effect; a first confirmation of an awaiting write: saved",
+    async () => {
+      const x = await recordsServer();
+      try {
+        const body = (r: { body: string }) => JSON.parse(r.body) as Record<string, unknown>;
+        const steps: { status: number; headers: Record<string, unknown> }[] = [];
+        const step = async (p: Promise<Reply>) => {
+          const r = await p;
+          steps.push(r);
+          return r;
+        };
+        await step(x.json("POST", "/v1/drafts", { document: SAMPLE_SLOT }));
+        const spare = body(
+          await step(x.json("POST", "/v1/drafts", { document: { ...SAMPLE_SLOT, slot: "spare" } })),
+        );
+        // A state table: two stretches, then a third across them, left awaiting confirmation.
+        const budget = (amount: number, from: string, more = {}) => ({
+          intent: "update",
+          table: "household.budgets",
+          entity_key: { kind: "food" },
+          set: { amount },
+          valid_from: from,
+          ...more,
+        });
+        await step(x.json("POST", "/v1/writes", { sv: 1, ops: [budget(5000, "2026-10-01")] }));
+        await step(x.json("POST", "/v1/writes", { sv: 1, ops: [budget(4000, "2026-11-10")] }));
+        await step(
+          x.json("POST", "/v1/writes", {
+            sv: 1,
+            ops: [budget(4500, "2026-10-15", { valid_to: "open" })],
+          }),
+        );
+        const items = body(await send(x.s, { path: "/v1/pending", headers: x.auth }))["items"] as {
+          id: string;
+          item_ver: string;
+        }[];
+        const item = items.at(-1) as { id: string; item_ver: string };
+        // Read, then confirmed without its version: the answer carries a warning (the version it
+        // fell back to), the receipt copied to add it, the case that lost the effect once.
+        await send(x.s, { path: `/v1/pending/${item.id}`, headers: x.auth });
+        const confirmed = await step(
+          x.json("POST", `/v1/pending/${item.id}/resolution`, { decision: "confirm" }),
+        );
+        expect(confirmed.status).toBe(200);
+        expect(JSON.stringify(body(confirmed)["warnings"])).toContain("item_ver_fallback");
+        const issued = body(
+          await step(x.json("POST", "/v1/connections", { name: "agent one" })),
+        ) as { id: string };
+        await step(x.json("PATCH", `/v1/connections/${issued.id}`, { name: "agent two" }));
+        await step(
+          send(x.s, { method: "DELETE", path: `/v1/connections/${issued.id}`, headers: x.auth }),
+        );
+        await step(
+          send(x.s, { method: "DELETE", path: `/v1/slots/${spare["slot_id"]}`, headers: x.auth }),
+        );
+        // And on MCP: a write tool's record has its effect too.
+        await x.mcp(tool(9, "saveslot_write", INSERT("tea")));
+        expect(steps.map((r) => r.status)).toEqual(steps.map(() => 200));
+        const r = await x.records(steps.length + 2);
+        all.push(...r);
+        const appending = r.filter((a) =>
+          [
+            "write",
+            "resolve",
+            "schema_draft",
+            "connections.issue",
+            "connections.update",
+            "connections.revoke",
+            "slots.remove",
+          ].includes(String(a["operation"])),
+        );
+        expect(appending.length).toBe(steps.length + 1);
+        // A listed operation's success with no effect is a defect: none here, none told.
+        expect(appending.filter((a) => a["effect"] === undefined)).toEqual([]);
+        expect(x.warned).not.toContain("call_effect_missing");
+        const resolution = r.find((a) => a["operation"] === "resolve");
+        expect(resolution).toMatchObject({ effect: "appended", status: "saved" });
+        expect(r.find((a) => a["surface"] === "mcp")).toMatchObject({
+          operation: "write",
+          effect: "appended",
+          status: "saved",
+        });
+      } finally {
+        await x.s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "an MCP request made once more for a connection gone: one record, the answered try's (on either backend)",
+    async () => {
+      const c = await controlDb();
+      const t = tenants();
+      // The tenant's stores fail one transaction when armed, after the given ones pass, as a
+      // connection ended a moment before does; failed, a store says so, and the pool opens again.
+      const k = { passFirst: 0, armed: false, opened: 0 };
+      type Store = Awaited<ReturnType<TenantPoolOptions["backend"]["open"]>>;
+      const wrap = (store: Store): Store => {
+        let failed = false;
+        const run = async <T>(go: () => Promise<T>): Promise<T> => {
+          if (failed)
+            throw Object.assign(new Error("the connection is gone"), { code: "connection_lost" });
+          if (k.armed) {
+            if (k.passFirst > 0) k.passFirst--;
+            else {
+              k.armed = false;
+              failed = true;
+              throw Object.assign(new Error("the connection is gone"), { code: "connection_lost" });
+            }
+          }
+          return go();
+        };
+        return {
+          write: (fn) => run(() => store.write(fn)),
+          read: (fn) => run(() => store.read(fn)),
+          ...(store.recordReads !== undefined
+            ? {
+                recordReads: <T>(fn: Parameters<NonNullable<Store["recordReads"]>>[0]) =>
+                  run(() =>
+                    (store.recordReads as NonNullable<Store["recordReads"]>)(fn),
+                  ) as Promise<T>,
+              }
+            : {}),
+          purgeResidue: () => store.purgeResidue(),
+          snapshot: () => store.snapshot(),
+          formatVersion: store.formatVersion,
+          ...(store.enforcesStatementTimeout !== undefined
+            ? { enforcesStatementTimeout: store.enforcesStatementTimeout }
+            : {}),
+          close: () => store.close(),
+          get usable() {
+            return !failed;
+          },
+        };
+      };
+      const backend: TenantPoolOptions["backend"] = {
+        open: async (ref, opts) => {
+          const store = await t.backend.open(ref, opts);
+          k.opened++;
+          return wrap(store);
+        },
+      };
+      const cfg = config({ callRecords: true });
+      await CursorKeys.createFile(cfg.handleKeyFile);
+      const { user } = await addLocalUser(c.accounts as NonNullable<typeof c.accounts>, {
+        control: c.cp as ServerControlPlane,
+        backend,
+        name: "robin",
+        password: "correct horse battery",
+        cell: CELL,
+        cells: new Set([CELL]),
+        now: NOW,
+      });
+      const token = await sessionFor(c.store, user);
+      const lines: string[] = [];
+      const s = await runServer({
+        config: cfg,
+        version: "0.0.0-test",
+        openControl: async () => c.db,
+        backend,
+        now: () => NOW,
+        callRecordSink: async (line) => {
+          lines.push(line);
+        },
+      });
+      const auth = { authorization: `Bearer ${token}` };
+      try {
+        expect((await send(s, { path: "/v1/slots", headers: auth })).status).toBe(200);
+        const opened = k.opened;
+        const before = lines.length;
+        // The authentication's read passes; the tool's operation meets the connection gone.
+        k.passFirst = 1;
+        k.armed = true;
+        const r = await send(s, {
+          method: "POST",
+          path: "/mcp",
+          headers: {
+            ...auth,
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+            "mcp-protocol-version": "2025-11-25",
+          },
+          body: JSON.stringify(tool(1, "saveslot_catalog", {})),
+        });
+        expect(r.status).toBe(200);
+        expect(r.body).not.toContain('"isError":true');
+        expect(k.opened).toBe(opened + 1);
+        await new Promise((done) => setTimeout(done, 50));
+        const made = lines.slice(before).map((l) => JSON.parse(l) as Record<string, unknown>);
+        expect(made.map((m) => [m["route"], m["outcome"]])).toEqual([["saveslot_catalog", "ok"]]);
+      } finally {
+        await s.close();
       }
     },
     T,

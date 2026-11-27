@@ -37,9 +37,10 @@ import { JudgeError, type JudgeInput, judgeOp, reaches, type Unit } from "../jud
 import {
   type ActorAsOf as Actor,
   actorsAsOf,
+  type EffectSlot,
   type NewEvent,
-  noteEffect,
   readTail,
+  restoresAt,
 } from "../log/index.ts";
 import {
   actorsNow,
@@ -303,6 +304,8 @@ async function readResolution(
     readonly derived?: readonly DerivedWrite[];
     /** Whether the caller can see a table: what the receipt lists is filtered by it. */
     readonly visible: (id: TableId) => boolean;
+    /** Where this resolution's effect is handed back (log/effect.ts). */
+    readonly effectSlot?: EffectSlot;
   },
 ): Promise<ResolveReceipt> {
   const head = await tx.query<{ type: string; body: string | null }>(
@@ -376,14 +379,18 @@ async function readResolution(
     ...(previous !== undefined ? { reverted_by_previous: previous } : {}),
     ...(o.replayed ? { replayed: true as const } : {}),
   };
-  // Its effect for the call records (log/effect.ts): this resolution's own operation, not one read
-  // off its item's version, which a later change of the item renews.
-  return noteEffect(receipt, {
-    effect: o.replayed ? "replayed" : "appended",
-    seq: op,
-    restores: o.restoreCount,
-    ...(write !== undefined ? { status: write.status } : {}),
-  });
+  // Its effect for the call records (log/effect.ts), handed back explicitly: this resolution's own
+  // operation, not one read off its item's version (a later change of the item renews it); a
+  // replay's restore count is its operation's time's, not the count now.
+  if (o.effectSlot !== undefined) {
+    o.effectSlot.effect = {
+      effect: o.replayed ? "replayed" : "appended",
+      seq: op,
+      restores: o.replayed ? await restoresAt(tx, op) : o.restoreCount,
+      ...(write !== undefined ? { status: write.status } : {}),
+    };
+  }
+  return receipt;
 }
 
 /**
@@ -515,6 +522,7 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
     if (!visible)
       throw new WriteError("not_found", "no such item", { reason: "item", param: "id" });
     return readResolution(tx, hit, {
+      ...(input.effect !== undefined ? { effectSlot: input.effect } : {}),
       slot,
       restoreCount: restore,
       replayed: true,
@@ -547,6 +555,7 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
       (req.decision !== "take_candidate" || (named !== undefined && named === was.candidate));
     if (same)
       return readResolution(tx, done.op, {
+        ...(input.effect !== undefined ? { effectSlot: input.effect } : {}),
         slot,
         restoreCount: restore,
         replayed: true,
@@ -919,6 +928,7 @@ export async function resolveInTx(tx: Tx, input: WriteInput): Promise<ResolveRec
     throw new WriteError("internal", "the operation's numbers are not as planned");
   }
   const out = await readResolution(tx, op, {
+    ...(input.effect !== undefined ? { effectSlot: input.effect } : {}),
     slot,
     restoreCount: restore,
     replayed: false,

@@ -31,7 +31,7 @@ import type {
   SlotId,
 } from "@fluxvita/saveslot-contract-core";
 import { ApplyError, applyEvents, eventsOf, fold, internalDetailOf } from "../apply/index.ts";
-import { appendOperation, type NewEvent, noteEffect, readTail } from "../log/index.ts";
+import { appendOperation, type EffectSlot, type NewEvent, readTail } from "../log/index.ts";
 import { itemVer } from "../pending/index.ts";
 import { formerVersions, ruleTextsOf, visibleSlots } from "../read/index.ts";
 import { restoreCount } from "../read/select.ts";
@@ -165,6 +165,8 @@ export async function draftChangeInTx(
     readonly document: Readonly<Record<string, unknown>>;
     readonly task: string | null;
     readonly key: Readonly<Record<string, JsonValue>>;
+    /** Where its effect is handed back (log/effect.ts; the restore count is the caller's). */
+    readonly effect?: EffectSlot;
   },
 ): Promise<SchemaChangeReceipt> {
   const { document } = input;
@@ -427,8 +429,8 @@ export async function draftChangeInTx(
       throw new SchemaDraftError("internal", "the draft could not be applied", internalDetailOf(e));
     throw e;
   }
-  // Its operation, for the caller to note (log/effect.ts; the restore count is the caller's).
-  return noteEffect(await receiptOf(tx, next, false), { effect: "appended", seq: op.op });
+  if (input.effect !== undefined) input.effect.effect = { effect: "appended", seq: op.op };
+  return receiptOf(tx, next, false);
 }
 
 /** The findings of `backfill_required` for the checks of a draft, on the current version's tables. */

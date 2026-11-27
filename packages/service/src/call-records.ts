@@ -223,6 +223,11 @@ export class CallRecorder {
     this.#timer = undefined;
     const n = this.#dropped;
     this.#dropped = 0;
-    if (n > 0) this.#warn("call_record_failed", { dropped: String(n) });
+    if (n === 0) return;
+    try {
+      this.#warn("call_record_failed", { dropped: String(n) });
+    } catch {
+      // As on the drop path: a warning that cannot be written fails nothing else.
+    }
   }
 }
