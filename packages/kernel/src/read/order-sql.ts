@@ -1,8 +1,8 @@
-// `query`'s order in SQL (04-contract "默认排序", §15): the ORDER BY of a page and the condition
-// "after these keys" of a later one, written so that the database puts rows in the order `cmpKeys`
-// (./rows.ts) does, key by key: numbers exactly, text by code point (the "C" collation, UTF-8 byte
-// order), dates and instants by time (their text forms are fixed width, so the same order), false
-// before true, and nulls last whichever the direction.
+// `query`'s order in SQL (04-contract «`query`», the default order; §15): the ORDER BY of a page
+// and the condition "after these keys" of a later one, written so that the database puts rows in
+// the order `cmpKeys` (./rows.ts) does, key by key: numbers exactly, text by code point (the "C"
+// collation, UTF-8 byte order), dates and instants by time (their text forms are fixed width, so
+// the same order), false before true, and nulls last whichever the direction.
 
 import type { CompiledBaseField } from "@fluxvita/saveslot-contract-core";
 import { column } from "../store/layout.ts";
@@ -135,7 +135,7 @@ export function sqlKeyType(f: CompiledBaseField): SqlKeyType {
 
 /**
  * A query's keys over its business table, as `keySpecs` / `rowKeys` (./rows.ts) give them: the
- * order asked for, then the default order (04-contract "默认排序"): an event table's time
+ * order asked for, then the default order (04-contract «`query`»): an event table's time
  * descending and its row ID; a state table's entity ID and `valid_from`. Not for timeless tables,
  * whose default order is by `ver`, not a column there.
  */

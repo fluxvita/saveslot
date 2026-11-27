@@ -1,9 +1,9 @@
 // The premises a row's or entity's values rest on (docs/zh-CN/spec/03-data-model/02-integrity-and-
 // records.md «写入的前提» «标记出现在哪一行»): read when needed, never stored.
 //
-// 1. The 出处项 of each field cell in effect (`sourceItemsAt`: the contribution that gave the value,
-//    carried references followed to their ends, and the corroborations of the same value still in
-//    force). Cells without a value (`no_value`) and existence have none.
+// 1. The origin items of each field cell in effect (`sourceItemsAt`: the contribution that gave the
+//    value, carried references followed to their ends, and the corroborations of the same value
+//    still in force). Cells without a value (`no_value`) and existence have none.
 // 2. The declarations covering those items: the edge of each item for each premise target
 //    (`premise_edges`, the latest declaration covering it), not voided by a later clearing entry on
 //    the item.
@@ -67,9 +67,9 @@ export const declKey = (op: unknown, opIndex: unknown, index: unknown): string =
  * what each covers there. `changed`: only those whose state is changed (the marks); otherwise all
  * of them. A fixed number of statements, whatever the number of rows: whether there is any
  * declaration at all; then, for the page together, the cells, the sources and the declarations on
- * their items. No row is passed over before its 出处项 are known: an item reached only through a
- * carried reference (a taken candidate, a confirmed proposal) is not among the row's own items in
- * the sources table, only what a write-back carries.
+ * their items. No row is passed over before its origin items are known: an item reached only
+ * through a carried reference (a taken candidate, a confirmed proposal) is not among the row's own
+ * items in the sources table, only what a write-back carries.
  */
 export async function premisesOn(
   tx: ReadTx,
@@ -100,8 +100,9 @@ export async function premisesOn(
   for (const [id, list] of cells) {
     const byItem = new Map<string, { field: FieldId; from: string | null; to: string | null }[]>();
     for (const c of list) {
-      // Step 1 is of the fields' values: existence has no 出处项, nor a stretch without a value
-      // (its cell names the write-back that left it so, an item no premise covers as a value).
+      // Step 1 is of the fields' values: existence has no origin items, nor a stretch without a
+      // value (its cell names the write-back that left it so, an item no premise covers as a
+      // value).
       if (c.field_id === "existence" || c.no_value === true) continue;
       for (const item of of(id, c.field_id as FieldId, c)) {
         const xs = byItem.get(item) ?? [];

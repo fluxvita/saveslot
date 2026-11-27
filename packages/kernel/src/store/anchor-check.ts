@@ -1,5 +1,5 @@
-// Shape checks of anchor store values (docs/zh-CN/spec/02-architecture.md §8 "锚点存储";
-// 03-data-model/03-deletion.md "删除登记"), shared by implementations: what a write may store and
+// Shape checks of anchor store values (docs/zh-CN/spec/02-architecture.md §8 «锚点存储»;
+// 03-data-model/03-deletion.md «删除登记»), shared by implementations: what a write may store and
 // what a stored anchor must look like. Messages name the position, never the value.
 
 import {

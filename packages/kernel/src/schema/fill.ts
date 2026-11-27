@@ -54,7 +54,7 @@ export function filledDocument(
       if (cf === undefined) continue;
       fill(f, "id", cf.id);
       if (c.kind === "derived") {
-        // Inferred by the compiler (07 «文档结构» 派生表 row).
+        // Inferred by the compiler (07 «文档结构 · 派生表» row).
         fill(f, "type", cf.type);
         if (cf.type === "quantity") fill(f, "unit", cf.unit.code);
         if (cf.type === "quantity" || cf.type === "decimal") {

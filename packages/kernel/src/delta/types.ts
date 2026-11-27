@@ -1,5 +1,5 @@
 // The shapes `delta` compares and gives (docs/zh-CN/spec/03-data-model/02-integrity-and-records.md
-// «写入的前提»: 检测, 同值判据, 出处项).
+// «写入的前提 · 检测», the same-value criterion, origin items).
 
 import type { FieldId, FieldValue } from "@fluxvita/saveslot-contract-core";
 
@@ -7,10 +7,10 @@ import type { FieldId, FieldValue } from "@fluxvita/saveslot-contract-core";
 export type BizTime = string;
 
 /**
- * What gives a field its value, as one comparable text: the set of 出处项 (01-objects «出处项»), the
- * contribution that gave the current value (carried references followed to their end) and the
- * corroborations still in force, each as `event/field/item`, sorted and joined. Empty: the value
- * has no 出处项. Two texts are equal exactly when the sets are.
+ * What gives a field its value, as one comparable text: the set of origin items (01-objects
+ * «出处项»), the contribution that gave the current value (carried references followed to their
+ * end) and the corroborations still in force, each as `event/field/item`, sorted and joined. Empty:
+ * the value has no origin items. Two texts are equal exactly when the sets are.
  */
 export type SourceKey = string;
 

@@ -152,8 +152,8 @@ function decide(state: RowState, r: ConfirmRecord | RejectRecord) {
  * A revert executed on the replay's state (03-deletion «回掉的权威定义»: R and the value position
  * as recorded, never listed again; ranges, write-backs and registrations worked out again; the
  * write-backs are applied, not judged again for high impact: deviation one for a person's undo,
- * confirmation or `take_previous`, and «高影响» "已直接生效的回掉" … "按偏离二保持生效"). `seen`,
- * `acknowledge` and the skipped entries stay as recorded.
+ * confirmation or `take_previous`, and «高影响» "a revert that took effect directly" … "stays in
+ * effect by deviation 2"). `seen`, `acknowledge` and the skipped entries stay as recorded.
  */
 function revertAgain(
   state: RowState,
@@ -252,7 +252,8 @@ function kOf(
     if (deleted(d.event, d.target)) continue;
     if (k.some((x) => x.event === d.event && x.target === d.target)) continue;
     // The same as its seen version now with no evidence pointed at: no item, its shadow counts
-    // (03-deletion «回掉的权威定义» step 2: 「c 在重放里成了同值（不再是改动）仍算在」).
+    // (03-deletion «回掉的权威定义» step 2: "a c that became the same value in the replay (no
+    // longer a change) still counts").
     const sh = shadows.find((x) => x.event === d.event && x.target === d.target);
     const w = records.find((x) => x.event === d.event);
     // Its indices as the log last gave them, earlier deletions' renumbering included: those not

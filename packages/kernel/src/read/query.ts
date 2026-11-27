@@ -285,14 +285,15 @@ async function countOverInterval(
 export const changedLimit = (limit: number): number => Math.max(1000, 20 * limit);
 
 /**
- * A later page pushed down (process/decisions/table-indexes-format-6.md, "第 2 页起怎么下推"): the state after
- * the first page's operation X, after the keys K of the last row given. C is the rows changed
- * since X (`changedSince`). The others the business table holds as they were after X: A, read in
- * SQL after K and without C, the page's rows and one more; state tables over an interval an
- * entity at a time from K's entity, whose earlier rows are left behind by K. C itself, B, is read
- * as of X (`selectRowsAsOf`), its rows after K kept. The page is the first rows of A and B by
- * `cmpKeys`, shown from their selected rows with the facts as of X, as the whole read gives them.
- * The total is the first page's, from the position; a position without one counts A and B.
+ * A later page pushed down (process/decisions/table-indexes-format-6.md §3, how pages from the
+ * second on are pushed down): the state after the first page's operation X, after the keys K of the
+ * last row given. C is the rows changed since X (`changedSince`). The others the business table
+ * holds as they were after X: A, read in SQL after K and without C, the page's rows and one more;
+ * state tables over an interval an entity at a time from K's entity, whose earlier rows are left
+ * behind by K. C itself, B, is read as of X (`selectRowsAsOf`), its rows after K kept. The page is
+ * the first rows of A and B by `cmpKeys`, shown from their selected rows with the facts as of X, as
+ * the whole read gives them. The total is the first page's, from the position; a position without
+ * one counts A and B.
  *
  * Undefined, for the whole read: timeless tables; state tables over an interval with an order
  * asked for; a schema switch or a deletion carried out since X (`switchedOrExecutedSince`);

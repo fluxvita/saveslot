@@ -1,4 +1,4 @@
-// What every anchor store implementation must do (docs/zh-CN/spec/02-architecture.md §8 "锚点存储";
+// What every anchor store implementation must do (docs/zh-CN/spec/02-architecture.md §8 «锚点存储»;
 // the port in ./anchor.ts), as a reusable suite: call `anchorStoreConformance` from a test file
 // with a factory for the implementation under test. The file implementation runs it here; the
 // control plane implementation of the service is meant to run it too.

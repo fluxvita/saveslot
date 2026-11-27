@@ -75,10 +75,11 @@ describe("a value ↔ no value boundary's erasure, as listed", () => {
   });
 });
 
-// A candidate's impact if taken (01-objects 候选若生效会属高影响时) by the same rule: two required
-// fields; #11 (1, a) over [11-01, 11-09); #21 revokes [11-05, 11-09); #31, having seen neither,
-// writes (x, a) over [11-05, 11-09): a candidate. Taking (2, a) fills the gap with f2
-// still changing at 11-05: no impact; taking (1, a) leaves both the same on both sides: impact.
+// A candidate's impact if taken (01-objects «影响», "if a candidate would be high-impact when it
+// takes effect") by the same rule: two required fields; #11 (1, a) over [11-01, 11-09); #21 revokes
+// [11-05, 11-09); #31, having seen neither, writes (x, a) over [11-05, 11-09): a candidate. Taking
+// (2, a) fills the gap with f2 still changing at 11-05: no impact; taking (1, a) leaves both the
+// same on both sides: impact.
 describe("a candidate's impact at a value ↔ no value boundary", () => {
   const d = (md: string) => `2026-${md}` as BizPoint;
   const span = (from: string, to: string) => ({

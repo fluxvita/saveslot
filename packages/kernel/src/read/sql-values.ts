@@ -1,6 +1,6 @@
-// The values of a `sql` call as the statement is given them (11-restricted-sql.md «名字» 参数, «时间»):
-// each parameter checked and converted by the type its use gave it, and the call's times: the
-// evaluation instant, its day in a zone, the operands of `FOR VALID_TIME`. A value is validated
+// The values of a `sql` call as the statement is given them (11-restricted-sql.md «名字 · 参数»,
+// «时间»): each parameter checked and converted by the type its use gave it, and the call's times:
+// the evaluation instant, its day in a zone, the operands of `FOR VALID_TIME`. A value is validated
 // here, by saveslot, and passed to the database as a parameter of a known type: the database does
 // not read it by the session's settings.
 

@@ -334,7 +334,7 @@ export async function resolvePremises(
     const at = `ops/${ctx.index}/premises/${j}`;
     const t = ctx.tableOf(p.table) as CompiledBaseTable;
     // A row or entity an earlier op of this request created, by name or by key (02-integrity
-    // «能指向什么»: 本请求里新建的行; 08 «as 与临时名»): seen as at the request's end, its version
+    // «能指向什么 · 本请求里新建的行»; 08 «as 与临时名»): seen as at the request's end, its version
     // this operation's own (`same_request`). A name an op hitting a row by key bound: that row,
     // as any row given by ID. One bound to no row of this table (its op skipped, another table):
     // not there.
@@ -391,7 +391,7 @@ export async function resolvePremises(
         return { code: "invalid_argument", reason: "mutually_exclusive", param: `${at}/ver` };
       ver = { op: ctx.op, restore_count: ctx.restore, basis: "same_request" };
     } else if (p.ver !== undefined) {
-      // A premise's ver as a write's (04-contract §15 "前提里的 `ver` 同此").
+      // A premise's ver as a write's (04-contract §15: "`ver` in a premise is the same").
       const read = seenOfVer(p.ver, ctx.current);
       if (read === undefined || (read.own && !versions.has(p.ver.op)))
         return { code: "not_this_target", param: `${at}/ver` };
@@ -555,9 +555,9 @@ export function pointOf(v: unknown): BizPoint | undefined {
 }
 
 /**
- * The 出处项 of an item (01-objects «出处项»; 02-integrity «标记出现在哪一行» step 1): itself, or,
- * when it carries a value from others (a write-back of a revert, a taken candidate with the
- * same-valued candidates of its item, a return to the merge base), every item it carries from,
+ * The origin items of an item (01-objects «出处项»; 02-integrity «标记出现在哪一行» step 1):
+ * itself, or, when it carries a value from others (a write-back of a revert, a taken candidate with
+ * the same-valued candidates of its item, a return to the merge base), every item it carries from,
  * each followed to its end. In item order.
  */
 export function sourceItemsOf(state: RowState, ref: ItemRef): ItemRef[] {
@@ -582,7 +582,7 @@ const byItem = (a: ItemRef, b: ItemRef) =>
   a.event - b.event || (a.target < b.target ? -1 : a.target > b.target ? 1 : 0) || a.k - b.k;
 
 /**
- * The row's 出处项 in effect at the version the op saw and still in effect after it (09 §5.7
+ * The row's origin items in effect at the version the op saw and still in effect after it (09 §5.7
  * `premise_covers`): the contributions giving a field its value, carried references followed to
  * their ends (`sourceItemsOf`), and the corroborations still standing, on some stretch at both.
  * `seenAt` is what the op saw as judging takes it (`seenOf`): with its `ver` current, a

@@ -1,7 +1,8 @@
-// `similarKeys` over a stubbed store (10-types-and-units «相近的键»: 比较范围是最近写入的 5,000 个实体):
-// the 5,000th most recently written entity is compared, the 5,001st is not; what is read of the
-// store is read once a request (`SimilarCache`). The store's three reads are answered by their SQL:
-// the keys (`row_origins` with `content`), the latest write (`__ver`), the entities with a value.
+// `similarKeys` over a stubbed store (10-types-and-units «相近的键 · 比较范围»: "only the 5,000
+// most recently written are compared"): the 5,000th most recently written entity is compared, the
+// 5,001st is not; what is read of the store is read once a request (`SimilarCache`). The store's
+// three reads are answered by their SQL: the keys (`row_origins` with `content`), the latest write
+// (`__ver`), the entities with a value.
 
 import type { CompiledBaseTable, EntityId, FieldId } from "@fluxvita/saveslot-contract-core";
 import { describe, expect, it } from "vitest";

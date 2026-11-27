@@ -53,7 +53,8 @@ export interface TableShape {
   readonly groups: readonly (readonly FieldId[])[];
   /**
    * The external key's fields (event and timeless tables): given only by the write that gives the
-   * row its key, never in a revert record (04-write-and-read «给没有来源键的行补键»: 回退碰不到键).
+   * row its key, never in a revert record (04-write-and-read «给没有来源键的行补键»: "a revert
+   * cannot touch the key").
    */
   readonly keyFields?: readonly FieldId[];
   /**

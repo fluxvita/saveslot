@@ -188,7 +188,7 @@ const both = [
   ["state, group {f2, f3}", { ...STATE, groups: GROUPS }, true],
   ["event, group {f2, f3}", { ...EVENT, groups: GROUPS }, false],
   // "Has a value" defined by two fields (05-time «无值区间»): a value ↔ no value boundary is theirs
-  // together (高影响写入), and a write into a gap needs both.
+  // together («高影响写入»), and a write into a gap needs both.
   ["state, f2 and f3 required", { ...STATE, required: ["f2", "f3"] }, true],
   ["state, no required field", { ...STATE, required: [] }, true],
 ] as const;

@@ -1,7 +1,7 @@
-// Variations of a query that must not change what is said of it (11 «怎么测», experiment 2: "对每条做
-// 变形（大小写、引号、注释、放进子查询、`CASE`、CTE）"). Spelling variations rewrite the tokens the
-// scanner finds, so strings and comments are left as they are; placements put an expression or a
-// SELECT inside another construct.
+// Variations of a query that must not change what is said of it (11 «怎么测», experiment 2: each
+// form is varied: case, quotes, comments, put in a subquery, `CASE`, CTE). Spelling variations
+// rewrite the tokens the scanner finds, so strings and comments are left as they are; placements
+// put an expression or a SELECT inside another construct.
 
 import { rsqlParser } from "./load.ts";
 import type { Case } from "./sql-cases.fixture.ts";

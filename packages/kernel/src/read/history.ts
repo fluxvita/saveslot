@@ -517,14 +517,15 @@ async function svAsOf(tx: ReadTx, slot: string, s: number, current: number): Pro
 }
 
 /**
- * The slot's name and the table as a version defines them, for naming what was read (08 «状态机» "已退役":
- * by that version's compiled definition): `then`, that version's definition; `now`, the slot's name
- * and the table as the current version has them. Where that version answers from the same physical
- * table as the current one (a rename, a description). A table answered then by another physical
- * table that is empty (`thenEmpty`: restructured while never written, 08 «物理做法») had no row
- * then: named as that version has it. Another table rebuilt since is `not_in_this_version` (reading
- * retired physical tables comes with the migrations that make them); a table not in that version
- * had no row then and is named as now; a definition missing is `internal`.
+ * The slot's name and the table as a version defines them, for naming what was read
+ * (08 «状态机 · 已退役»: by that version's compiled definition): `then`, that version's definition;
+ * `now`, the slot's name and the table as the current version has them. Where that version answers
+ * from the same physical table as the current one (a rename, a description). A table answered then
+ * by another physical table that is empty (`thenEmpty`: restructured while never written,
+ * 08 «物理做法») had no row then: named as that version has it. Another table rebuilt since is
+ * `not_in_this_version` (reading retired physical tables comes with the migrations that make them);
+ * a table not in that version had no row then and is named as now; a definition missing is
+ * `internal`.
  */
 export function namedAsOf(
   then: CompiledSchema | undefined,

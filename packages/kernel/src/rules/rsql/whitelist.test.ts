@@ -47,7 +47,7 @@ function table(marker: string): string[][] {
 const ticks = (cell: string) => [...cell.matchAll(/`([^`]+)`/g)].map((m) => m[1] as string);
 /** The leading name of a backticked item: `count(*)` → count, `EXTRACT(…)` → extract. */
 const nameOf = (s: string) => (/^[A-Za-z_]+/.exec(s)?.[0] ?? s).toLowerCase();
-/** Contexts named by letters (`S D M`), or by 收 / 不收 columns. */
+/** Contexts named by letters (`S D M`), or by columns of `收` / `不收` (accepted / not). */
 const letters = (cell: string): Context[] =>
   (["S", "D", "M"] as const).filter((c) =>
     new RegExp(`\\b${c}\\b`).test(cell.split("（")[0] ?? ""),
@@ -151,7 +151,7 @@ describe("the whitelist in code is the spec's", () => {
       ),
     );
     expect(sorted(code)).toEqual(sorted(spec));
-    // The one cast not in that table: the typed literal DATE '…' (11 «类型» 字面量).
+    // The one cast not in that table: the typed literal DATE '…' (11 «类型 · 字面量»).
     expect(CASTS.filter((c) => c.from === "unknown")).toEqual([
       { from: "unknown", to: "date", contexts: ["S", "D", "M"] },
     ]);

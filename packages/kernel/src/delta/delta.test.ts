@@ -452,7 +452,7 @@ describe("stateAt on a fake transaction", () => {
     const f = rows([cell("f1", null, null, "x", given), cell("f2", null, null, "y")], sources);
     const s = await stateAt(f.tx, t, "r1", 40, { decode, sources: true });
     expect(s.kind === "row" && s.fields["f1"]?.source).toBe("10/f1/0,11/f1/0");
-    // A cell no write gave has no 出处项.
+    // A cell no write gave has no origin items.
     expect(s.kind === "row" && s.fields["f2"]?.source).toBe("");
   });
 

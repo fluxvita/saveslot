@@ -59,8 +59,8 @@ export function tableShape(t: CompiledBaseTable): TableShape {
 
 /**
  * Whether the caller may write `table` (its ID) of `slot`, or anything in `slot` when no table is
- * given: whatever is in its range (04-write-and-read «可见范围»: 写入, 待处理事项、resolve). A slot
- * out of range, or a table its range does not list, is not writable, as it is not visible.
+ * given: whatever is in its range (04-write-and-read «可见范围»: «写入», «待处理事项、resolve»). A
+ * slot out of range, or a table its range does not list, is not writable, as it is not visible.
  */
 export function writable(visibility: Visibility, slot: string, table?: string): boolean {
   if (visibility.kind === "all") return true;
@@ -71,7 +71,7 @@ export function writable(visibility: Visibility, slot: string, table?: string): 
   );
 }
 
-/** The date of `now` in time zone `tz`, as YYYY-MM-DD (05-time "今天"). */
+/** The date of `now` in time zone `tz`, as YYYY-MM-DD (05-time "today"). */
 export function todayIn(now: string, tz: string): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: tz,

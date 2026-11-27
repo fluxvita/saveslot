@@ -1,4 +1,4 @@
-// compileNewSlot with derived tables (03-data-model/07-schema-evolution.md «文档结构» 派生表 row,
+// compileNewSlot with derived tables (03-data-model/07-schema-evolution.md «文档结构 · 派生表» row,
 // «例：新建 slot（v1 草稿）»; 09-event-format §7 `rule`, §5.5 `add_derived_table`; 06-derived.md):
 // the compiled derived table, rule and field IDs, declarations, the warning for free-text group
 // keys, the form and rules of derived tables and their fields, refs to them, and how a rule's

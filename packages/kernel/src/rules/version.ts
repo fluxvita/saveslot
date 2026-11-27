@@ -1,4 +1,4 @@
-// The ruleset version (docs/zh-CN/spec/02-architecture.md §3 "判定的版本",
+// The ruleset version (docs/zh-CN/spec/02-architecture.md §3 «判定的版本»,
 // docs/zh-CN/spec/09-event-format.md §1.6, §5.1).
 //
 // One integer for the kernel's mechanical judgements as a whole. Every operation's head event

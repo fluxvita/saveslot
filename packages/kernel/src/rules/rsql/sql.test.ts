@@ -488,7 +488,7 @@ describe("limits (11 «代价»), at the limit and one over", () => {
   });
 });
 
-describe("parameters (11 «名字» 参数)", () => {
+describe("parameters (11 «名字 · 参数»)", () => {
   const bad = (sql: string, params: unknown[] = []) => refusal(sql, params);
 
   it("are numbered from $1 without gaps and are as many as `params` has: else `malformed` at `params`", () => {
@@ -965,7 +965,7 @@ describe("a table that does not exist and one that is not visible give the same 
   });
 });
 
-describe("system columns (11 «名字» 系统列)", () => {
+describe("system columns (11 «名字 · 系统列»)", () => {
   it("row_id on event and timeless tables, entity_id, valid_from and valid_to on state tables, none on derived", () => {
     expect(columns("SELECT row_id FROM runs")).toBe("row_id:text");
     expect(columns("SELECT row_id FROM shoes")).toBe("row_id:text");

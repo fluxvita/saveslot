@@ -65,9 +65,9 @@ export interface Item {
    */
   readonly explicitEnds: readonly BizPoint[];
   /**
-   * Written with a default end: the conflict criterion's "默认终点". The changed part of a stale
-   * corroboration written to the next change is one too: it is judged as the write was written
-   * (05-time «用同样的值写»), merged or a candidate like any write.
+   * Written with a default end: the conflict criterion's "default end point". The changed part of a
+   * stale corroboration written to the next change is one too: it is judged as the write was
+   * written (05-time «用同样的值写»), merged or a candidate like any write.
    */
   readonly defaultEnd: boolean;
 }
@@ -98,7 +98,7 @@ export const NO_VALUE = "no_value";
 /**
  * A value as the same-value judgement compares it: what is read. An empty value reads as no
  * contribution does, so the two are the same (10-types-and-units «清空字段», the same-value table
- * "空与空相同").
+ * "empty and empty are the same").
  */
 export const valueToken = (v: FieldValue): string => (v === null ? "none" : `v:${valueText(v)}`);
 
@@ -164,7 +164,7 @@ export interface Registration {
   readonly valid: IntervalSet;
 }
 
-/** Step 3, "x 取代 r". */
+/** Step 3, "x supersedes r". */
 export function supersedes(x: Item, r: Item): boolean {
   const xIsFieldValue = x.target !== "existence" && x.content.kind === "value";
   if (r.content.kind === "revoke") return x.content.kind === "restore" || xIsFieldValue;
@@ -384,7 +384,7 @@ export class RowState {
     if (this.isState && !this.hasValue(seg, at)) return NO_VALUE;
     const s = this.fieldState(f, seg, at);
     // Where the entity has a value, a field the filling writes did not give is empty, not a hole
-    // (05-time «无值区间»: 可选字段不带就是空).
+    // (05-time «无值区间»: "An optional field that is not carried is empty").
     if (this.isState && s.kind === "hole") return "none";
     return s.kind === "value" ? valueToken(s.value) : s.kind;
   }
