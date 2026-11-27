@@ -122,7 +122,14 @@ export const DOMAIN_ERROR_CODES = Object.keys(DOMAIN_ERROR_REASONS) as DomainErr
 export const KERNEL_OUTER_ERROR_REASONS = {
   internal: ["not_implemented", "inconsistent"],
   not_in_this_version: ["parameter", "value", "operation", "table_written", "not_implemented"],
-  handle_expired: ["expired", "restored", "executed", "derived_changed", "deletion_changed"],
+  handle_expired: [
+    "expired",
+    "restored",
+    "executed",
+    "derived_changed",
+    "deletion_changed",
+    "format_changed",
+  ],
   insufficient_scope: [],
 } as const satisfies Record<string, readonly string[]>;
 

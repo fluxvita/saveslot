@@ -98,6 +98,60 @@ export const cellWithheld = (v: string, withholding: boolean): string =>
                         WHERE t.seq = c.removed_by AND t.path = 'target'), c.removed_by))))`;
 
 /**
+ * SQL: where the ends of version-table cell `v` (an alias) came from, as a JSON object, for telling
+ * whether an end a deletion removed is given (03-data-model/03-deletion «版本表», the decision on
+ * interval ends): the interval of the block that gave the cell (the latest restatement of its item
+ * up to the cell, as in `cellWithheld`, else the item's `span/<f>/<k>`; `span/existence/<k>` for a
+ * revoke), `{"from", "to"}` with `to` absent when open; the modes the write head recorded for its
+ * two ends (`ops/<i>/valid`: `given`, `now`, `open`, `next_change`, `corrected_span`; none for an
+ * item no head gave an interval: a write-back, a backfill); and two marks:
+ * - `taken`: the item's contribution a deletion still pending, confirmed after the cell, took away
+ *   (its `fields/<f>/<k>` listed; a revoke's interval parameter `ops/<i>/valid` listed);
+ * - `listed`: the block giving the interval listed by such a deletion.
+ * Only the identity and the interval of these blocks are read, never a value. NULL for a cell no
+ * contribution gave, and for every cell when `withholding` is false (no deletion was ever
+ * confirmed: nothing is withheld).
+ */
+export const cellEnds = (v: string, withholding: boolean): string =>
+  !withholding
+    ? "NULL"
+    : `(CASE WHEN ${v}.src_event IS NULL OR ${v}.src_field IS NULL THEN NULL ELSE (
+     SELECT jsonb_build_object(
+         'from', gb.body::jsonb -> COALESCE(CASE WHEN gb.body::jsonb ? 'valid' THEN 'valid' END, 'seen_valid') ->> 'from',
+         'to', gb.body::jsonb -> COALESCE(CASE WHEN gb.body::jsonb ? 'valid' THEN 'valid' END, 'seen_valid') ->> 'to',
+         'from_mode', hv.body::jsonb -> 'from' ->> 'mode',
+         'to_mode', hv.body::jsonb -> 'to' ->> 'mode',
+         'taken', COALESCE((SELECT max(p.deletion_seq) FROM pending_blocks p
+                   WHERE p.seq = CASE WHEN ${v}.src_field = 'existence' THEN ev.op ELSE ${v}.src_event END
+                     AND p.path = CASE WHEN ${v}.src_field = 'existence'
+                       THEN 'ops/' || (tg.body::jsonb ->> 'op_index') || '/valid'
+                       ELSE 'fields/' || ${v}.src_field || '/' || ${v}.src_k END) > ${v}.rec_from, FALSE),
+         'listed', COALESCE((SELECT max(p.deletion_seq) FROM pending_blocks p
+                   WHERE p.seq = g.gseq AND p.path = g.gpath) > ${v}.rec_from, FALSE))
+     FROM (
+       SELECT COALESCE(r.seq, ${v}.src_event) AS gseq,
+         COALESCE(r.path, 'span/' || ${v}.src_field || '/' || ${v}.src_k) AS gpath
+       FROM (SELECT 1) AS one LEFT JOIN LATERAL (
+         -- The restatement giving the cell, as cellWithheld finds it: by its identity.
+         SELECT rc.seq, rc.path FROM content rc JOIN events re ON re.seq = rc.seq
+         WHERE re.type IN ('deletion.confirmed', 'deletion.cancelled') AND rc.seq <= ${v}.rec_from
+           AND rc.path LIKE 'restated/%' AND rc.body IS NOT NULL
+           AND (rc.body::jsonb ->> 'event')::bigint = ${v}.src_event
+           AND rc.body::jsonb ->> 'field' = ${v}.src_field
+           AND (rc.body::jsonb ->> 'k')::int = ${v}.src_k
+         ORDER BY rc.seq DESC LIMIT 1
+       ) AS r ON TRUE
+     ) AS g
+     -- Its interval, off the content table itself: the block may be one a deletion lists.
+     LEFT JOIN content gb ON gb.seq = g.gseq AND gb.path = g.gpath
+     JOIN events ev ON ev.seq = ${v}.src_event
+     LEFT JOIN content tg ON tg.seq = ${v}.src_event AND tg.path = 'target'
+     -- The modes the head recorded, off the content table: a deletion may list it as well.
+     LEFT JOIN content hv ON hv.seq = ev.op
+       AND hv.path = 'ops/' || (tg.body::jsonb ->> 'op_index') || '/valid'
+   ) END)`;
+
+/**
  * Whether `cellWithheld` has anything to find in this tenant: a deletion was ever confirmed. A
  * block is pending or cleared only after one; every store without a deletion skips the test.
  */
