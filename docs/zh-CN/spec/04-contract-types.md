@@ -1,5 +1,7 @@
 # saveslot · 操作契约的类型定义
 
+[English](../../spec/04-contract-types.md) · 简体中文
+
 > 本文是操作契约的**结构**：每个操作的参数、结果、错误与全部枚举，写成 TypeScript 类型。规则与说明（什么时候返回什么、为什么）在 [`04-contract.md`](04-contract.md)；内核规则在 [`03-data-model/`](03-data-model/README.md)；MCP 与 HTTP 怎么承载在 [`05-surfaces.md`](05-surfaces.md)。
 > **字段名、嵌套结构与枚举值以本文为准。** 实现里的 `contract-core` / `contract` 两个包与本文逐项对应；OpenAPI 由它们生成，MCP 的 `inputSchema` 由本文件的类型按 [`05-surfaces.md`](05-surfaces.md) 第 1 节的映射表组合生成。MCP 参数的 `description` 是写给模型看的措辞，原文在 [`05-surfaces.md`](05-surfaces.md) 9.1；本文参数上的注释说明类型与约束。
 
@@ -676,7 +678,7 @@ interface ChangesParams extends CommonParams, PageParams {
   mode: "changes";
   table: TableName;              // 基础表。派生表报 invalid_argument（derived_table）
   row?: RowId; entity?: EntityId; entity_key?: Record<FieldName, Value>;   // 不给目标 = 整张表
-  /** 不含。必填。"my_last_read" = 本连接实例（带 task 时只认同一任务）上次读过的位置，按读取覆盖的范围认（整张表的调用只认覆盖这张表的读取）；没读过报 read_first（no_read），只在别的 task 下读过报 read_first（task_mismatch）。0 是从头看起。 */
+  /** 不含。必填。"my_last_read" = 本连接实例（带 task 时只认同一任务）读过的位置里最靠后的一个，按读取覆盖的范围认（整张表的调用只认覆盖这张表的读取）；没读过报 read_first（no_read），只在别的 task 下读过报 read_first（task_mismatch）。0 是从头看起。 */
   since: RecordPoint | "my_last_read";
   /** 含。默认最新。 */
   until?: RecordPoint;
@@ -1078,7 +1080,7 @@ interface AwaitingDetail extends ItemBase {
   /** 提议的内容，三种之一：set 是字段值；set: null 是撤销；提议是一次回退时不给 set，给 revert（成因 undo_includes_later）。
    *  回退会写回什么不在这里列：会被回掉的写入见 impact.reverted，回到的值执行后见回执。 */
   proposal: { seq: Seq; actor: Actor; intent: Intent; set?: Values | null; revert?: { undo: Seq; include_later?: boolean }; valid?: Interval };
-  current: { values?: Values; spans?: Span[] };   // 按事项版本的操作号读这一行，范围同 ConflictDetail.effective
+  current: { values?: Values; spans?: Span[]; partially_deleted?: true };   // 按事项版本的操作号读这一行，范围同 ConflictDetail.effective；partially_deleted 同 ConflictDetail.effective
   impact: AwaitingImpact;
 }
 
@@ -1099,6 +1101,8 @@ interface FlaggedDetail extends ItemBase {
   /** 命中的那一组 duplicate_keys 与键值。 */
   keys: FieldName[];
   matched_values?: Values;
+  /** matched_values 里有值出自仍待执行的删除去掉的贡献：那些字段不出现，不写成 null（已关闭的事项按它自己的事项版本读，之后的删除不刷新它）。 */
+  partially_deleted?: true;
 }
 
 interface ConflictDetail extends ItemBase {
@@ -1113,12 +1117,15 @@ interface ConflictDetail extends ItemBase {
    *  顶层 seq / actor 是这些段里操作号最大的那次（事件类表与无时间表只有一个）；一段都没有操作给出时不给。
    *  撤销被撤回之后"由谁给出"两种表不同：事件类表、无时间表上是那次撤回（它让这一行重新存在）；
    *  状态类表上是原来给出这一段值的写入（撤回只让那些值重新生效）。不对称来自版本表：撤回撤销在事件类表、无时间表上给"存在"记一格，在状态类表上不记；这里照格走，不另求一致。 */
-  effective: { seq?: Seq; actor?: Actor; values?: Values; spans?: Array<Span & { seq?: Seq; actor?: Actor }>; exists: boolean };
+  /** partially_deleted：这一侧有值出自仍待执行的删除去掉的贡献，那些字段不出现，不写成 null；已关闭的事项按它自己的事项版本读，之后的删除不刷新它。 */
+  effective: { seq?: Seq; actor?: Actor; values?: Values; spans?: Array<Span & { seq?: Seq; actor?: Actor }>; exists: boolean; partially_deleted?: true };
   candidates: Candidate[];
   /** 成因是 restored_candidate 时：候选原来所在的那个事项。@later */
   related_item?: ItemId;
-  /** take_previous 会回到的样子：合并基（各候选所带 ver 中最早的那个版本）上的值，按合并基的操作号读这一行，范围同 effective。 */
-  previous: { seq: Seq; exists: boolean; values?: Values; spans?: Span[] };
+  /** take_previous 会回到的样子：合并基（各候选所带 ver 中最早的那个版本）上的值，按合并基的操作号读这一行，范围同 effective。
+   *  partially_deleted：合并基那一刻有值出自仍待执行的删除去掉的贡献，那些字段不出现在 values（或各段的 values）里，不写成 null；
+   *  这里是合并基那一刻记下的样子去掉被删内容，不是重放之后的样子，take_previous 写回的是重放里那个位置上的状态，两者可以不同（data-model「删除」的「版本表」）。 */
+  previous: { seq: Seq; exists: boolean; values?: Values; spans?: Span[]; partially_deleted?: true };
   /** take_previous 会回掉的写入：合并基之后在这个冲突单元上生效过的全部写入；以及单元外、合并基之后在事项区间里给出值、
    *  会随 take_previous 让这一段回到无值而失去值的写入（合并基处这一段是无值时，见「时间 · 高影响写入」④ 的第三种成因）。 */
   reverted_by_previous: Array<{ seq: Seq; actor: Actor; fields: Array<FieldName | "*"> }>;   // 此刻回到合并基会让读到的结果变的、晚于合并基的写入；口径同 AwaitingImpact.reverted（write-and-read「撤回某次写入」按读得到的结果判那一条），同形
@@ -2207,7 +2214,7 @@ type ValidationDetailCode =
 | `unauthenticated` | `missing` / `invalid` / `revoked` / `expired` / `account_disabled`（服务器模式：租户属主的账户已停用） | — |
 | `insufficient_scope` | — | `required_scope: Scope \| "user_session" \| "all_slots"`（`all_slots`：这项操作需要范围为全部 slot 的凭证——限定了 slot 范围的凭证新建 slot。只对可见的目标报，不泄露范围外的东西） |
 | `rate_limited` | `quota` / `busy`（同一租户已有一次对拍或导入在跑） | `retry_after` |
-| `handle_expired` | `expired` / `restored` / `executed` / `derived_changed`（翻页期间派生表被刷新过，从首页重读） | `deletion?: ItemId`（已执行过的 `dc_`） |
+| `handle_expired` | `expired` / `restored` / `executed` / `derived_changed`（翻页期间派生表被刷新过，从首页重读）/ `deletion_changed`（首页之后有删除被确认或撤回，从首页重读） | `deletion?: ItemId`（已执行过的 `dc_`） |
 | `not_in_this_version` | `parameter` / `value` / `operation` / `table_written`（只对从未被写入的表放开的改动用在写入过的表上）/ `not_implemented`（0.1.0 的实现还走不到的情形：参数本身合法，不是留给后续版本的参数） | `param?`、`value?`（`reason` 为 `value` 且那个取值是契约里该参数的固定取值之一时带；调用方随手写的字符串不带）、`operation?` |
 | `unavailable` | `busy` / `restoring` / `importing` / `reconciling` / `starting` / `stopping` | `retry_after?` |
 | `internal` | — | `incident: string`（供排查的编号，不含内容） |

@@ -1,5 +1,7 @@
 # saveslot · 数据层机制 · 02 完整性与记录
 
+[English](../../../spec/03-data-model/02-integrity-and-records.md) · 简体中文
+
 > 数据层机制的一部分，目录见 [`README.md`](README.md)。文中「…」引用的节可能在同目录的其他文件里，按目录查。
 
 ## 完整性与溯源

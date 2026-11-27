@@ -1,5 +1,7 @@
 # saveslot · 外化面：CLI 与上手流程
 
+[English](../../spec/06-cli.md) · 简体中文
+
 > 本文写第一版 CLI：谁用、怎么连 saveslot、从零到第一个 Agent 能用的上手流程、命令清单、人工确认的交互、输出约定与安全。
 > CLI 与 [`05-surfaces.md`](05-surfaces.md) 里的 MCP、HTTP 并列，是契约的又一个外化面：操作形状以 [`04-contract.md`](04-contract.md) 为准，内核规则以 [`03-data-model/`](03-data-model/README.md) 为准；数值类的待定见 [`08-open-questions.md`](08-open-questions.md)。
 
@@ -488,6 +490,7 @@ My long-term records (things that change over time: spending, workouts, budgets,
 | `SAVESLOT_SHUTDOWN_TIMEOUT` | 下线的在途上限：摘除等待之后，等进行中的请求做完至多多少秒，0 到 3600 的整数；到时仍未结束的连接被关闭；0 表示不等、直接关闭 | `30` |
 | `SAVESLOT_TENANT_CONNECTIONS` | 一个进程同时打开的租户数上限，也就是租户连接数的上限（每个打开的租户一条连接，[`02-architecture.md`](02-architecture.md) §7「连接」），1 到 10000 的整数。到上限时先关闲置最久的租户；没有闲置的，请求排队，5 秒内等不到回 `unavailable`（`busy`）。缺省 50：按下面的连接预算，一个进程在 PostgreSQL 默认的 `max_connections`（100）里用得下，还留出控制面库、导入与运维的余量；多于一个进程时，调低这一项或调高 `max_connections`；大的部署在连接预算之内调高 | `50` |
 | `SAVESLOT_TENANT_IDLE` | 一个租户最后一次使用之后，空闲多少秒关掉它、放回它的连接，1 到 86400 的整数 | `300` |
+| `SAVESLOT_CALL_RECORDS` | `on` 时，每次调用结束在标准输出上写一行调用记录（JSON，带 `"record": "call"`；字段见 [`02-architecture.md`](02-architecture.md) §9「调用记录」），由部署方的日志收集取走；`off` 时不写，标准输出与没有这一项时相同。应答头 `Saveslot-Call` 不随它变 | `off` |
 
 **连接预算**：一个部署用到的 PostgreSQL 连接要满足 `SAVESLOT_TENANT_CONNECTIONS` × 进程数 + 4 × 进程数 + 同时进行的导入数 × 2 ≤ 实例可用的连接数。每个进程的 4 条是不计入上限的固定连接：控制面库一条；建库用的维护库一条，正在建的租户的库一条——建库与建租户在一个进程里各一次一个，排在后面的至多等 5 秒，等不到就回暂时忙（外部登录的首次登录回 503，带 `Retry-After`；`server user`、`server init` 退出码 7）；删库用的维护库一条——删库在一个进程里一次一个，没有人等它的应答，所以不设等待上限（删库要等一次检查点，忙的时候很慢，不与建库共用，免得把首次登录挡在后面）；导入一次直接打开两个库；可用的连接数是 `max_connections` 减去 `superuser_reserved_connections`、`reserved_connections` 与运维自己要用的。
 

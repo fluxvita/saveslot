@@ -1,7 +1,6 @@
 # saveslot · Event format v1
 
-> Translated from docs/zh-CN/spec/09-event-format.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/spec/09-event-format.md)
 
 > The field-level definition of every kind of event in the log. The implementation of `log` and `apply` follows this document; it is also the format description of an exported file: without any saveslot code, this document alone should be enough to read an exported log.
 > The rules themselves (when each kind of event is produced, how judgement is done) are in [`03-data-model/`](03-data-model/README.md); the layering and the invariants are in [`02-architecture.md`](02-architecture.md). This document only defines "what an event writes, and how".
@@ -1514,7 +1513,7 @@ The judgement is made online, once, at the time: comparing "the value now" with 
 | a write whose ops are all `unchanged` / `skipped` by external key | No (§4.2). The receipt is still given, with no operation number |
 | all read operations (including the deletion preview) | No. Reads are recorded in the read record, not in the log |
 | log verification, replay comparison, export, read audit queries | No |
-| persisting and cleaning up the read record, residue cleanup, advancing the high-water mark, the ownership epoch | No |
+| persisting and cleaning up the read record, residue cleanup, advancing the high-water mark, the ownership epoch (local mode) | No |
 
 ### 5.12 What the materialized state maintained by `apply` is rebuilt from
 

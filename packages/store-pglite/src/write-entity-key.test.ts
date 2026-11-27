@@ -15,7 +15,12 @@ import {
   readEvents,
   readTail,
 } from "@fluxvita/saveslot-kernel";
-import { COMPILED_V1, createSlotEvents, writeInTx } from "@fluxvita/saveslot-kernel/testing";
+import {
+  COMPILED_V1,
+  createSlotEvents,
+  resolveInTx,
+  writeInTx,
+} from "@fluxvita/saveslot-kernel/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { openReusable, type ReusableStore } from "./testing/reusable-store.fixture.ts";
 
@@ -120,6 +125,7 @@ type Receipt = {
   ops: {
     target: { entity?: string };
     ver?: string;
+    item_ver?: string;
     created_entity?: true;
     existing_keys?: unknown[];
     similar_keys?: { key: unknown; match: string; revoked?: true }[];
@@ -133,6 +139,27 @@ async function send(params: unknown): Promise<Receipt & Refusal> {
   try {
     return (await s.store.write((tx) =>
       writeInTx(tx, {
+        actor: USER as never,
+        task: null,
+        now: now(),
+        windows: { requestKey: 600_000, idempotencyKey: 86_400_000 },
+        visibility: { kind: "all" },
+        params,
+        newId,
+        reads: readBufferOf(s.store),
+      }),
+    )) as never;
+  } catch (e) {
+    const x = e as { code?: string; detail?: Record<string, unknown> };
+    if (x.code === undefined) throw e;
+    return { refused: x.code, ...(x.detail ?? {}) } as never;
+  }
+}
+
+async function resolve(params: unknown): Promise<{ write?: Receipt } & Refusal> {
+  try {
+    return (await s.store.write((tx) =>
+      resolveInTx(tx, {
         actor: USER as never,
         task: null,
         now: now(),
@@ -1146,6 +1173,156 @@ describe("similar_keys (10-types-and-units «相近的键», keymatch@1)", () =>
       expect(again.replayed).toBe(true);
       expect(again.ops[0]?.similar_keys).toBeUndefined();
       expect(again.omitted).toContain("existing_keys");
+    },
+    T,
+  );
+
+  it(
+    "a later op giving the same entity a new version again moves it back to the front",
+    async () => {
+      const a = await made("café");
+      const b = await made("Café");
+      const r = await send({
+        sv: 1,
+        ops: [
+          { ...budget("café", { amount: "2" }), ver: a.ver },
+          { ...budget("Café", { amount: "2" }), ver: b.ver },
+          { ...budget("café", { amount: "3" }), ver: a.ver },
+          budget("cafe", { amount: "1" }),
+        ],
+      });
+      expect(r.refused).toBeUndefined();
+      expect(r.ops[3]?.similar_keys?.map((x) => x.key)).toEqual(["café", "Café"]);
+      expect(r.ops[3]?.existing_keys).toEqual(["café", "Café"]);
+    },
+    T,
+  );
+
+  it.each(["noop", "corroboration"] as const)(
+    "an earlier op gave a version and a later %s on the same entity does not: it keeps its place",
+    async (kind) => {
+      const a = await made("café");
+      const b = await made("Café");
+      await made("cafè");
+      const again =
+        kind === "corroboration"
+          ? {
+              evidence: [{ kind: "user_message", text: "amount is still 2" }],
+              evidence_by_field: { amount: [0] },
+            }
+          : {};
+      const r = await send({
+        sv: 1,
+        ops: [
+          { ...budget("café", { amount: "2" }), ver: a.ver },
+          { ...budget("Café", { amount: "2" }), ver: b.ver },
+          { ...budget("café", { amount: "2" }), ver: a.ver, ...again },
+          budget("cafe", { amount: "1" }),
+        ],
+      });
+      expect(r.refused).toBeUndefined();
+      // café stays after Café (the third op gave no version) and before cafè (the first op did).
+      expect(r.ops[3]?.similar_keys?.map((x) => x.key)).toEqual(["Café", "café", "cafè"]);
+    },
+    T,
+  );
+
+  it.each([false, true])(
+    "an undo writing back what is already current gives no version (together=%s)",
+    async (together) => {
+      const r1 = await one(budget("café", { amount: "1" }));
+      const ent = r1.ops[0]?.target.entity as string;
+      const w2 = await one({
+        intent: "update",
+        table: "budgets",
+        entity: ent,
+        ver: r1.ops[0]?.ver,
+        set: { amount: "2" },
+        valid_from: "2026-10-01",
+      });
+      const u1 = await one({ table: "budgets", entity: ent, revert: { undo: w2.seq } });
+      await one(budget("Café", { amount: "9" }));
+      const u2Op = { table: "budgets", entity: ent, revert: { undo: w2.seq } };
+      const cafeOp = budget("cafe", { amount: "5" });
+      if (together) {
+        const r = await send({ sv: 1, ops: [u2Op, cafeOp] });
+        expect(r.refused).toBeUndefined();
+        expect(r.ops[0]?.ver).toBe(u1.ops[0]?.ver);
+        expect(r.ops[1]?.similar_keys?.map((x) => x.key)).toEqual(["Café", "café"]);
+      } else {
+        const u2 = await one(u2Op);
+        expect(u2.refused).toBeUndefined();
+        expect(u2.ops[0]?.ver).toBe(u1.ops[0]?.ver);
+        const c = await one(cafeOp);
+        expect(c.ops[0]?.similar_keys?.map((x) => x.key)).toEqual(["Café", "café"]);
+      }
+    },
+    T,
+  );
+
+  it.each([false, true])(
+    "changing an optional field on a no-value stretch gives no version (together=%s)",
+    async (together) => {
+      // 02-architecture §8 版本表: on a stretch where a state entity has no value, only the fields
+      // defining "has a value" (here category and amount) have cells; changing an optional field
+      // (note) there leaves the version table unchanged, so the ranking agrees whether sent alone
+      // or in the same request as a new key.
+      const r1 = await one(
+        budget(
+          "café",
+          { amount: "1", note: "x" },
+          { valid_from: "2026-10-01", valid_to: "2026-11-01" },
+        ),
+      );
+      const ent = r1.ops[0]?.target.entity as string;
+      const r2 = await one({
+        intent: "update",
+        table: "budgets",
+        entity: ent,
+        ver: r1.ops[0]?.ver,
+        set: { category: "café", amount: "2", note: "y" },
+        valid_from: "2026-12-01",
+      });
+      const r3 = await one({
+        intent: "update",
+        table: "budgets",
+        entity: ent,
+        ver: r2.ops[0]?.ver,
+        set: { note: "w" },
+        valid_from: "2026-12-01",
+      });
+      const r4 = await one({
+        table: "budgets",
+        entity: ent,
+        revert: { undo: r2.seq },
+        acknowledge: ["overwrite"],
+      });
+      const categoryItems = r4.ops[0]?.fields["category"] as { item: string }[] | undefined;
+      const item = categoryItems?.[0]?.item as string;
+      const confirmed = await resolve({
+        id: item,
+        decision: "confirm",
+        item_ver: r4.ops[0]?.item_ver,
+      });
+      expect(confirmed.refused).toBeUndefined();
+      const verAfterConfirm = confirmed.write?.ops[0]?.ver as string;
+      expect(verAfterConfirm).toMatch(/^v\d+\.0$/);
+      await one(budget("Café", { amount: "9" }));
+
+      const r6Op = { table: "budgets", entity: ent, revert: { undo: r3.seq } };
+      const cafeOp = budget("cafe", { amount: "5" });
+      if (together) {
+        const r = await send({ sv: 1, ops: [r6Op, cafeOp] });
+        expect(r.refused).toBeUndefined();
+        expect(r.ops[0]?.ver).toBe(verAfterConfirm);
+        expect(r.ops[1]?.similar_keys?.map((x) => x.key)).toEqual(["Café", "café"]);
+      } else {
+        const r6 = await one(r6Op);
+        expect(r6.refused).toBeUndefined();
+        expect(r6.ops[0]?.ver).toBe(verAfterConfirm);
+        const r7 = await one(cafeOp);
+        expect(r7.ops[0]?.similar_keys?.map((x) => x.key)).toEqual(["Café", "café"]);
+      }
     },
     T,
   );

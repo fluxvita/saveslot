@@ -1,7 +1,7 @@
 // The in-place upgrade of a store on a PostgreSQL server (02-architecture §8 «格式版本、导出、导入与恢复»;
-// kernel store/upgrade.ts): opened by a version of a later format, a store is upgraded once the
-// ownership epoch is taken, each step a write transaction under the tenant's lock whose last
-// statement sets the format. The kernel has no step yet (format 5 is the only one); these cases give
+// kernel store/upgrade.ts): opened by a version of a later format, a store is upgraded, its format
+// read again under the tenant's lock first, each step a write transaction under that lock whose
+// last statement sets the format. The kernel has no step yet (format 5 is the only one); these cases give
 // the backend a format and steps of their own (PostgresBackendOptions `formatUpgrade`).
 
 import { META_KEYS, STORAGE_FORMAT_VERSION, type UpgradeStep } from "@fluxvita/saveslot-kernel";
@@ -231,9 +231,11 @@ describe.skipIf(cell === undefined)("against a server", () => {
     );
   });
 
-  describe("one writer", () => {
+  // An older version is kept from a newer format by the format each read and write checks
+  // (02-architecture §7): no opener takes the tenant from another.
+  describe("one format at a time", () => {
     it(
-      "an older version holding the store gives it up at its next write once a newer one upgraded it",
+      "an older version holding the store is refused at its next write and read once a newer one upgraded it: format_too_new, nothing written",
       async () => {
         const db = await made();
         const old = await pg.backend.open(pg.ref(db), {});
@@ -245,8 +247,9 @@ describe.skipIf(cell === undefined)("against a server", () => {
             {},
           );
           expect(await codeOf(old.write((tx) => tx.query("INSERT INTO up_h VALUES (1)")))).toBe(
-            "ownership_lost",
+            "format_too_new",
           );
+          expect(await codeOf(old.read((tx) => tx.query("SELECT 1")))).toBe("format_too_new");
           expect(await formatIn(db)).toBe(F + 1);
           expect((await pg.sql(db, "SELECT count(*)::int4 AS n FROM up_h")).rows[0]?.["n"]).toBe(0);
         } finally {
@@ -258,7 +261,7 @@ describe.skipIf(cell === undefined)("against a server", () => {
     );
 
     it(
-      "an older version waiting on the lock while a newer one is in its step: format_too_new, the epoch untouched; the newer goes on",
+      "an older version waiting on the lock while a newer one is in its step: format_too_new; the newer goes on",
       async () => {
         const db = await made();
         const epochIn = async () =>
@@ -304,7 +307,8 @@ describe.skipIf(cell === undefined)("against a server", () => {
         try {
           expect(o).toBeInstanceOf(PostgresStoreError);
           expect((o as PostgresStoreError).code).toBe("format_too_new");
-          expect(await epochIn()).toBe(s.epoch);
+          // The local mode's epoch row, as made: nothing here reads or raises it.
+          expect(await epochIn()).toBe(0);
           expect(await formatIn(db)).toBe(F + 1);
           await s.write((tx) => tx.query("INSERT INTO up_l VALUES (1)"));
         } finally {
@@ -315,7 +319,7 @@ describe.skipIf(cell === undefined)("against a server", () => {
     );
 
     it(
-      "a second opener while the first is in a step: the step is done once; the first gives up, the second goes on",
+      "a second opener while the first is in a step: each step is done once; both open and go on writing",
       async () => {
         const db = await made();
         // The first step is slow, and fails when done twice (the second CREATE TABLE of a name).
@@ -330,7 +334,7 @@ describe.skipIf(cell === undefined)("against a server", () => {
             (e: unknown) => e,
           );
         // The first is in its step: the second reads the format before it is done (the format
-        // still F), takes the epoch once the step has committed, and finds the step done.
+        // still F), waits on the lock, and finds each step done that the first did.
         for (let i = 0; i < 200; i++) {
           const r = await pg.admin(
             "SELECT count(*)::int4 AS n FROM pg_stat_activity WHERE datname = $1 AND query LIKE 'SELECT pg_sleep%'",
@@ -342,11 +346,16 @@ describe.skipIf(cell === undefined)("against a server", () => {
         const second = await backend([], F + 2, steps).open(pg.ref(db), {});
         try {
           const a = await first;
-          expect(a).toBeInstanceOf(PostgresStoreError);
-          expect((a as PostgresStoreError).code).toBe("ownership_lost");
-          expect(await formatIn(db)).toBe(F + 2);
-          expect(await tablesIn(db)).toEqual(["up_j", "up_k"]);
-          await second.write((tx) => tx.query("INSERT INTO up_j VALUES (1)"));
+          expect(a).not.toBeInstanceOf(Error);
+          const firstStore = a as PostgresTenantStore;
+          try {
+            expect(await formatIn(db)).toBe(F + 2);
+            expect(await tablesIn(db)).toEqual(["up_j", "up_k"]);
+            await second.write((tx) => tx.query("INSERT INTO up_j VALUES (1)"));
+            await firstStore.write((tx) => tx.query("INSERT INTO up_j VALUES (2)"));
+          } finally {
+            await firstStore.close();
+          }
         } finally {
           await second.close();
         }

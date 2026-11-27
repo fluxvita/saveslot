@@ -14,7 +14,8 @@
  *   wrote, or newer than the kernel's.
  * - `upgrade_failed`: a step of the upgrade to the kernel's format failed; the store is of the
  *   format of its last step done (02-architecture §8).
- * - `ownership_lost`: another opener took the tenant over; this store gave it up.
+ * - `tenant_sealed`: the tenant is sealed by an import in progress: a write is refused, nothing
+ *   done (02-architecture §8).
  * - `query_failed`: the database refused a statement; `sqlState` says why.
  * - `transaction_failed`: a statement of the transaction had failed, so it was rolled back.
  * - `connection_lost`: the connection ended with the transaction certainly not committed: before
@@ -42,7 +43,7 @@ export type ErrorCode =
   | "format_too_old"
   | "format_too_new"
   | "upgrade_failed"
-  | "ownership_lost"
+  | "tenant_sealed"
   | "query_failed"
   | "transaction_failed"
   | "connection_lost"

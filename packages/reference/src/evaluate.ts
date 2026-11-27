@@ -2529,11 +2529,15 @@ class Replay {
     const writes = this.ops
       .filter((o): o is WriteOp => o.kind === "write")
       .sort((a, b) => a.op - b.op);
-    const req = this.schema.required.length > 0 ? this.schema.required : this.fieldIds;
+    // The first write giving every required field in effect; with none required, any field (a
+    // clearing too), so that a write's mark does not wait on fields written after it (03-deletion
+    // «首次创建标记»).
+    const gives = (w: WriteOp, f: FieldId) =>
+      this.items.some((x) => x.event === w.event && x.target === f && effective(x.status));
     return writes.find((w) =>
-      req.every((f) =>
-        this.items.some((x) => x.event === w.event && x.target === f && effective(x.status)),
-      ),
+      this.schema.required.length > 0
+        ? this.schema.required.every((f) => gives(w, f))
+        : this.fieldIds.some((f) => gives(w, f)),
     )?.event;
   }
 

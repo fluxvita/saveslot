@@ -1,5 +1,7 @@
 # saveslot · 操作契约（contract）
 
+[English](../../spec/04-contract.md) · 简体中文
+
 > 契约在核心里的位置见 [`02-architecture.md`](02-architecture.md) §6；数据机制与内核规则见 [`03-data-model/`](03-data-model/README.md)；MCP 与 HTTP 两个外化面见 [`05-surfaces.md`](05-surfaces.md)，CLI 见 [`06-cli.md`](06-cli.md)。
 > **本文写规则与说明；参数、结果、错误的结构与全部枚举在 [`04-contract-types.md`](04-contract-types.md)，字段名与取值以它为准。**
 > 两份文档写的都是完整设计。第一版不实现的部分在类型文件里标 `@later`，清单见它的 0.2 节；范围以 [`07-scope-v1.md`](07-scope-v1.md) 为准。待定项统一记在 [`08-open-questions.md`](08-open-questions.md)。
@@ -371,7 +373,7 @@
 | `corrected` | 该行被纠错过。状态类表上按段给：这一段里所读字段的值出自纠错写入（合并的段里任一段是即可） |
 | `revoked` | 该行已撤销；只在 `include_revoked: true` 时出现 |
 | `possibly_affected` | 本连接实例之前读过的版本后来受影响；值后来恢复则撤掉 |
-| `partially_deleted` | 按时刻读（`history` 的 `as_of`、`query` 的后续页）、还原时，当时的部分数据已删除：出自被删除去掉的贡献的值不给。`history` 的 `changes` 里同名字段标在一条上，表示那一侧不给 |
+| `partially_deleted` | 按时刻读（`history` 的 `as_of`、`query` 的后续页）、还原时，当时的部分数据已删除：出自被删除去掉的贡献的值不给。`history` 的 `changes` 里同名字段标在一条上，表示那一侧不给；冲突事项详情的 `previous` 上的同名字段，表示合并基那一刻有值不给（`take_previous` 写回的是删除之后那个位置上的状态）；事项详情的 `effective`、`current`，以及 flagged 事项详情上的同名字段，表示那一侧（flagged 是 `matched_values`）有值不给 |
 | `pending_deletion` | 这一行受一项可撤回的删除影响（判据见 data-model「删除 · 撤回与宽限期」的"受影响"；这段时间里它上面的事项不能处理、写入不能 `undo`） |
 | `dangling_ref` | 这一行的某个 `ref` 字段指向的行 / 实体已撤销或已被隐私删除；引用方的值不变，只标出来。带字段与状态（`revoked` / `deleted`） |
 | `premise_changed` | 这一行当前的值所用到的前提（5.1）后来变了；值没有动，是否仍然成立由读方判断。**任何读取方**都看得到。带前提所在的行、声明的字段、声明时所见的版本、原因、使它变了的操作号、本行里由这条声明覆盖的字段、哪次写入声明的 |
@@ -474,7 +476,7 @@
 - **`changes` 的条目**：一条是一次操作对一行 / 实体的改动，新的在前，同一操作内按目标 ID；同一请求里几个 op 写同一行的算一条，给这次操作前后的净变化（`timeline` 一条是一次基础写入，这里不同）。净变化为零的（先写后改回）没有条目。条目的 `intent` 取这次操作里最后一个 op 的意图（同一请求里意图不同时，不取第一个）。只列值实际变了的字段，没有变的不出现：同值再写、状态类表上写入把一段切成几段而值没变的部分，都没有条目。没有生效的写入（候选、待确认）不是变化，到它生效的那次操作（`resolve` 触发的写入以那次操作的操作号）才算。`before`、`after` 没有值时不给。`intent` 取这次操作写进版本表的意图（含 `deletion`、`deletion_cancelled`、`schema_switch`）；撤回（`undo`）是一次写入，条目给它写回的值，意图是它记下的，不带 `via`，要看来由用 `timeline`。
   - 事件类表、无时间表：每个变了的字段一个对象。状态类表：每个变了的字段是数组，每项是前后的值不同的一段业务时间（相邻、前后值都相同的合并），带 `valid`。
   - `*`（这一行 / 这一段是否存在）：撤销或撤销的撤回改变了它时给，`before`、`after` 是布尔，`true` 表示存在；事件类表、无时间表是对象，状态类表是数组、每项带被撤销或恢复的那一段 `valid`。新增不给 `*`。带区间的撤销让那段时间没有值，该字段也给出这一段取值的消失。
-- `changes` 的 `since: "my_last_read"` = 本连接实例（带 `task` 时只认同一任务，没带时只认没带 `task` 的读取；用户会话时是这个会话）上次读过的位置，即那次读取的"所见状态的位置"（data-model「读取记录」）。**按读取覆盖的范围认**：目标是整张表（不给行或实体）的 `changes`，只认覆盖这张表的读取——`query`，以及目标是整张表且把窗口给全了的 `changes`；目标是某一行或实体的 `changes`，认覆盖这张表的读取，加上对这一行或实体的读取（`timeline`、`as_of`、对它的 `changes`），取最近的一次。只读过某一行的，对整张表问 `"my_last_read"` 得到 `read_first`（`no_read`）：它没见过那张表的其余行，不给一个漏了的答案。按记录时刻读的（`as_of`）位置是它的记录点；读派生表、别的表、别的连接实例的读取不算；`sql` 的读取也不算：它读到哪些行取决于查询，读取记录里记的又是超集，不能当作看过这张表。`saveslot connect` 的自检读取不算；没读过、或只在别的 `task` 下读过，都报 `read_first`（`target: "table"`，`param: "since"`；`reason` 分别是 `no_read` 与 `task_mismatch`，后者带 `read_task` 与 `task`，不带 `ver`）。**读完整个窗口才算读过**：`changes` 把窗口（`since` 到 `until`）给全了才登记位置为 `until`——首页放得下整个窗口时在首页登记；放不下时首页与中间的页都不登记，返回最后一页时登记。记成读过的，必须恰好是回给调用方的。`changes` 不返回 `ver`，不算逐行读，不作 `ver` 的兜底；它登记所读 slot 的 `sv`（首页），不带 `sv` 的写入可由此按 `sv_fallback` 通过。
+- `changes` 的 `since: "my_last_read"` = 本连接实例（带 `task` 时只认同一任务，没带时只认没带 `task` 的读取；用户会话时是这个会话）读过的位置里最靠后的一个，即这些读取中"所见状态的位置"（data-model「读取记录」）最大的那次的位置；按位置比，不按读取发生或记录的先后（architecture §7「read_log 的持久性」）。**按读取覆盖的范围认**：目标是整张表（不给行或实体）的 `changes`，只认覆盖这张表的读取——`query`，以及目标是整张表且把窗口给全了的 `changes`；目标是某一行或实体的 `changes`，认覆盖这张表的读取，加上对这一行或实体的读取（`timeline`、`as_of`、对它的 `changes`），取位置最靠后的一次。只读过某一行的，对整张表问 `"my_last_read"` 得到 `read_first`（`no_read`）：它没见过那张表的其余行，不给一个漏了的答案。按记录时刻读的（`as_of`）位置是它的记录点；读派生表、别的表、别的连接实例的读取不算；`sql` 的读取也不算：它读到哪些行取决于查询，读取记录里记的又是超集，不能当作看过这张表。`saveslot connect` 的自检读取不算；没读过、或只在别的 `task` 下读过，都报 `read_first`（`target: "table"`，`param: "since"`；`reason` 分别是 `no_read` 与 `task_mismatch`，后者带 `read_task` 与 `task`，不带 `ver`）。**读完整个窗口才算读过**：`changes` 把窗口（`since` 到 `until`）给全了才登记位置为 `until`——首页放得下整个窗口时在首页登记；放不下时首页与中间的页都不登记，返回最后一页时登记。记成读过的，必须恰好是回给调用方的。`changes` 不返回 `ver`，不算逐行读，不作 `ver` 的兜底；它登记所读 slot 的 `sv`（首页），不带 `sv` 的写入可由此按 `sv_fallback` 通过。
 - **读时计算的派生表**（`marks.computed_at_read`）上，`timeline` 与 `as_of` 报 `not_in_this_version`（`param` 为 `table`）：它的行不是哪次操作写下的，也没有按时刻的状态。
 - **`changes` 不以派生表为目标**，`table` 是派生表时报 `invalid_argument`（`derived_table`）。读过派生值（如月度合计）的一方要知道读到的值是否已不成立：对派生规则所汇总的基础表查 `changes`，`since` 取那次读取结果的操作号——不用 `my_last_read`：只读过合计的一方对基础表没有读取记录，会得到 `read_first`；或者直接重读合计。第一版的影响查询不覆盖对派生值的读取，这是读方唯一的办法。
 
@@ -731,6 +733,7 @@
 - **`warnings[]`**：与本次调用的某个部分有关的结构化提醒；码表见 types 第 7 节。
 - **`notices[]`**：与本次调用相关的提示，最多 3 条；码表见 types 第 7 节。几种提示的次序是 `deletion_overdue`、`migration_progress`、`schema_updated`、`pending_items`，同一种之内按各自的次序；合起来超过 3 条时按这个次序截断。每一种提示都只按可见范围计算，范围外的 slot 不出现在任何提示里。"相关"指本次调用涉及的 slot：`catalog` 列出或点到的 slot、`query` / `history` 读的表所在的 slot、`write` 写的表所在的 slot、`resolve` 处理的事项所在的 slot、`schema_draft` 新建的 slot。提示按此刻的状态算，计算本身不记进读取记录；报错的结果不带提示。
 - **`replayed`**：幂等重放时为 true。
+- **调用 ID**（服务器模式）：每次契约调用有一个 ID（`call_` 加 32 位十六进制）。HTTP 面用应答头 `Saveslot-Call` 把它回给调用方（[`05-surfaces.md`](05-surfaces.md)「HTTP」），与部署方开启的调用记录里那一条的 `call` 相同（architecture §9「调用记录」）。它不在结果里；MCP 上不给。只增不改：不认识这个头的客户端不受影响。
 
 ## 14. 幂等
 
@@ -747,7 +750,7 @@
 - 同一显式键配不同的请求内容：`invalid_argument`（`idempotency_key_reuse`）。为此显式键另记一份请求内容指纹，指纹是内容，随证据删除（architecture K13）。
 - **只对产生事件的终态结果去重**：`saved`、`pending`（以及后续的 `job`）。**被拒的写入不产生事件，也不去重**：重发时按当时的状态重新校验（例如先按 `read_first` 读过之后原样重发，会正常执行）；`rate_limited`、`unavailable` 这类暂时性错误同样不记。
 - **恰好一次由内核保证**（architecture K13）：请求键随写入同一事务记下、查重；崩溃后重发也不会写两次。请求键是内容，随该写入的证据删除一起删；物理删除前已列入待删除的请求键照样命中，结果带 `original_deleted`，不重新写入（data-model「撤回与宽限期」）。
-- **重放返回什么**：`replayed: true`，没有新写入。回执按日志重建：操作号、每个 op 的逐字段结果、当时得到的 `ver`、新建的行 / 实体 ID、当时生成或并入的事项 ID。按日志重建不出的部分省略并在 `omitted[]` 里列明：`affected_reads`；派生值的改前改后值（`derived_values`；此时 `derived[]` 为空，`derived_total` 按日志里这次操作的派生写入条数给，与首次回执按字段条目计的口径不同）；逐字段结果里的改前值——日志不记写入前的值，它所出自的贡献已被删除时取不回（`before_values`）；`undo` 跳过的部分的区间（`skipped_spans`）；这次写入自己的内容已被删除的部分（`deleted_content`，此时另有 `original_deleted`）；没进事件的按来源键 op（`unrecorded_ops`：这些下标只给 `op_index`，`external_key_summary` 里 `unchanged`、`skipped` 两项的计数也不给）；`existing_keys` 与 `similar_keys`（取值 `existing_keys`；两者由写入那一刻的状态算出，不进事件）。无操作字段的区间与解析结果（`resolved` 里它的那一项）首次回执和重放都不给：日志里只留了它的字段名，没有区间。警告（`warnings`）一律不给，也不列进 `omitted`：警告是写入那一刻附带的提示，不进日志，重放只还原日志里有的东西；逐字段结果里的 `merged` 由日志里的所见版本与行的版本算出，照给。不按当前状态重算这些部分：那会让同一请求的两次回执不同。`notices` 不在此列：它按重放此刻的状态算，提示讲的是现在，本来就不进日志。前提的部分（`premises`、`premise_covered`、`premise_affected`）记在元数据里，可以完整重建，标记状态是当时的。事项只给**当前状态**（未决 / 已解决附处理方式 / 已被取代），不给 `item_ver`；回执里的 `ver` 与事项都不算读到、不参与兜底。
+- **重放返回什么**：`replayed: true`，没有新写入。回执按日志重建：操作号、每个 op 的逐字段结果、当时得到的 `ver`、新建的行 / 实体 ID、当时生成或并入的事项 ID。按日志重建不出的部分省略并在 `omitted[]` 里列明：`affected_reads`；派生值的改前改后值（`derived_values`；此时 `derived[]` 为空，`derived_total` 按日志里这次操作的派生写入条数给，与首次回执按字段条目计的口径不同）；逐字段结果里的改前值——日志不记写入前的值，它所出自的贡献已被删除时取不回（`before_values`）；`undo` 跳过的部分的区间（`skipped_spans`）；这次写入自己的内容已被删除的部分（`deleted_content`，此时另有 `original_deleted`）；没进事件的按来源键 op（`unrecorded_ops`：这些下标只给 `op_index`，`external_key_summary` 里 `unchanged`、`skipped` 两项的计数也不给）；`existing_keys` 与 `similar_keys`（取值 `existing_keys`；两者由写入那一刻的状态算出，不进事件）。无操作字段的区间与解析结果（`resolved` 里它的那一项）首次回执和重放都不给：日志里只留了它的字段名，没有区间。警告（`warnings`）一律不给，也不列进 `omitted`：警告是写入那一刻附带的提示，不进日志，重放只还原日志里有的东西；逐字段结果里的 `merged` 由日志里的所见版本与行的版本算出，照给。不按当前状态重算这些部分：那会让同一请求的两次回执不同。两次都给出的部分，次序也相同：对象里各项的先后由回执的内容定，不随存储读出的次序变，所以首次回执与重放里同样的部分逐字节相同。`notices` 不在此列：它按重放此刻的状态算，提示讲的是现在，本来就不进日志。前提的部分（`premises`、`premise_covered`、`premise_affected`）记在元数据里，可以完整重建，标记状态是当时的。事项只给**当前状态**（未决 / 已解决附处理方式 / 已被取代），不给 `item_ver`；回执里的 `ver` 与事项都不算读到、不参与兜底。
 - 窗口内真的又发生了一笔内容与证据都一字不差的写入时，调用方要带一个不同的 `idempotency_key`；否则按重发处理。
 - 同一请求键的请求还在执行时，后到的等待前一个的结果，不并行执行。
 - `resolve` 对已解决事项、同一处理方式的重发返回原结果；其中触发的写入（`write`）按上面写入重放的规则重建，重建不出的部分同样列在 `write.omitted[]` 里，`derived_total` 同样按派生写入条数给；同一 `dc_` 的 `delete` 重发返回原结果。
@@ -762,7 +765,7 @@
 | 翻页 | `cur_` | 签名，绑定查询条件 + 首页的操作号 + 恢复次数 | 1 小时 | `handle_expired`，重新查询 |
 | 作业、抽取租约（后续） | `jb_`、`ls_` | 稳定 ID；签名 | 作业结束后 30 天；15 分钟 | `not_found`；`lease_expired` |
 
-- 翻页固定在首页的操作号：翻页期间的新写入不会造成漏行、重行；换条件即失效。后续各页按首页那一刻的记录状态（与首页的求值时刻）给出行与值；标记是读取当时的（未决事项没有历史），行怎么切分不受标记影响。首页之后有恢复或导入的，后续页报 `handle_expired`（`restored`）。`history` 的 `changes` 把首页解析出的 `since` 也记在位置里。派生表没有按时刻的状态：首页之后这张派生表被刷新过，后续页报 `handle_expired`（`derived_changed`），从首页重读；没被刷新过的，读到的与首页那一刻相同。读时计算的派生表没有派生写入：位置里记着首页的操作号与求值时刻 `at`，规则所读的基础表在首页的操作号之后有了新版本，后续页报 `handle_expired`（`derived_changed`）；没有的，按同一个 `at` 重算，与首页那一刻相同。句柄绑定的是查询条件，不含 `limit`：页与页之间可以换每页条数。
+- 翻页固定在首页的操作号：翻页期间的新写入不会造成漏行、重行；换条件即失效。后续各页按首页那一刻的记录状态（与首页的求值时刻）给出行与值；标记是读取当时的（未决事项没有历史），行怎么切分不受标记影响。首页之后有恢复或导入的，后续页报 `handle_expired`（`restored`）。**任何翻页位置**，首页之后这个租户里有删除被确认或被撤回（不论在哪个 slot），后续页报 `handle_expired`（`deletion_changed`），从首页重读：不给的内容在两页之间变了，同一轮翻页可能把一段给两次，也可能漏掉一段。只执行、不确认也不撤回的删除不让位置过期：内容在确认那一刻就不给了，执行不改变读得到的东西。这一条有意放宽：别的 slot 的删除、`reads.list` 按首页最后那条读取记录所读的状态来比、记录点早于首页的读（`history` 的 `as_of`、带 `until` 的 `changes`）其位置没带首页那一刻的日志位置时按记录点来比，都只会多过期、不会漏。`history` 的 `changes` 把首页解析出的 `since` 也记在位置里。派生表没有按时刻的状态：首页之后这张派生表被刷新过，后续页报 `handle_expired`（`derived_changed`），从首页重读；没被刷新过的，读到的与首页那一刻相同。读时计算的派生表没有派生写入：位置里记着首页的操作号与求值时刻 `at`，规则所读的基础表在首页的操作号之后有了新版本，后续页报 `handle_expired`（`derived_changed`）；没有的，按同一个 `at` 重算，与首页那一刻相同。句柄绑定的是查询条件，不含 `limit`：页与页之间可以换每页条数。
 - **恢复备份或导入之后**：`ver`、`item_ver`、`dc_`、`cur_` 都带租户恢复次数。恢复与导入都让恢复次数加 1，之前签发的一律对不上。**恢复点**是最近那次恢复的 `restored_to`（`tenant.restored`），或导入的 `imported_upto`（`tenant.imported`）。
   - `ver`：恢复次数**恰好比当前小 1**、且操作号不超过恢复点的，按它自己的操作号判定冲突；其余的（操作号在恢复点之后，或恢复次数更旧），以恢复点为它读到的位置，按冲突判据比较恢复点之后的写入。前提里的 `ver` 同此。
     - 理由：恢复点及以前的事件在两条时间线里逐字节相同，按原操作号判不会错，还能多查出恢复点之前的并发改动；恢复点之后的那段可能已经丢失，只能保守处理。恢复次数差 2 及以上时，中间那次恢复之前的时间线是否与现在一致无从判断，所以不放宽。
@@ -780,9 +783,9 @@
 | `unauthenticated` | 凭证缺失（`missing`）、无效（`invalid`）、已吊销（`revoked`）、过期（`expired`）；服务器模式下租户属主的账户已停用（`account_disabled`） |
 | `insufficient_scope` | 凭证没有所需 scope（含 `resolve` 用了当前凭证不可用的处理方式）；连接实例调用只给用户会话的管理类操作（`required_scope: "user_session"`）；限定了 slot 范围的凭证新建 slot（`required_scope: "all_slots"`，见第 12 节） |
 | `rate_limited` | 限流或配额（`quota`）；同一租户已有一次对拍或导入在跑（`busy`） |
-| `handle_expired` | 签名句柄过期（`expired`）、恢复次数对不上（`restored`）、`dc_` 已经执行过而又拿它重出预览（`executed`）、翻页期间派生表被刷新过（`derived_changed`） |
+| `handle_expired` | 签名句柄过期（`expired`）、恢复次数对不上（`restored`）、`dc_` 已经执行过而又拿它重出预览（`executed`）、翻页期间派生表被刷新过（`derived_changed`）、首页之后有删除被确认或撤回（`deletion_changed`） |
 | `not_in_this_version` | 调用了第一版不实现、或 0.1.0 尚未提供的参数、取值或操作。`reason` 说明是哪一种，附是哪个；schema 草稿里只对从未被写入的表放开的改动用在写入过的表上时，`reason` 是 `table_written` |
-| `unavailable` | 暂时不能处理：租户被占用或此刻打不开——写入排队、加锁超时、它的存储还没释放（`busy`）；租户正在走恢复流程（`restoring`）；租户正在导入（`importing`）；对拍进入比较阶段而排队超时（`reconciling`）；服务刚启动还在补跑到期任务（`starting`）；服务正在停止，不再接新的请求（`stopping`）。可重试时附 `retry_after` |
+| `unavailable` | 暂时不能处理：租户被占用或此刻打不开——写入排队、加锁超时、它的存储还没释放；或服务器模式下这次使用撞上租户的连接已断开、确定没有提交，或一次读的读取记录没能在应答之前写进去、这次读不交出内容（`busy`）；租户正在走恢复流程（`restoring`）；租户正在导入（`importing`；服务器模式下也来自导入换入期间写入撞上租户的封存标记）；对拍进入比较阶段而排队超时（`reconciling`）；服务刚启动还在补跑到期任务（`starting`）；服务正在停止，不再接新的请求，或服务器模式下这个进程比租户存储的格式旧、该被换下（`stopping`）。可重试时附 `retry_after` |
 | `internal` | 服务端内部错误。附 `incident`（供排查的编号，不含用户内容） |
 | `import_rejected` | 导入的文件不合格：格式不认识（`unsupported_format`）、不是从头开始（`not_from_start`）、续传的几段顺序不对（`segment_order`）、事件头链断裂（`chain_broken`）、内容校验和不符（`checksum_mismatch`）、条数或末尾对不上、清单与内容对不上（`incomplete`，如清单里的恢复次数不是导入的日志自己的）、重放失败（`replay_failed`）。只给位置（`seq`、`path`），不回显内容 |
 

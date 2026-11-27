@@ -4,8 +4,9 @@
 // same database at the same time; PGlite has one connection to a database and cannot give this.
 
 import type { QueryResult, ReadTx, SqlValue, Tx } from "@fluxvita/saveslot-kernel";
+import { WRITE_LOCK } from "@fluxvita/saveslot-store-postgres";
 import { Connection } from "../../store-postgres/src/connection.ts";
-import { cellFromEnv } from "../../store-postgres/src/testing/server.fixture.ts";
+import { cellFromEnv, sqlOn } from "../../store-postgres/src/testing/server.fixture.ts";
 import { databaseOf, TEST_BACKEND } from "./index.fixture.ts";
 
 /** Read and write transactions on one connection, one at a time, as a store's. */
@@ -55,4 +56,16 @@ export async function secondConnection(dir: string): Promise<SecondConnection> {
     close: () => conn.end(),
     onLost: (listener) => conn.onGone(listener),
   };
+}
+
+/** The statement that takes a tenant's write lock (the store's), for a transaction to hold it. */
+export const WRITE_LOCK_SQL = `SELECT pg_advisory_xact_lock(${WRITE_LOCK[0]}, ${WRITE_LOCK[1]})`;
+
+/** A statement on the server's maintenance database (`CREATE DATABASE`, `DROP DATABASE`, …). */
+export async function maintenanceSql(text: string): Promise<void> {
+  const cell = cellFromEnv();
+  if (TEST_BACKEND !== "postgres" || cell === undefined) {
+    throw new Error("a maintenance statement is only on PostgreSQL");
+  }
+  await sqlOn(cell, "postgres", text);
 }

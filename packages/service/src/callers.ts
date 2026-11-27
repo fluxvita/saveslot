@@ -11,6 +11,7 @@ import type {
   TenantStore,
 } from "@fluxvita/saveslot-kernel";
 import { type AuthFailure, authenticate, type Principal } from "./auth.ts";
+import type { CallerSource } from "./caller-source.ts";
 import type { Credentials } from "./credentials.ts";
 import { issueLocalConnection, revokeLocalConnection } from "./local-connections.ts";
 import { importingError, type LocalTenantGate } from "./local-import.ts";
@@ -22,6 +23,11 @@ export interface ServedTenant {
   readonly store: TenantStore;
   /** `connections.issue` and `connections.revoke`, as the mode keeps the tokens' hashes. */
   readonly connections: ConnectionIssuer;
+  /**
+   * The server mode's first lending of a request's tenant: a read-only operation that meets the
+   * connection gone throws `RetryOnLostConnection`, and the use lends it once more (opened again).
+   */
+  readonly retryOnLost?: boolean;
 }
 
 export interface ConnectionIssuer {
@@ -45,6 +51,8 @@ export interface ResolvedCaller {
    * call this once it has (a second call does nothing).
    */
   readonly release?: () => void;
+  /** The server mode: how its credential came to be, for its call records. */
+  readonly source?: CallerSource;
 }
 
 /**

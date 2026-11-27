@@ -74,8 +74,10 @@ async function baseEvents(tx: ReadTx, table: string, id: string): Promise<BaseEv
       removed_by: unknown;
       pending_by: unknown;
     }>(
+      // In the log's order: `before` takes the first block of a field that matches, so the
+      // order the database scans them in must not decide it.
       `SELECT seq, path, body, removed_by, pending_by FROM ${READABLE_CONTENT} c
-       WHERE seq = ANY($1)`,
+       WHERE seq = ANY($1) ORDER BY seq, path COLLATE "C"`,
       [seqs] as never,
     );
     for (const b of r.rows) {
@@ -176,7 +178,7 @@ export async function timelineInTx(
     { type: "count", dir: "desc" },
     { type: "count", dir: "desc" },
   ];
-  const position = positionOf(params, { identity, specs, restoreCount: restore, latest });
+  const position = await positionOf(tx, params, { identity, specs, restoreCount: restore, latest });
   const upTo = position?.seq ?? latest;
   const events = (await baseEvents(tx, t.id, target.id)).filter((e) => e.op <= upTo);
   // The premises declared on the row, by op; a restatement or clearing has no base write.

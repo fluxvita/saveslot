@@ -10,7 +10,7 @@
 
 import { randomBytes } from "node:crypto";
 import { ERROR_CODES, type ErrorCode, type ErrorReason } from "@fluxvita/saveslot-contract";
-import type { KERNEL_OUTER_ERROR_REASONS } from "@fluxvita/saveslot-kernel";
+import { type KERNEL_OUTER_ERROR_REASONS, ReadNotRecorded } from "@fluxvita/saveslot-kernel";
 
 // The outer codes the kernel raises are the contract's, with the contract's reasons, but for
 // `internal`: its reasons (`not_implemented`, `inconsistent`) are the kernel's own, and are never
@@ -118,8 +118,69 @@ export const structuralPath = (path: string): string =>
     .map((s) => (/^\d+$/.test(s) || STRUCTURE.has(s) ? s : "*"))
     .join("/");
 
+/**
+ * A tenant store's connection gone under a use (02-architecture §7 «连接»), by the store's code: the
+ * error itself, or the one it was raised over. `connection_lost`: the transaction certainly did
+ * not commit; `commit_unknown`: its COMMIT was sent and no answer came, so it may have.
+ */
+export function lostConnectionOf(e: unknown): "connection_lost" | "commit_unknown" | undefined {
+  for (const x of [e, e instanceof Error ? e.cause : undefined]) {
+    const code = (x as { code?: unknown } | null | undefined)?.code;
+    if (code === "connection_lost" || code === "commit_unknown") return code;
+  }
+  return undefined;
+}
+
+/**
+ * A tenant's storage refusing this process (02-architecture §7 «进程、单写者、串行写»), by the
+ * store's code: `format_too_new`, the storage of a newer format than this version knows (another
+ * version upgraded it), the error itself or the one a read's record failed over; `tenant_sealed`,
+ * a write refused while an import is in progress.
+ */
+export function storageRefusal(e: unknown): "format_too_new" | "tenant_sealed" | undefined {
+  const code = (e as { code?: unknown } | null | undefined)?.code;
+  if (e instanceof Error && (code === "format_too_new" || code === "tenant_sealed")) return code;
+  if (e instanceof ReadNotRecorded) {
+    const cause = e.cause;
+    if (cause instanceof Error && (cause as { code?: unknown }).code === "format_too_new") {
+      return "format_too_new";
+    }
+  }
+  return undefined;
+}
+
+/** A tenant's connection gone, raised over the store's error with the tenant it was met on. */
+export class LostConnectionOf extends Error {
+  override readonly name = "LostConnectionOf";
+  readonly tenant: string;
+  constructor(tenant: string, cause: unknown) {
+    super("the tenant's connection was gone", { cause });
+    this.tenant = tenant;
+  }
+}
+
+/**
+ * A read-only operation that met its tenant's connection gone, nothing given yet: the caller's use
+ * lends the tenant once more (opened again) and runs it again, once (server-callers.ts).
+ */
+export class RetryOnLostConnection extends Error {
+  override readonly name = "RetryOnLostConnection";
+  constructor() {
+    super("the tenant's connection was gone; to be run once more on it opened again");
+  }
+}
+
+/** Seconds a call refused for a storage newer than this server is tried again after (elsewhere). */
+const FORMAT_RETRY_AFTER = 1;
+
+/** Seconds a call refused for its tenant's connection gone is tried again after. */
+const LOST_RETRY_AFTER = 1;
+
 /** A new incident reference: random, no user content. */
 export const newIncident = (): string => `inc_${randomBytes(8).toString("hex")}`;
+
+/** Seconds a read refused for its record not written is tried again after. */
+const READ_RETRY_AFTER = 1;
 
 /**
  * The contract error of anything an operation threw. `warn` hears of every path not implemented
@@ -129,8 +190,72 @@ export const newIncident = (): string => `inc_${randomBytes(8).toString("hex")}`
 export function contractError(
   e: unknown,
   warn: (event: string, fields: Readonly<Record<string, string>>) => void,
+  o: { readonly tenant?: string } = {},
 ): ContractError {
   if (e instanceof ContractError) return e;
+  // The tenant's storage refused this process (02-architecture §7 «进程、单写者、串行写»): of a
+  // newer format than this version knows, the process is to be replaced and a retry goes to
+  // another; sealed by an import in progress, a write waits for it. Before a read not recorded: a
+  // record refused for the format refuses its read as the read itself would be.
+  const refused = storageRefusal(e);
+  if (refused === "format_too_new") {
+    warn("tenant_format_too_new", o.tenant !== undefined ? { tenant: o.tenant } : {});
+    return new ContractError("unavailable", "this server is older than the tenant's storage", {
+      reason: "stopping",
+      retry_after: FORMAT_RETRY_AFTER,
+    });
+  }
+  if (refused === "tenant_sealed") {
+    return new ContractError("unavailable", "the tenant is being imported into", {
+      reason: "importing",
+    });
+  }
+  // A read whose record could not be written is not given (02-architecture §7 «read_log 的持久性»):
+  // the caller tries again, and reading again is right. Also when the record's COMMIT went
+  // unanswered: the caller has nothing, and a record that may be there is harmless. Before the
+  // lost connection below: an error raised over one is this, not a write's. What failed, by name
+  // and code only; a connection gone is told as such, with its code.
+  if (e instanceof ReadNotRecorded) {
+    const gone = lostConnectionOf(e);
+    if (gone !== undefined) {
+      warn("tenant_connection_lost", {
+        ...(o.tenant !== undefined ? { tenant: o.tenant } : {}),
+        code: gone,
+      });
+    } else {
+      const cause = e.cause;
+      warn("read_not_recorded", {
+        ...(cause instanceof Error ? { cause: cause.name } : {}),
+        ...(typeof (cause as { code?: unknown })?.code === "string"
+          ? { cause_code: (cause as { code: string }).code }
+          : {}),
+      });
+    }
+    return new ContractError("unavailable", "the read could not be recorded; try again", {
+      reason: "busy",
+      retry_after: READ_RETRY_AFTER,
+    });
+  }
+  // Logged where it was thrown (the try given up), once: answered as `connection_lost` is.
+  if (e instanceof RetryOnLostConnection) {
+    return new ContractError("unavailable", "the tenant's connection was gone; try again", {
+      reason: "busy",
+      retry_after: LOST_RETRY_AFTER,
+    });
+  }
+  const lost = lostConnectionOf(e);
+  if (lost !== undefined) {
+    const tenant = o.tenant ?? (e instanceof LostConnectionOf ? e.tenant : undefined);
+    warn("tenant_connection_lost", { ...(tenant !== undefined ? { tenant } : {}), code: lost });
+    // Certainly not committed: nothing was recorded, and to retry is the answer (04-contract
+    // `unavailable`). Maybe committed is not that: internal, below.
+    if (lost === "connection_lost") {
+      return new ContractError("unavailable", "the tenant's connection was gone; try again", {
+        reason: "busy",
+        retry_after: LOST_RETRY_AFTER,
+      });
+    }
+  }
   if (isKernelError(e)) {
     const detail: Record<string, unknown> = { ...(e.detail ?? {}) };
     // The kernel's page position is the caller's `cursor`.
@@ -147,6 +272,14 @@ export function contractError(
     }
     if (e.code !== "internal") return new ContractError(e.code as ErrorCode, e.message, detail);
   }
+  return internalError(e, warn);
+}
+
+/** `internal`, with a new incident told to `warn` by the error's name and code, never its text. */
+export function internalError(
+  e: unknown,
+  warn: (event: string, fields: Readonly<Record<string, string>>) => void,
+): ContractError {
   const incident = newIncident();
   // The error it was caused by, if any: by name and code too (an internal error raised over
   // another, e.g. a detail that could not be read for a mismatch).

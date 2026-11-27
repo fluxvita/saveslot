@@ -65,8 +65,13 @@ const WITHHELD = "\u0000withheld";
 
 type Cell = RowCell & { row_id: string };
 
-/** Every cell of the table in effect after operation `s`. */
-async function cellsAsOf(tx: ReadTx, t: CompiledBaseTable, s: number): Promise<Cell[]> {
+/** Every cell of the table in effect after operation `s`; of the rows `ids` only, when given. */
+async function cellsAsOf(
+  tx: ReadTx,
+  t: CompiledBaseTable,
+  s: number,
+  ids?: readonly string[],
+): Promise<Cell[]> {
   const { versions } = physical(t);
   const state = t.time.type === "state";
   const interval = state
@@ -78,10 +83,60 @@ async function cellsAsOf(tx: ReadTx, t: CompiledBaseTable, s: number): Promise<C
   const r = await tx.query<Cell>(
     `SELECT row_id, field_id, ${interval}, rec_from, revoked, no_value, ${cellWithheld("v", await withholdingIn(tx))} AS withheld,
        ${cols.join(", ")} FROM ${versions} v
-     WHERE rec_from <= $1 AND (rec_to IS NULL OR rec_to > $1)`,
-    [s],
+     WHERE rec_from <= $1 AND (rec_to IS NULL OR rec_to > $1)${ids !== undefined ? " AND row_id = ANY($2)" : ""}`,
+    (ids !== undefined ? [s, [...ids]] : [s]) as never,
   );
   return r.rows.map(readableCell);
+}
+
+/**
+ * The rows (entities on state tables) of table `t` changed after operation `x`: those with a cell
+ * opened or closed since (`rec_from > x` or `rec_to > x`). Every other row has the same cells now
+ * as then, so the business table holds it as it was after `x`. Undefined when more than `max`.
+ * A write that closes a cell opens one in the same operation, so `rec_to > x` adds no row today:
+ * only a deletion closes cells without opening others, and after one a later page is the whole
+ * read (`switchedOrExecutedSince`). It is kept so that C stays right without that.
+ */
+export async function changedSince(
+  tx: ReadTx,
+  t: CompiledBaseTable,
+  x: number,
+  max: number,
+): Promise<string[] | undefined> {
+  const { versions } = physical(t);
+  const r = await tx.query<{ row_id: string }>(
+    `SELECT row_id FROM ${versions} WHERE rec_from > $1 OR rec_to > $1 GROUP BY row_id LIMIT $2`,
+    [x, max + 1],
+  );
+  return r.rows.length > max ? undefined : r.rows.map((y) => y.row_id);
+}
+
+/**
+ * Whether, after operation `x`, a schema switch or the carrying out of a deletion happened, in any
+ * slot: the business and version tables may then hold what the cells after `x` alone do not say,
+ * and a later page is the whole read. Wider than the slot read, on purpose: one statement, no slot
+ * to resolve; a page it sends to the whole read is the same page.
+ *
+ * A deletion carried out closes cells without opening others, which C cannot see; it does not
+ * change what a reader can read (the content was not given from the confirmation on), so it does
+ * not expire a position. This version never logs a deletion carried out: this branch is held by
+ * the case that appends one as a stand-in.
+ *
+ * Not here: a deletion confirmed or cancelled, and a restore or an import. Each of them expires
+ * the position, which is refused when decoded (`handle_expired`: `deletion_changed`, `restored`),
+ * before any page is read. Nor the other events (items, a changed premise, a migration started or
+ * failed, a slot removed, a policy set): none of them changes a business table without opening or
+ * closing a cell of it in the same operation, which C then holds, and the marks, facts and
+ * premises of a page are read the same way on both paths. A change that lets one of them change a
+ * business table otherwise has to add it here.
+ */
+export async function switchedOrExecutedSince(tx: ReadTx, x: number): Promise<boolean> {
+  const r = await tx.query<{ one: unknown }>(
+    `SELECT 1 AS one FROM events WHERE op > $1
+       AND type IN ('schema.switched', 'deletion.executed') LIMIT 1`,
+    [x],
+  );
+  return r.rows.length > 0;
 }
 
 const cellValue = (f: CompiledBaseField, c: RowCell): FieldValue =>
@@ -194,15 +249,20 @@ export function meetsCondition(c: Condition, r: SelectedRow): boolean {
 
 const within = (p: string, from: string, to: string | null) => from <= p && (to === null || p < to);
 
-/** The rows the plan selects as of operation `s`, as `selectRows` would have then. */
+/**
+ * The rows the plan selects as of operation `s`, as `selectRows` would have then; among the rows
+ * (entities) `ids` only, when given.
+ */
 export async function selectRowsAsOf(
   tx: ReadTx,
   plan: QueryPlan,
   s: number,
+  ids?: readonly string[],
 ): Promise<SelectedRow[]> {
   const t = plan.table;
   const byRow = new Map<string, Cell[]>();
-  for (const c of await cellsAsOf(tx, t, s))
+  if (ids !== undefined && ids.length === 0) return [];
+  for (const c of await cellsAsOf(tx, t, s, ids))
     byRow.set(c.row_id, [...(byRow.get(c.row_id) ?? []), c]);
   const rows: SelectedRow[] = [];
   for (const [id, cells] of byRow) {

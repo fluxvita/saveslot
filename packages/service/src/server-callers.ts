@@ -6,7 +6,12 @@
 
 import type { AuthFailure } from "./auth.ts";
 import type { CallerResolver, ServedTenant } from "./callers.ts";
-import { ContractError } from "./contract-error.ts";
+import {
+  ContractError,
+  LostConnectionOf,
+  lostConnectionOf,
+  RetryOnLostConnection,
+} from "./contract-error.ts";
 import type { ControlPlane, TenantId, UserId } from "./control-plane.ts";
 import { authenticateServer, type Caller, type CheckCredential } from "./server-auth.ts";
 import {
@@ -127,12 +132,15 @@ export function serverCallers(o: {
   /** The request's time, as `toISOString` writes it (`authenticateServer` refuses any other). */
   readonly now: () => string;
   readonly authenticate?: AuthenticateServer;
+  /** Where a try given up for its tenant's connection gone is told (`tenant_connection_lost`). */
+  readonly warn?: (event: string, fields: Readonly<Record<string, string>>) => void;
 }): CallerResolver {
   const authenticate = o.authenticate ?? authenticateServer;
   const oauth: RevokedOAuth = o.oauth ?? { dropRefreshTokens: async () => 0 };
-  const served = (tenant: TenantId, t: OpenTenant): ServedTenant => ({
+  const served = (tenant: TenantId, t: OpenTenant, retryOnLost: boolean): ServedTenant => ({
     tenant,
     store: t.store,
+    retryOnLost,
     connections: {
       issue: (ctx, params) =>
         issueServerConnection({
@@ -149,26 +157,49 @@ export function serverCallers(o: {
   });
   return {
     async resolve(authorization) {
-      const caller = await serving(() =>
-        authenticate({
-          control: o.control,
-          pool: o.pool,
-          authorization,
-          now: o.now(),
-          identity: o.identity,
-          ...(o.checkCredential !== undefined ? { checkCredential: o.checkCredential } : {}),
-        }),
-      );
+      const once = () =>
+        serving(() =>
+          authenticate({
+            control: o.control,
+            pool: o.pool,
+            authorization,
+            now: o.now(),
+            identity: o.identity,
+            ...(o.checkCredential !== undefined ? { checkCredential: o.checkCredential } : {}),
+          }),
+        );
+      // Authentication only reads (the principal's row): met with the tenant's connection gone,
+      // made once more on the tenant opened again, as a read-only operation is.
+      const caller = await once().catch((e: unknown) => {
+        if (lostConnectionOf(e) !== "connection_lost") throw e;
+        // This try given up: logged here, whether or not the next one is answered.
+        o.warn?.("tenant_connection_lost", {
+          ...(e instanceof LostConnectionOf ? { tenant: e.tenant } : {}),
+          code: "connection_lost",
+        });
+        return once();
+      });
       if (!("principal" in caller)) return caller;
       return {
         principal: caller.principal,
         tenant: caller.tenant,
-        use: (fn) =>
-          serving(() =>
-            o.pool.use(caller.tenant, (t) => fn(served(caller.tenant, t)), {
-              ...(caller.entry !== undefined ? { entry: caller.entry } : {}),
-            }),
-          ),
+        ...(caller.source !== undefined ? { source: caller.source } : {}),
+        use: async (fn) => {
+          const lend = (retryOnLost: boolean) =>
+            serving(() =>
+              o.pool.use(caller.tenant, (t) => fn(served(caller.tenant, t, retryOnLost)), {
+                ...(caller.entry !== undefined ? { entry: caller.entry } : {}),
+              }),
+            );
+          try {
+            return await lend(true);
+          } catch (e) {
+            // A read met the tenant's connection gone, nothing given yet: lent once more, the
+            // pool opening it again (its store no longer usable), and run once more, no further.
+            if (!(e instanceof RetryOnLostConnection)) throw e;
+            return lend(false);
+          }
+        },
         release: caller.release,
       };
     },

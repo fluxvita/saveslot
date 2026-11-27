@@ -209,6 +209,47 @@ describe("pending (06 §5.1)", () => {
     expect(lines(timeless)).toContain("  before both: no row (#90)");
   });
 
+  it("before both: part of it a deletion has since removed is said, not shown as no value", () => {
+    const conflict = {
+      ...AWAITING,
+      type: "conflict",
+      reason: "stale_write",
+      decisions: ["keep_effective", "take_candidate", "take_previous"],
+      effective: {
+        seq: 103,
+        actor,
+        values: { amount: { value: "4000", unit: "CNY" } },
+        exists: true,
+      },
+      candidates: [],
+      previous: { seq: 90, exists: true, values: {}, partially_deleted: true },
+      reverted_by_previous: [{ seq: 103, actor, fields: ["amount"] }],
+    };
+    const lines = render(pendingDetail(conflict as never, NOW), terminal).split("\n");
+    const at = lines.findIndex((l) => l.startsWith("  before both:"));
+    expect(lines[at + 1]).toBe(
+      "    part of it has since been deleted and is left out; take_previous writes back what is there after the deletion",
+    );
+  });
+
+  it("in effect: part of it a deletion has since removed is said", () => {
+    const conflict = {
+      ...AWAITING,
+      type: "conflict",
+      status: "resolved",
+      reason: "stale_write",
+      decisions: [],
+      effective: { seq: 103, actor, values: {}, exists: true, partially_deleted: true },
+      candidates: [],
+      previous: { seq: 90, exists: true, values: { amount: { value: "2000", unit: "CNY" } } },
+      reverted_by_previous: [],
+    };
+    const lines = render(pendingDetail(conflict as never, NOW), terminal).split("\n");
+    expect(lines.find((l) => l.startsWith("  in effect:"))).toMatch(
+      /; part of it has since been deleted and is left out$/,
+    );
+  });
+
   it("a take_previous receipt: the writes it undid, as the details listed them", () => {
     const lines = render(
       resolveResult({

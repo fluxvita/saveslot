@@ -44,15 +44,27 @@ export interface SnapshotRef {
 
 export interface StorageBackend {
   /**
-   * Opens a tenant's storage: takes the single-writer lock, increments the ownership epoch,
-   * checks the storage format version (a higher version than the kernel supports is refused).
+   * Opens a tenant's storage: checks the storage format version (a higher version than the kernel
+   * supports is refused; a lower one upgraded). PGlite also takes the single-writer lock and
+   * increments the ownership epoch; PostgreSQL takes no ownership (02-architecture §7).
    */
   open(tenant: TenantRef, opts: { readonly create?: boolean }): Promise<TenantStore>;
 }
 
 export interface TenantStore {
-  /** Serial write transaction; checks the ownership epoch at the start. */
+  /**
+   * Serial write transaction. At its start PGlite checks the ownership epoch; PostgreSQL takes the
+   * tenant's lock and checks the storage format and the seal (02-architecture §7).
+   */
   write<T>(fn: (tx: Tx) => Promise<T>): Promise<T>;
+  /**
+   * A write transaction for the read records only (`read_log`, `read_log_rows`, `last_read`), and
+   * for nothing else: it takes no tenant lock and checks no seal, so it neither waits for the
+   * tenant's writes nor makes them wait; it checks the storage format as a read does
+   * (02-architecture §7 «read_log 的持久性»). Every other write goes through `write`. Present: a read's record is written before the read answers
+   * (the server mode, PostgreSQL); absent: it is kept in the read buffer (the local mode, PGlite).
+   */
+  recordReads?<T>(fn: (tx: Tx) => Promise<T>): Promise<T>;
   /** Read transaction; on PGlite it goes through the same queue as writes. */
   read<T>(fn: (tx: ReadTx) => Promise<T>): Promise<T>;
   /** Removes plaintext residue after a physical deletion. Each backend's method is set by experiment 7. */

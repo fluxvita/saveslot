@@ -1,8 +1,5 @@
 # Integration guide
 
-> Translated from docs/zh-CN/integration/README.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
-
 English · [简体中文](../zh-CN/integration/README.md)
 
 There are two ways to connect to saveslot. Choose by what you are connecting:

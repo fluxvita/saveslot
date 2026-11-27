@@ -1,7 +1,7 @@
 # @fluxvita/saveslot
 
-saveslot is a shared data layer for all of your agents: it records things that change over time and keeps the
-full history, from the original evidence to the current state.
+saveslot is the open-source database all your AI tools share. Tell one agent you ran 5 km; ask another how far
+you ran this week. Every value keeps its sources and its history, and the data stays yours.
 
 This package is the `saveslot` command: the command line and the saveslot service. It needs Node 24.22.1 or later
 on the 24 line, or 26.12.1 or later.

@@ -4,8 +4,10 @@
 // by ID.
 
 import {
+  type CallEffect,
   type ConnectionRecord,
   catalog,
+  effectOf,
   exportLog,
   type Fit,
   history,
@@ -33,7 +35,13 @@ import {
 import type { Scope } from "./auth.ts";
 import type { ServedTenant } from "./callers.ts";
 import { contractResult, type KernelCall, type Operation } from "./calls.ts";
-import { ContractError, contractError } from "./contract-error.ts";
+import {
+  ContractError,
+  contractError,
+  internalError,
+  lostConnectionOf,
+  RetryOnLostConnection,
+} from "./contract-error.ts";
 import type { CursorKeys } from "./cursor.ts";
 
 type Obj = Readonly<Record<string, unknown>>;
@@ -260,6 +268,36 @@ async function checkDecisionScope(o: {
 }
 
 /** Runs `call` as `operation`; resolves with the contract result, rejects with a ContractError. */
+/** The operations that append to the log: each says what it did (log/effect.ts) when it succeeds. */
+export const APPENDING_OPERATIONS: ReadonlySet<Operation> = new Set<Operation>([
+  "write",
+  "resolve",
+  "schema_draft",
+  "connections.issue",
+  "connections.update",
+  "connections.revoke",
+  "slots.remove",
+]);
+
+/**
+ * The operations that only read: run once more on the tenant opened again when they meet its
+ * connection gone with nothing given yet (02-architecture §7 «连接»). No operation that appends to
+ * the log may be here; operations.test.ts holds that.
+ */
+export const READ_ONLY_OPERATIONS: ReadonlySet<Operation> = new Set<Operation>([
+  "catalog",
+  "query",
+  "history",
+  "sql",
+  "pending",
+  "policy.get",
+  "sources",
+  "connections.list",
+  "reads.list",
+  "log.verify",
+  "log.end",
+]);
+
 export async function runOperation(o: {
   /** The caller's tenant, lent for this call. */
   readonly tenant: ServedTenant;
@@ -274,6 +312,11 @@ export async function runOperation(o: {
    * (`result_budget`), with nothing recorded.
    */
   readonly fit?: (result: unknown) => number | undefined;
+  /**
+   * Told, when the call is answered, what its operation did to the tenant's log (an operation that
+   * appends: appended, replayed or none, with the operation and restore count), for its record.
+   */
+  readonly onEffect?: (effect: CallEffect) => void;
 }): Promise<unknown> {
   const { ctx, params } = o.call;
   const store = o.tenant.store;
@@ -284,6 +327,15 @@ export async function runOperation(o: {
     caller === undefined
       ? undefined
       : (r) => caller(contractResult(r, o.cursors, ctx.actor, ctx.now));
+  // Whether the operation itself is done (a write committed): what follows only reads for the answer.
+  let done = false;
+  // What it did to the log (log/effect.ts), told once it is answered: kept from the kernel's
+  // result before that is turned into the contract's.
+  let effect: CallEffect | undefined;
+  const noted = <T>(r: T): T => {
+    effect = effectOf(r);
+    return r;
+  };
   try {
     const result = await (async (): Promise<unknown> => {
       switch (o.operation) {
@@ -307,12 +359,12 @@ export async function runOperation(o: {
         case "sources":
           return sources(store, ctx, params, fit);
         case "write":
-          return write(store, ctx, params);
+          return noted(await write(store, ctx, params));
         case "resolve":
           await checkDecisionScope({ store, call: o.call });
-          return resolve(store, ctx, params);
+          return noted(await resolve(store, ctx, params));
         case "schema_draft":
-          return schemaDraft(store, ctx, params);
+          return noted(await schemaDraft(store, ctx, params));
         case "reads.list":
           return readsList(store, ctx, params);
         case "log.verify":
@@ -366,6 +418,7 @@ export async function runOperation(o: {
             ...(params["scopes"] !== undefined ? { scopes: params["scopes"] as never } : {}),
             ...(slots !== undefined ? { slots: slots as never } : {}),
           });
+          noted(r.connection);
           return {
             ...connectionOut(r.connection, (await slotNames(o.tenant)).name),
             token: r.token,
@@ -375,26 +428,34 @@ export async function runOperation(o: {
           keysOnly(params, ["id", "name"]);
           text(params, "id");
           text(params, "name");
-          const c = await renameConnection(store, ctx, params as never);
+          const c = noted(await renameConnection(store, ctx, params as never));
           return connectionOut(c, (await slotNames(o.tenant)).name);
         }
         case "slots.remove":
           keysOnly(params, ["slot_id"]);
-          return removeSlot(store, ctx, params as never);
+          return noted(await removeSlot(store, ctx, params as never));
         case "connections.revoke": {
           keysOnly(params, ["id"]);
           text(params, "id");
-          const c = await o.tenant.connections.revoke(ctx, params["id"] as never);
+          const c = noted(await o.tenant.connections.revoke(ctx, params["id"] as never));
           return connectionOut(c, (await slotNames(o.tenant)).name);
         }
       }
     })();
-    return contractResult(
+    done = true;
+    const answer = contractResult(
       await withNotices(o.tenant, ctx, o.operation, params, result),
       o.cursors,
       ctx.actor,
       ctx.now,
     );
+    if (effect !== undefined) o.onEffect?.(effect);
+    // An operation that appends always says what it did (02-architecture §9 «调用记录»): a success
+    // with no effect is a defect, told so it is seen, not guessed at in the record.
+    else if (APPENDING_OPERATIONS.has(o.operation)) {
+      o.warn("call_effect_missing", { operation: o.operation });
+    }
+    return answer;
   } catch (e) {
     if (e instanceof NothingKept) {
       throw new ContractError("too_large", "the result is larger than a result may be", {
@@ -402,7 +463,25 @@ export async function runOperation(o: {
         narrow_by: [],
       });
     }
-    const c = contractError(e, o.warn);
+    // A call that may have taken effect (its operation done, not a read), its answer not made for
+    // the connection gone: not `busy`, which says nothing was recorded. Internal, as a COMMIT
+    // unanswered is: the caller reads the state before sending it again.
+    const gone = lostConnectionOf(e);
+    if (done && !READ_ONLY_OPERATIONS.has(o.operation) && gone !== undefined) {
+      o.warn("tenant_connection_lost", { tenant: o.tenant.tenant, code: gone, after: "effect" });
+      throw internalError(e, o.warn);
+    }
+    // A read meeting its tenant's connection gone, nothing given yet: once more, opened again.
+    if (
+      o.tenant.retryOnLost === true &&
+      READ_ONLY_OPERATIONS.has(o.operation) &&
+      lostConnectionOf(e) === "connection_lost"
+    ) {
+      // This try given up: logged here, whether or not the next one is answered.
+      o.warn("tenant_connection_lost", { tenant: o.tenant.tenant, code: "connection_lost" });
+      throw new RetryOnLostConnection();
+    }
+    const c = contractError(e, o.warn, { tenant: o.tenant.tenant });
     // The item as it is now, with the decisions this credential may take.
     if (c.code === "confirmation_mismatch" && c.detail["current"] !== undefined)
       throw new ContractError(c.code, c.message, {

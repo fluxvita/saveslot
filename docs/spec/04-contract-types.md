@@ -1,7 +1,6 @@
 # saveslot · Type definitions of the operation contract
 
-> Translated from docs/zh-CN/spec/04-contract-types.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/spec/04-contract-types.md)
 
 > This document is the **structure** of the operation contract: the parameters, results, errors and all enumerations of every operation, written as TypeScript types. The rules and explanations (what is returned when, and why) are in [`04-contract.md`](04-contract.md); the kernel rules are in [`03-data-model/`](03-data-model/README.md); how MCP and HTTP carry the contract is in [`05-surfaces.md`](05-surfaces.md).
 > **Field names, nested structures and enumeration values are defined by this document.** The two packages `contract-core` / `contract` in the implementation correspond to it item by item; OpenAPI is generated from them, and the MCP `inputSchema` is composed from the types in this file by the mapping table in section 1 of [`05-surfaces.md`](05-surfaces.md). The `description` of an MCP parameter is wording written for the model, and its original text is in [`05-surfaces.md`](05-surfaces.md) 9.1; the comments on parameters in this document describe types and constraints.
@@ -678,7 +677,7 @@ interface ChangesParams extends CommonParams, PageParams {
   mode: "changes";
   table: TableName;              // a base table. A derived table reports invalid_argument (derived_table)
   row?: RowId; entity?: EntityId; entity_key?: Record<FieldName, Value>;   // no target = the whole table
-  /** Exclusive. Required. "my_last_read" = the position this connection last read (with task, only the same task counts), recognized by the range the read covered (a call on the whole table only recognizes reads that covered the table); if there was no read, reports read_first (no_read); if it was read only under another task, reports read_first (task_mismatch). 0 looks from the beginning. */
+  /** Exclusive. Required. "my_last_read" = the latest position this connection has read (with task, only the same task counts), recognized by the range the read covered (a call on the whole table only recognizes reads that covered the table); if there was no read, reports read_first (no_read); if it was read only under another task, reports read_first (task_mismatch). 0 looks from the beginning. */
   since: RecordPoint | "my_last_read";
   /** Inclusive. Default latest. */
   until?: RecordPoint;
@@ -1079,7 +1078,7 @@ interface AwaitingDetail extends ItemBase {
   /** The proposed content, one of three: set is field values; set: null is a revoke; when the proposal is a revert, set is not given and revert is given (cause undo_includes_later).
    *  What a revert will write back is not listed here: the writes that will be reverted are in impact.reverted, and the values gone back to are in the receipt after execution. */
   proposal: { seq: Seq; actor: Actor; intent: Intent; set?: Values | null; revert?: { undo: Seq; include_later?: boolean }; valid?: Interval };
-  current: { values?: Values; spans?: Span[] };   // this row read at the operation number of the item version, with the same range as ConflictDetail.effective
+  current: { values?: Values; spans?: Span[]; partially_deleted?: true };   // this row read at the operation number of the item version, with the same range as ConflictDetail.effective; partially_deleted as on ConflictDetail.effective
   impact: AwaitingImpact;
 }
 
@@ -1100,6 +1099,8 @@ interface FlaggedDetail extends ItemBase {
   /** The set of duplicate_keys that matched, and the key values. */
   keys: FieldName[];
   matched_values?: Values;
+  /** A value of matched_values came from a contribution a deletion still pending removed: those fields are not there, and are not written as null (a closed item is read at its own version, which a later deletion does not refresh). */
+  partially_deleted?: true;
 }
 
 interface ConflictDetail extends ItemBase {
@@ -1114,12 +1115,15 @@ interface ConflictDetail extends ItemBase {
    *  The top-level seq / actor is the one with the largest operation number among these segments (event tables and timeless tables have only one); not given when no operation gave any segment.
    *  After a revoke is undone, "who gave it" differs between the two kinds of table: on event tables and timeless tables it is that undo (it makes the row exist again);
    *  on state tables it is the write that originally gave the value for this segment (the undo only makes those values take effect again). The asymmetry comes from the version table: undoing a revoke records a cell for "exists" on event tables and timeless tables and records none on state tables; this follows the cells and does not seek consistency. */
-  effective: { seq?: Seq; actor?: Actor; values?: Values; spans?: Array<Span & { seq?: Seq; actor?: Actor }>; exists: boolean };
+  /** partially_deleted: a value on this side came from a contribution a deletion still pending removed; those fields are not there, and are not written as null. A closed item is read at its own version, which a later deletion does not refresh. */
+  effective: { seq?: Seq; actor?: Actor; values?: Values; spans?: Array<Span & { seq?: Seq; actor?: Actor }>; exists: boolean; partially_deleted?: true };
   candidates: Candidate[];
   /** When the cause is restored_candidate: the item the candidate was originally in. @later */
   related_item?: ItemId;
-  /** What take_previous would go back to: the values at the merge base (the earliest of the ver values the candidates carry), this row read at the operation number of the merge base, with the same range as effective. */
-  previous: { seq: Seq; exists: boolean; values?: Values; spans?: Span[] };
+  /** What take_previous would go back to: the values at the merge base (the earliest of the ver values the candidates carry), this row read at the operation number of the merge base, with the same range as effective.
+   *  partially_deleted: a value at the merge base came from a contribution a deletion still pending removed; those fields are not in values (or in each span's values), and are not written as null.
+   *  This is the merge base as recorded then less the deleted content, not the state after the replay; take_previous writes back the state at that place in the replay, and the two may differ (data-model "Deletion", "Version table"). */
+  previous: { seq: Seq; exists: boolean; values?: Values; spans?: Span[]; partially_deleted?: true };
   /** The writes that take_previous would revert: all writes that took effect on this conflict unit after the merge base; and the writes outside the unit that gave a value within the item's interval after the merge base
    *  and would lose their value when take_previous returns this segment to having no value (when this segment has no value at the merge base, see cause three of ④ in "Time · High-impact writes"). */
   reverted_by_previous: Array<{ seq: Seq; actor: Actor; fields: Array<FieldName | "*"> }>;   // writes later than the merge base whose result as read would change if the row went back to the merge base now; the same basis as AwaitingImpact.reverted (write-and-read, "Undoing a write" judges that one by the result that can be read), and the same shape
@@ -2206,7 +2210,7 @@ The accompanying fields of each error code:
 | `unauthenticated` | `missing` / `invalid` / `revoked` / `expired` / `account_disabled` (server mode: the account of the tenant owner is disabled) | — |
 | `insufficient_scope` | — | `required_scope: Scope \| "user_session" \| "all_slots"` (`all_slots`: this operation needs a credential whose scope is all slots, as when a credential limited to some slots creates a slot. Reported only for visible targets and does not reveal anything outside the visible range) |
 | `rate_limited` | `quota` / `busy` (the same tenant already has a reconcile or an import running) | `retry_after` |
-| `handle_expired` | `expired` / `restored` / `executed` / `derived_changed` (a derived table was refreshed during paging; re-read from the first page) | `deletion?: ItemId` (the `dc_` that has already been executed) |
+| `handle_expired` | `expired` / `restored` / `executed` / `derived_changed` (a derived table was refreshed during paging; re-read from the first page) / `deletion_changed` (a deletion was confirmed or cancelled after the first page; re-read from the first page) | `deletion?: ItemId` (the `dc_` that has already been executed) |
 | `not_in_this_version` | `parameter` / `value` / `operation` / `table_written` (a change allowed only on a table never written is used on a table that has been written) / `not_implemented` (a case that the implementation of 0.1.0 cannot reach yet: the parameter itself is valid, and it is not a parameter reserved for a later version) | `param?`, `value?` (carried when `reason` is `value` and that value is one of the fixed values of the parameter in the contract; a string the caller wrote casually is not carried), `operation?` |
 | `unavailable` | `busy` / `restoring` / `importing` / `reconciling` / `starting` / `stopping` | `retry_after?` |
 | `internal` | — | `incident: string` (a number for troubleshooting, with no content) |

@@ -122,7 +122,7 @@ async function refused(params: unknown, o: Parameters<typeof ctx>[0] = {}) {
 }
 
 beforeAll(async () => {
-  s = await openReusable("saveslot-pending-");
+  s = await openReusable("saveslot-pending-", { buffered: true });
 }, T);
 afterAll(async () => {
   await s?.close();

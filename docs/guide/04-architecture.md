@@ -1,7 +1,6 @@
 # 04 · Architecture
 
-> Translated from docs/zh-CN/guide/04-architecture.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/guide/04-architecture.md)
 
 The first three chapters covered the data inside saveslot: the log, tables, provenance, items. This chapter covers what the program that holds this data looks like: how many layers it has, what each layer is responsible for, how a call travels from an agent to the log, what an event looks like in storage, and how the process runs.
 
@@ -385,10 +384,14 @@ Why this technology stack: PGlite, the database used in local mode, can run only
 
 ### The single writer
 
-**For the storage of one tenant, only one process may write at a time.** Two processes writing the same data at the same time would corrupt it. saveslot uses two safeguards:
+**For one tenant, only one write may be in progress at a time.** Two writes changing the same data at the same time would corrupt it. The two modes do this differently.
+
+In local mode, a tenant's storage is open in only one process at a time, with two safeguards:
 
 - **A lock.** A lock is taken when the tenant's storage is opened; another process that cannot get it cannot open the storage.
 - **An ownership number.** Each time the storage is opened, a number is incremented by 1 and recorded in the storage; after that every write transaction first checks this number. If it does not match, another process has taken over this tenant, and this process gives it up immediately. This guards against the case the lock does not, for example a process that was stuck for a long time and then recovers without knowing it has already been replaced.
+
+In server mode, several processes may have one tenant open at once; no ownership is taken and there is no ownership number. Each write transaction first takes the tenant's lock in the database, so writes go one after another whichever process they land on. Each read and write transaction also first checks the storage format: when another version has upgraded it to a format this version does not know, the call is not done, and the caller tries again later.
 
 This is also why, in local mode, all agents must access data through the same saveslot service process: the command line tool and the MCP forwarding program never open the data directory directly, and always connect to that process.
 
@@ -453,7 +456,7 @@ What you get after opening is only a few actions:
 
 | Action | Meaning |
 |---|---|
-| Write transaction | Runs serially; first checks the ownership number at the start |
+| Write transaction | Runs serially; at the start, local mode first checks the ownership number, server mode first takes the tenant's lock and checks the storage format |
 | Read transaction | Read-only |
 | Clean up leftovers | After a physical erasure, clears the places inside the database that may still hold plaintext |
 | Format version | The version number of saveslot's own internal tables |

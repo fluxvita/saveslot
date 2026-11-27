@@ -1,7 +1,6 @@
 # saveslot · Scope of the first version
 
-> Translated from docs/zh-CN/spec/07-scope-v1.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/spec/07-scope-v1.md)
 
 > This document fixes only "what the first version does, how far it goes, and in what order it is built". The definitions of the mechanisms themselves are in positioning, architecture, data-model, contract and surfaces; undecided items are in [`08-open-questions.md`](08-open-questions.md).
 
@@ -47,7 +46,7 @@ The "Effect on invariants" column lists only the K affected; "—" means no K is
 | The three classes of state (a / b / c) and "what is lost if it is lost"; the list of tables of storage format v1 | architecture §3, §8 | Yes | — | When writing code every table has to be classified | K12 | P0 (list), P1 |
 | `verify` (event header chain, checksums, removed, restore gaps) | contract §17 `log.verify` | Yes | — | Low cost, and a safeguard against mistaken operations | K1 | P1 |
 | Reconciliation (replay vs live) | architecture §7, §11 | Simplified | Periodic background sampling; the first version has only a full replay comparison triggered by hand in a user session (`log.reconcile`, the CLI's `saveslot verify --replay`) | The user count is small, so a full replay comparison is affordable | K12: the first version does not look for changes that bypass `apply` on its own | P2 |
-| Single-writer lock, ownership epoch, PGlite living in the DB Worker | architecture §7 | Yes | Whether to enable the slow-query "kill the Worker on timeout" is decided by the conclusion of experiment 2; how the lock is taken follows experiment 8; `unavailable` (`busy`) goes together with the timeout policy of the write queue: in this version write requests to the same storage queue and wait with no timeout, so it is never given | Two processes writing to the same directory would corrupt the data | — | P1 |
+| Single-writer lock, ownership epoch (local mode; server mode checks the format in each read and write transaction instead), PGlite living in the DB Worker | architecture §7 | Yes | Whether to enable the slow-query "kill the Worker on timeout" is decided by the conclusion of experiment 2; how the lock is taken follows experiment 8; `unavailable` (`busy`) goes together with the timeout policy of the write queue: in this version write requests to the same storage queue and wait with no timeout, so it is never given | Two processes writing to the same directory would corrupt the data | — | P1 |
 | Storage backends: PGlite, PostgreSQL | architecture §8 | Yes | — | Both deployments are needed; the replay comparison needs two backends | K12 (replay comparison) | P1 (PGlite), P2 (PostgreSQL) |
 | Storage format version upgrade | architecture §8 "Format versions, export, import and restore" | Simplified | The first version has only one format version: only "a higher version refuses to open" is implemented, and the upgrade flow is later | There is no old format to upgrade yet | — | P1 |
 | Physical snapshot `snapshot()` | architecture §8 | Later | — | It is used only to speed things up; not doing it leaves one fewer kind of backup to re-apply deletions to | — | — |

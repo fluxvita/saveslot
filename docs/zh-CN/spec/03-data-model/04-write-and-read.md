@@ -1,5 +1,7 @@
 # saveslot · 数据层机制 · 04 写入与读取
 
+[English](../../../spec/03-data-model/04-write-and-read.md) · 简体中文
+
 > 数据层机制的一部分，目录见 [`README.md`](README.md)。文中「…」引用的节可能在同目录的其他文件里，按目录查。
 
 ## 写入：分工与请求

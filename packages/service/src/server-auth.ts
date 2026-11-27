@@ -13,6 +13,8 @@
 // then have to reach it in every process.
 
 import { type AuthFailure, type Principal, principalFromRow, principalRow } from "./auth.ts";
+import { type CallerSource, connectionSource, SESSION_SOURCE } from "./caller-source.ts";
+import { LostConnectionOf, lostConnectionOf } from "./contract-error.ts";
 import type { ControlPlane, CredentialEntry, TenantEntry, TenantId } from "./control-plane.ts";
 import type { IdentityProvider } from "./identity.ts";
 import { isInstant } from "./server-control-plane.ts";
@@ -39,6 +41,8 @@ export interface Caller {
    * it with what is open (TenantPool `use`), so that the request reads it once.
    */
   readonly entry?: TenantEntry;
+  /** How its credential came to be, for its call records. */
+  readonly source?: CallerSource;
 }
 
 /**
@@ -85,24 +89,32 @@ export async function authenticateServer(o: {
   if (state !== "active") return { code: "unauthenticated", reason: "invalid" };
   // Held inside this use, so that it is never idle between this use and the operation's.
   let release: (() => void) | undefined;
-  const principal = await o.pool.use(
-    entry.tenant,
-    async (t) => {
-      const p = principalFromRow(
-        entry.kind,
-        entry.principal,
-        await principalRow(t.store, entry.principal),
-      );
-      if ("kind" in p) release = o.pool.hold(entry.tenant);
-      return p;
-    },
-    tenant !== undefined ? { entry: tenant } : {},
-  );
+  let source: CallerSource = SESSION_SOURCE;
+  const principal = await o.pool
+    .use(
+      entry.tenant,
+      async (t) => {
+        const row = await principalRow(t.store, entry.principal);
+        const p = principalFromRow(entry.kind, entry.principal, row);
+        if ("kind" in p) release = o.pool.hold(entry.tenant);
+        if ("kind" in p && p.kind === "connection") {
+          source = connectionSource(row?.via ?? null, row?.client ?? null);
+        }
+        return p;
+      },
+      tenant !== undefined ? { entry: tenant } : {},
+    )
+    .catch((e: unknown) => {
+      // Its tenant's connection gone: said with the tenant, for the log (server-callers.ts).
+      if (lostConnectionOf(e) === undefined) throw e;
+      throw new LostConnectionOf(entry.tenant, e);
+    });
   return "kind" in principal && release !== undefined
     ? {
         tenant: entry.tenant,
         principal,
         release,
+        source,
         ...(tenant !== undefined ? { entry: tenant } : {}),
       }
     : (principal as AuthFailure);

@@ -137,6 +137,48 @@ const lacksRequired = (schema: TableSchema, o: Op) =>
 /** A JSON round trip, as the records will make through events. */
 const roundTrip = <T>(x: T): T => JSON.parse(JSON.stringify(x)) as T;
 
+/**
+ * The samples. With more than one required field the random steps write one field at a time, so
+ * they are completed here, other tables drawing as before:
+ * - the first write of a log (op 10) is given every required field it lacks in three samples of
+ *   four: the steps create the entity with f2 alone, which such a table refuses, and nearly every
+ *   sample would stop at that refusal. The fourth keeps the refusal of a first creation lacking one.
+ * - a later write (not a resend marking a field no-op) is given the required fields it lacks in
+ *   about half the samples' writes, with a
+ *   value the first write gives or another one: so a write fills a gap next to a stretch with both
+ *   defining fields, one of them the same across the boundary or both (05-time «高影响写入»).
+ */
+const samplesOf = (schema: TableSchema, isState: boolean) =>
+  schema.required.length < 2
+    ? scenario(isState)
+    : fc
+        .tuple(
+          scenario(isState),
+          fc.nat({ max: 3 }),
+          fc.array(fc.constantFrom<null | "1" | "a" | "b">(null, null, null, "1", "a", "b"), {
+            minLength: 16,
+            maxLength: 16,
+          }),
+        )
+        .map(([{ ops, decisions }, n, extra]) => ({
+          decisions,
+          ops: ops.map((o, i): Op => {
+            // A resend marking a field no-op gives no value: it stays as drawn.
+            if (o.kind !== "write" || o.noop !== undefined) return o;
+            const first = o.op === 10;
+            const v = extra[i] ?? null;
+            if (first ? n === 0 : v === null) return o;
+            const sources = Object.values(o.fields)[0]?.sources ?? [`S${o.op}`];
+            const filled = Object.fromEntries(
+              schema.required.map((f) => [
+                f,
+                { value: first ? (f === "f3" ? "a" : "1") : (v as string), sources },
+              ]),
+            );
+            return { ...o, fields: { ...filled, ...o.fields } };
+          }),
+        }));
+
 /** The two fields of the generator judged together (01-objects «冲突单元»). */
 const GROUPS = [["f2", "f3"]] as const;
 
@@ -148,13 +190,12 @@ const both = [
   // "Has a value" defined by two fields (05-time «无值区间»): a value ↔ no value boundary is theirs
   // together (高影响写入), and a write into a gap needs both.
   ["state, f2 and f3 required", { ...STATE, required: ["f2", "f3"] }, true],
+  ["state, no required field", { ...STATE, required: [] }, true],
 ] as const;
 
 describe.each(both)("%s table", (_, schema, isState) => {
   it("every step leaves the row or entity the reference evaluator gives", () => {
-    // Two required fields: a write of one into a gap is refused, so fewer samples reach an item
-    // (about 0.3 a run at the default 1,500 samples, against well over half with one).
-    const hits = new Hits(schema.required.length > 1 ? 0.2 : 0.3);
+    const hits = new Hits(0.3);
     let takesCompared = 0;
     const seen: Record<string, number> & {
       samples: number;
@@ -445,7 +486,7 @@ describe.each(both)("%s table", (_, schema, isState) => {
         });
       });
     };
-    fc.assert(fc.property(scenario(isState), hits.track(sample)), {
+    fc.assert(fc.property(samplesOf(schema, isState), hits.track(sample)), {
       numRuns: RUNS,
       ...(SEED !== undefined ? { seed: SEED } : {}),
       ...(process.env["PROP_PATH"] ? { path: process.env["PROP_PATH"], endOnFailure: true } : {}),
@@ -469,11 +510,11 @@ describe.each(both)("%s table", (_, schema, isState) => {
       ? [
           "take",
           "takeExistence",
-          // With two required fields, about one run in 1,500 samples: not a floor there.
-          ...(schema.required.length > 1 ? [] : ["takeManyStretches"]),
-          "takeRefused_required_in_gap",
+          "takeManyStretches",
+          // With no required field there is no required field to miss.
+          ...(schema.required.length === 0 ? [] : ["takeRefused_required_in_gap"]),
           "existenceSeveralFields",
-          "takeRefused_missing_required",
+          ...(schema.required.length === 0 ? [] : ["takeRefused_missing_required"]),
           // A write's candidates on two units: f2 and f3 are two units only without the group.
           ...("groups" in schema ? ["groupWhole", "groupResolved"] : ["mixedUnits"]),
         ]

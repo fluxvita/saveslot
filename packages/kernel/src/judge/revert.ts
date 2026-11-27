@@ -293,7 +293,7 @@ function writeBackDeps(
  * The record of an `undo` of operation `m` (03-deletion «回掉的权威定义» ①; 04-write-and-read
  * «撤回某次写入（undo）»): every (event, target) of m's base writes on this row as written,
  * whatever their status then; when m is itself a revert, every target of its own record on m's
- * event; with `include_later`, each later item in effect that supersedes an item in effect of m
+ * event; when m confirms a write, every target of that write as written, on m's event; with `include_later`, each later item in effect that supersedes an item in effect of m
  * and meets it (marked `later`).
  */
 export function undoEntries(
@@ -320,12 +320,18 @@ export function undoEntries(
       for (const t of [...new Set(own.entries.map((e) => e.target))].sort()) {
         add({ event: rec.event, target: t });
       }
-    } else if (
-      rec.kind === "write" ||
-      rec.kind === "revoke" ||
-      rec.kind === "confirm" ||
-      rec.kind === "take_candidate"
-    ) {
+    } else if (rec.kind === "confirm") {
+      // A confirmation of a write: its event on every target of the confirmed write as written,
+      // whatever was awaiting at the confirmation, not only what it put into effect then (09 §5.7
+      // «回退记录里列哪些条目»). A target a deletion later puts into effect through the
+      // confirmation is undone with it.
+      const confirmed = state.records.flatMap((x) =>
+        x.event === rec.target && "items" in x ? x.items : [],
+      );
+      for (const t of [...new Set(confirmed.map((i) => i.target))].sort()) {
+        add({ event: rec.event, target: t });
+      }
+    } else if (rec.kind === "write" || rec.kind === "revoke" || rec.kind === "take_candidate") {
       for (const t of [...new Set(rec.items.map((x) => x.target))].sort()) {
         add({ event: rec.event, target: t });
       }

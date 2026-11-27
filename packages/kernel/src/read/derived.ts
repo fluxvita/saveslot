@@ -304,7 +304,7 @@ export async function queryDerived(
     })),
     order: order.map((o) => ({ field: o.field.id, dir: o.dir })),
   } as JsonValue);
-  const position = positionOf(params, { identity, specs, restoreCount: restore, latest });
+  const position = await positionOf(tx, params, { identity, specs, restoreCount: restore, latest });
   const atRead = computedAtRead(t);
   const bases = named.slot.compiled.tables.filter(
     (b): b is CompiledBaseTable =>

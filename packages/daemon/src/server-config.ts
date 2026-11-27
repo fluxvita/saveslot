@@ -29,6 +29,7 @@ export const SERVER_VARIABLES = [
   "SAVESLOT_SHUTDOWN_TIMEOUT",
   "SAVESLOT_TENANT_CONNECTIONS",
   "SAVESLOT_TENANT_IDLE",
+  "SAVESLOT_CALL_RECORDS",
 ] as const;
 export type ServerVariable = (typeof SERVER_VARIABLES)[number];
 
@@ -57,6 +58,11 @@ export interface ServerConfig {
   readonly allowedOrigins: readonly string[];
   /** Absent: rate limiting is off. */
   readonly rateLimit?: { readonly perMinute: number; readonly burst: number };
+  /**
+   * Whether each call writes its record on the standard output (`SAVESLOT_CALL_RECORDS`, `on` or
+   * `off`, off by default; 02-architecture §9 «调用记录»). Absent: off.
+   */
+  readonly callRecords?: true;
   /**
    * The external login's three settings, all set; absent, the identity provider is the local
    * accounts. The address and the key file are checked when they are read (server-identity.ts).
@@ -363,6 +369,12 @@ export function readServerConfig(
   const idleSeconds =
     take("SAVESLOT_TENANT_IDLE", false, within(MAX_TENANT_IDLE_SECONDS)) ??
     DEFAULT_TENANTS.idleSeconds;
+  const callRecords =
+    take("SAVESLOT_CALL_RECORDS", false, (s) => {
+      if (s === "on") return true;
+      if (s === "off") return false;
+      throw new Bad("on or off");
+    }) ?? false;
   if (problems.length > 0) throw new ServerConfigInvalid(problems);
   if (control === undefined || cellAt === undefined || pub === undefined || keyFile === undefined) {
     throw new Error("unreachable: a required variable without a problem");
@@ -389,5 +401,6 @@ export function readServerConfig(
       : {}),
     shutdown: { drainSeconds, timeoutSeconds },
     tenants: { maxOpen, idleSeconds },
+    ...(callRecords ? { callRecords: true as const } : {}),
   };
 }

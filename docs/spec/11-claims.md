@@ -1,7 +1,6 @@
 # saveslot · Claims index
 
-> Translated from docs/zh-CN/spec/11-claims.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/spec/11-claims.md)
 
 > The statements in the specification that are written as "in any case ...", and which test guards each. One claim per row: where the original text is, what it is compared against, which test it is, and whether it holds now. Where there is no test, "No test" is written as it is.
 

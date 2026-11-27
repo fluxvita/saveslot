@@ -375,6 +375,10 @@ function compare(
             (isState && JSON.stringify(lb.valid) !== JSON.stringify(x.valid)) ||
             JSON.stringify(lb.deps.map(r).sort()) !== JSON.stringify(x.deps.map(r).sort()) ||
             (x.content !== undefined && JSON.stringify(lb.content) !== JSON.stringify(x.content)) ||
+            // A revert's write-back restated as a restore where a revoke was left, or the reverse:
+            // a restatement gives that kind as `restored`, not as its content.
+            ((lb.content?.kind === "restore" || lb.content?.kind === "revoke") &&
+              (x.restored === true) !== (lb.content.kind === "restore")) ||
             JSON.stringify((lb.carried ?? []).map(r)) !== JSON.stringify((x.carried ?? []).map(r));
           const rests =
             (before?.deps ?? []).some((d) => goneHere(d) || byRef.has(r(d))) ||
@@ -465,31 +469,14 @@ function compare(
             ...Object.keys(view(c.replay.state).fields),
           ]),
         ];
-        // One exception to comparing indices: an index the cancelled deletion alone gave (no
-        // block in the records as written, a block from the first deletion's restatements, none
-        // from the second's). Whether it survives depends on whether the second deletion gave its
-        // block again (09 §5.9 rule 2), which the kernel reads from `deps` and the reference
-        // approximates by ends (see `graceCover`); status, interval and value are still compared.
-        // Whether such an index counts as used when new items are numbered (09 §5.7) is open.
-        const at = (x: { event: number; target: string; k: number }) =>
-          `${x.event}/${x.target}/${x.k}`;
-        const givenAgain = new Set(
-          then.restated.filter((r) => r.status !== "dropped").map((r) => at(r.item)),
-        );
-        const written = givenByRecords(records);
-        const firstAlone = new Set(
-          once.restated
-            .filter(
-              (r) =>
-                r.status !== "dropped" &&
-                !givenAgain.has(at(r.item)) &&
-                !(written.get(`${r.item.event}/${r.item.target}`) ?? []).some(
-                  (x) => x.k === r.item.k,
-                ),
-            )
-            .map((r) => at(r.item)),
-        );
-        const indexed = (x: { event: number; target: string; k: number }) => !firstAlone.has(at(x));
+        // Indices are not compared after a cancellation; status, interval and value are. An index
+        // the cancelled deletion alone gave is left without a block, and the kernel and the
+        // reference number the items left on that target differently, one 0 and the other 1
+        // (decision record `index-given-only-by-cancelled-deletion.md` §1). Its §7: "撤回之后的性质
+        // 比较继续不比下标". The second part of that decision (spec, kernel, reference) restates
+        // such an index as dropped and gives the item left a new number; its fixed cases (§8)
+        // compare the indices again then. Seed -1335765174 is held below.
+        const indexed = () => false;
         expect({
           items: itemKeys(
             c.replay.state.items.filter((x) => !proposalsC.has(x.event)),
@@ -506,7 +493,9 @@ function compare(
         );
         // The second deletion cancelled instead (the one confirmed after): the state is the
         // first's alone, as the reference evaluator gives it; then the first cancelled too: the
-        // records' state and items, as the reference gives both cancellations.
+        // records' state and items, as the reference gives both cancellations. Without indices, as
+        // above: after a cancellation the two may number the items left otherwise
+        // (`index-given-only-by-cancelled-deletion.md` §1, §7).
         const sameAsRef = (state: RowState, ref: ReturnType<typeof evaluateLog>["final"]): void => {
           const proposals = new Set(
             state.records
@@ -517,10 +506,13 @@ function compare(
             ...new Set([...Object.keys(ref.fields), ...Object.keys(view(state).fields)]),
           ];
           expect({
-            items: itemKeys(state.items.filter((x) => !proposals.has(x.event))),
+            items: itemKeys(
+              state.items.filter((x) => !proposals.has(x.event)),
+              () => false,
+            ),
             fields: timelines(view(state).fields as never, names),
           }).toEqual({
-            items: itemKeys(ref.items),
+            items: itemKeys(ref.items, () => false),
             fields: timelines(ref.fields as never, names),
           });
         };
@@ -1403,6 +1395,239 @@ describe("a group value past a field's seen interval (a property counterexample)
       },
     ] as Op[];
     compare({ ...STATE, groups: GROUPS }, true, ops, [], 112260546, [60]);
+  });
+});
+
+describe("two deletions, the first cancelled: the items left numbered otherwise (a property counterexample)", () => {
+  // State table, seed -1335765174 of the reverts property. #61 takes the previous value against
+  // #41 and #51; #71 writes f2 = 2 from 11-01 to the next change; the decision inserts an undo
+  // (event 74) of #61 with nothing to write back on f2 when written. Deleting S40 (#41) gives 74 a
+  // first write-back on f2, index 0, [11-03, 11-07) = 3, from the deletion alone. Deleting S3 (#71)
+  // too and cancelling the first leaves 74 two write-backs on f2, [11-01, 11-03) = 2 and
+  // [11-03, 11-07) = 3: the same status, interval and value on both sides, the kernel numbering
+  // them 0 and 1, the reference 1 and 0 (decision record `index-given-only-by-cancelled-deletion.md`
+  // §1). Indices are not compared after a cancellation (its §7); the second part of that decision
+  // numbers them again, and this case compares them then.
+  it("the deletion's replay and both cancellations leave what the reference evaluator gives", () => {
+    const span = (from: string, to: string) => ({
+      from: { mode: "given", value: from },
+      to: { mode: "given", value: to },
+    });
+    const write = (op: number, seen: number, valid: unknown, v: string, ack = true) => ({
+      kind: "write",
+      op,
+      event: op + 1,
+      seen,
+      valid,
+      fields: { f2: { value: v, sources: [`S${op}`] } },
+      ...(ack ? { acknowledge: ["overwrite"] } : {}),
+    });
+    const ops = [
+      write(10, 0, { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } }, "1"),
+      write(20, 10, span("2026-11-01", "2026-11-07"), "2"),
+      write(30, 20, span("2026-11-03", "2026-11-09"), "3"),
+      write(40, 10, span("2026-11-01", "2026-11-05"), "4", false),
+      write(50, 20, span("2026-11-03", "2026-11-07"), "5", false),
+      {
+        kind: "resolve",
+        op: 60,
+        event: 61,
+        decision: "take_previous",
+        candidates: [41, 51],
+        unit: "f2",
+      },
+      {
+        kind: "write",
+        op: 70,
+        event: 71,
+        seen: 60,
+        valid: { from: { mode: "given", value: "2026-11-01" }, to: { mode: "next_change" } },
+        fields: { f2: { value: "2", sources: ["S3", "S4"], explicit: true } },
+        acknowledge: ["overwrite"],
+      },
+    ] as Op[];
+    const decisions: Decision[] = [
+      { after: 303906791, pick: 0, kind: "undo", flag: 0, focus: true },
+    ];
+    compare(STATE, true, ops, decisions, ["S40", "S3"]);
+  });
+});
+
+describe("an undo of a confirmation lists every target of the confirmed write (a property counterexample)", () => {
+  // State table, f2 and f3 required; seed 1473863789 of the reference property's tier. #61 (seen
+  // #21) writes (9, b) over [11-01, 11-11): f2 is a candidate against #31 and #51, f3 awaiting (①,
+  // the f3 change at 11-03 erased). #63 confirms it: f3 takes effect, f2 stays a candidate. #65
+  // undoes #63. Its record is #64 on every target #61 wrote, f2 and f3, not only f3, which the
+  // confirmation put into effect then (09 §5.7 «回退记录里列哪些条目»).
+  const schema = { ...STATE, required: ["f2", "f3"] as FieldId[] };
+  const span = (from: string, to: string) => ({
+    from: { mode: "given", value: from },
+    to: { mode: "given", value: to },
+  });
+  const open = (from: string) => ({ from: { mode: "given", value: from }, to: { mode: "open" } });
+  const ops = [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      seen: 0,
+      valid: open("2026-11-01"),
+      fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "a", sources: ["S10"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 20,
+      event: 21,
+      seen: 10,
+      valid: open("2026-11-09"),
+      fields: { f2: { value: "7", sources: ["S12"] }, f3: { value: "1", sources: ["S12"] } },
+      acknowledge: ["overwrite"],
+      seenCurrent: true,
+    },
+    {
+      kind: "write",
+      op: 30,
+      event: 31,
+      seen: 20,
+      valid: span("2026-11-03", "2026-11-05"),
+      fields: { f2: { value: "2", sources: ["S20"] } },
+      acknowledge: ["overwrite"],
+      seenCurrent: true,
+    },
+    {
+      kind: "revoke",
+      op: 40,
+      event: 41,
+      seen: 30,
+      valid: open("2026-11-11"),
+      validSources: ["S30"],
+      seenCurrent: true,
+    },
+    {
+      kind: "write",
+      op: 50,
+      event: 51,
+      seen: 20,
+      valid: { from: { mode: "given", value: "2026-11-03" }, to: { mode: "next_change" } },
+      fields: { f2: { value: "5", sources: ["S40"] }, f3: { value: "b", sources: ["S40"] } },
+    },
+    {
+      kind: "resolve",
+      op: 53,
+      event: 53,
+      decision: "keep_effective",
+      candidates: [51],
+      unit: "f2",
+    },
+    {
+      kind: "write",
+      op: 60,
+      event: 61,
+      seen: 20,
+      valid: span("2026-11-01", "2026-11-11"),
+      fields: {
+        f2: { value: "9", sources: ["S6"], explicit: false },
+        f3: { value: "b", sources: ["S6"] },
+      },
+    },
+    { kind: "confirm", op: 63, event: 64, target: 61 },
+    { kind: "undo", op: 65, event: 66, target: 63, includeLater: false },
+  ] as Op[];
+
+  it("the record as the reference evaluator gives it: #64 on f2 and on f3", () => {
+    const { steps, refused } = judged(schema, ops, []);
+    expect(refused).toEqual([]);
+    const confirmed = steps.find((x) => x.judgement.record.event === 64)?.judgement.record;
+    expect(confirmed?.kind === "confirm" ? confirmed.items.map((x) => x.target) : []).toEqual([
+      "f3",
+    ]);
+    const undo = steps.find((x) => x.judgement.record.event === 66)?.judgement.record;
+    const kernel =
+      undo?.kind === "undo" ? undo.revert.entries.map((e) => `${e.event}/${e.target}`) : [];
+    const ref = evaluateLog(schema, ops)
+      .final.reverts.filter((r) => r.event === 66)
+      .flatMap((r) => r.record.map((e) => `${e.event}/${e.target}`));
+    expect(kernel.sort()).toEqual(["64/f2", "64/f3"]);
+    expect(ref.sort()).toEqual(["64/f2", "64/f3"]);
+  });
+
+  // Deleting #31's words (S20) leaves #61's f2 no conflict: in the replay it is awaiting at #61 and
+  // the confirmation #64 puts it into effect. The undo of #63 takes it back with f3: f2 on 11-01 is
+  // #11's 1 again, as the reference evaluator gives it. With f3 alone in the record it stayed 9.
+  it("a deletion putting f2 into effect through the confirmation: the undo takes it back too", () => {
+    compare(schema, true, ops, [], ["S20"]);
+  });
+});
+
+describe("a revert's write-back restated as a restore after a revoke was left (a property counterexample)", () => {
+  // The state table with group {f2, f3}, seed -1366647956 of the reverts property. #10 (1, a) from
+  // 10-01; #20 revokes [11-03, 11-09); #30 (2, b) over [11-05, 11-07); #40 f2 = 9 over
+  // [11-01, 11-03); #50 f2 = 9 from 11-01; #60 revokes [11-05, 11-07); the decision inserts an undo
+  // whose write-back (event 64) is over [11-05, 11-07).
+  // Deleting S3 (#50) leaves that write-back a revoke; deleting S10 (#10) as well restates it as a
+  // restore, the same interval and deps. That restatement is a change (09 §5.9 rule 1): the kind of
+  // a write-back is given as `restored`, not as content.
+  it("the deletion's replay leaves what the reference evaluator gives, in both orders", () => {
+    const span = (from: string, to: string) => ({
+      from: { mode: "given", value: from },
+      to: { mode: "given", value: to },
+    });
+    const ops = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        valid: { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } },
+        fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "a", sources: ["S10"] } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "revoke",
+        op: 20,
+        event: 21,
+        seen: 10,
+        valid: span("2026-11-03", "2026-11-09"),
+        validSources: ["S20"],
+      },
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        seen: 10,
+        valid: span("2026-11-05", "2026-11-07"),
+        fields: { f2: { value: "2", sources: ["S30"] }, f3: { value: "b", sources: ["S30"] } },
+      },
+      {
+        kind: "write",
+        op: 40,
+        event: 41,
+        seen: 0,
+        valid: span("2026-11-01", "2026-11-03"),
+        fields: { f2: { value: "9", sources: ["S1"], explicit: false } },
+      },
+      {
+        kind: "write",
+        op: 50,
+        event: 51,
+        seen: 10,
+        valid: { from: { mode: "given", value: "2026-11-01" }, to: { mode: "open" } },
+        fields: { f2: { value: "9", sources: ["S3"], explicit: false } },
+      },
+      {
+        kind: "revoke",
+        op: 60,
+        event: 61,
+        seen: 50,
+        valid: span("2026-11-05", "2026-11-07"),
+        validSources: ["S1"],
+      },
+    ] as Op[];
+    const decisions: Decision[] = [
+      { after: 1138313729, pick: 1248658181, kind: "undo", flag: 0, focus: false },
+    ];
+    compare({ ...STATE, groups: GROUPS }, true, ops, decisions, ["S3", "S10"]);
   });
 });
 

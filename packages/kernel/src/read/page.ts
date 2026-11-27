@@ -9,7 +9,9 @@ import { createHash } from "node:crypto";
 import type { JsonValue } from "@fluxvita/saveslot-contract-core";
 import { canonicalize } from "@fluxvita/saveslot-contract-core";
 import { get, has, isJsonNumber, type Obj } from "../request/index.ts";
+import type { ReadTx } from "../store/ports.ts";
 import { cmpKeys, decodePosition, encodePosition, type KeySpec, type Position } from "./rows.ts";
+import { deletionChangedAt } from "./select.ts";
 import { invalid } from "./types.ts";
 
 export const DEFAULT_LIMIT = 20;
@@ -28,8 +30,12 @@ export function limitOf(params: Obj): number {
 export const digest = (identity: JsonValue): string =>
   createHash("sha256").update(canonicalize(identity)).digest("hex").slice(0, 32);
 
-/** The position given, checked; undefined on a first page. */
-export function positionOf(
+/**
+ * The position given, checked (expired after a restore, or after a deletion confirmed or cancelled
+ * since the first page); undefined on a first page.
+ */
+export async function positionOf(
+  tx: ReadTx,
   params: Obj,
   check: {
     readonly identity: string;
@@ -38,12 +44,17 @@ export function positionOf(
     readonly latest: number;
     readonly condition?: true;
     readonly since?: true;
+    /** `reads.list`: the operation a read record's number stands for (its read's `pos`). */
+    readonly opOf?: (seq: number) => number | undefined;
   },
-): Position | undefined {
+): Promise<Position | undefined> {
   if (!has(params, "position")) return undefined;
   const v = get(params, "position");
   if (typeof v !== "string" || v === "") throw invalid("malformed", "position");
-  return decodePosition(v, "position", check);
+  return decodePosition(v, "position", {
+    ...check,
+    deletionChangedAt: await deletionChangedAt(tx),
+  });
 }
 
 /** The page after the position's keys, and the next page's position when more follow. */
@@ -63,6 +74,8 @@ export function pageAfter<T>(
     readonly limit: number;
     readonly condition?: Position["condition"];
     readonly since?: number;
+    /** The log position when the first page was read, where `seq` is another point. */
+    readonly logAt?: number;
   },
 ): { readonly page: T[]; readonly next?: string } {
   const after = o.position?.keys;
@@ -81,6 +94,7 @@ export function pageAfter<T>(
             keys: last.keys,
             ...(o.condition !== undefined ? { condition: o.condition } : {}),
             ...(o.since !== undefined ? { since: o.since } : {}),
+            ...(o.logAt !== undefined ? { logAt: o.logAt } : {}),
           }),
         }
       : {}),

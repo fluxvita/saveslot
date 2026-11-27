@@ -3,8 +3,8 @@
 // it was opened in: every kernel table emptied (identities restarted), `meta` as it was, every
 // other table of the public schema (the physical tables apply created) dropped, every schema and
 // every view, materialized view, sequence (one not owned by a column), function and type of the
-// public schema made since dropped, and the store's read buffer (kept on the store object, not in
-// the database) emptied. `snapshot` lists every table's rows, so a test can check that a reset
+// public schema made since dropped, and the store's read buffer and the restore count kept for it
+// (kept on the store object, not in the database) emptied. `snapshot` lists every table's rows, so a test can check that a reset
 // leaves nothing of the sample before it. reusable-store.fixture.test.ts holds `reset` to that.
 //
 // Not within `reset`: the state of the session (`SET`, temporary tables, prepared statements,
@@ -24,6 +24,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  forgetRestores,
   KERNEL_TABLES,
   type ReadTx,
   readBufferOf,
@@ -94,9 +95,16 @@ export interface Reusable<S extends TenantStore> {
   reset(): Promise<void>;
   /** The state it was opened in (every table's rows). */
   readonly blank: Record<string, string[]>;
+  /**
+   * On: the store keeps its reads' records in the read buffer, as PGlite's does (PostgreSQL's
+   * `recordReads` hidden), for a case that looks into the buffer. Off: as the backend gives it.
+   */
+  buffered(on: boolean): void;
 }
 
 export interface ReusableStore extends Reusable<PgliteTenantStore> {
+  /** The store's directory: on PostgreSQL, what names its database (`secondConnection`). */
+  readonly dir: string;
   close(): Promise<void>;
 }
 
@@ -125,13 +133,22 @@ export async function reusable<S extends TenantStore>(
   };
   const read = store.read.bind(store);
   const write = store.write.bind(store);
+  const recordReads = store.recordReads?.bind(store);
+  const tracked =
+    recordReads === undefined
+      ? undefined
+      : <T>(fn: (tx: Tx) => Promise<T>) => track(recordReads(fn));
   Object.assign(store, {
     read: <T>(fn: (tx: ReadTx) => Promise<T>) => track(read(fn)),
     write: <T>(fn: (tx: Tx) => Promise<T>) => track(write(fn)),
+    ...(tracked !== undefined ? { recordReads: tracked } : {}),
   });
   return {
     store,
     blank,
+    buffered: (on) => {
+      if (tracked !== undefined) Object.assign(store, { recordReads: on ? undefined : tracked });
+    },
     reset: async () => {
       const left = running.size;
       if (left > 0) {
@@ -169,6 +186,8 @@ export async function reusable<S extends TenantStore>(
       // Reads a sample left would count as the next sample's: whether a writer had read an item
       // decides what its write does to it.
       readBufferOf(store).take();
+      // The restore count kept for the store (log/effect.ts): the tables under it are new.
+      forgetRestores(store);
       if (left > 0) {
         throw new Error(
           `reset: ${left} read(s) or write(s) of this store were still running, left by an earlier test or sample (one that timed out goes on running); waited for them and reset the store, but what fails after this may be theirs`,
@@ -178,14 +197,23 @@ export async function reusable<S extends TenantStore>(
   };
 }
 
-export async function openReusable(prefix: string): Promise<ReusableStore> {
+/**
+ * `buffered`: the store keeps its reads' records in the read buffer on either backend, as PGlite's
+ * does (PostgreSQL's `recordReads` hidden), for a test of what a read records, which looks at the
+ * buffer; when a record is written is reads-recorded.test.ts's.
+ */
+export async function openReusable(
+  prefix: string,
+  o: { readonly buffered?: boolean } = {},
+): Promise<ReusableStore> {
   const root = mkdtempSync(join(tmpdir(), prefix));
-  const store = await testBackend().open(
-    { kind: "pglite", dir: join(root, "tenant") },
-    { create: true },
-  );
+  const dir = join(root, "tenant");
+  const store = await testBackend().open({ kind: "pglite", dir }, { create: true });
+  const r = await reusable(store);
+  if (o.buffered === true) r.buffered(true);
   return {
-    ...(await reusable(store)),
+    ...r,
+    dir,
     close: async () => {
       await store.close();
       rmSync(root, { recursive: true, force: true });

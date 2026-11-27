@@ -1,6 +1,6 @@
 {
   "name": "@fluxvita/saveslot-server",
-  "version": "0.1.0-rc.0",
+  "version": "0.1.0",
   "description": "HTTP and MCP adapters for saveslot.",
   "license": "Apache-2.0",
   "repository": {

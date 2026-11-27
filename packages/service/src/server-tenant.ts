@@ -10,9 +10,8 @@
 // Creations of different owners take turns too, one at a time in a process, so that a process
 // holds at most one connection to a tenant's database being created (02-architecture §7 «连接»,
 // the connection budget); one waiting longer than CREATION_WAIT_MS is refused with `busy`. Two
-// processes (not in v1, one process a deployment) would meet at the owner's unique row: both get
-// the same tenant, and opening its storage, the later opener takes it over (§7); the one it was
-// taken from fails with `ownership_lost`, and calling again gives the tenant the other made.
+// processes meet at the owner's unique row: both get the same tenant, and both may have its storage
+// open, their writes taking turns under the tenant's lock (§7); no opener takes it from another.
 
 import {
   createOpsContext,

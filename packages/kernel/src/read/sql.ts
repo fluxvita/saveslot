@@ -59,6 +59,7 @@ import { formerVersions } from "./former.ts";
 import { digest } from "./page.ts";
 import {
   changedPremiseCovers,
+  deletionChangedAt,
   logPosition,
   readFlagsOf,
   readTableFlags,
@@ -218,7 +219,7 @@ function encodePosition(identity: string, p: Position): string {
 
 function decodePosition(
   text: string,
-  check: { identity: string; restoreCount: number; latest: number },
+  check: { identity: string; restoreCount: number; latest: number; deletionChangedAt: number },
 ): Position {
   const bad = () => invalid("malformed", "position");
   if (!/^[A-Za-z0-9_-]+$/.test(text) || text.length > 4096) throw bad();
@@ -245,6 +246,18 @@ function decodePosition(
       reason: "restored",
       param: "position",
     });
+  }
+  // A deletion confirmed or cancelled since the first page (04-contract §15), before the write
+  // check below, which it would meet too, so that the reason says so.
+  if (check.deletionChangedAt > seq) {
+    throw new ReadError(
+      "handle_expired",
+      "a deletion was confirmed or cancelled since the first page",
+      {
+        reason: "deletion_changed",
+        param: "position",
+      },
+    );
   }
   // The statement reads the tables as they are now: it cannot read them as they were after the
   // first page's operation, so a write since makes the later pages another result.
@@ -527,7 +540,12 @@ export async function sqlInTx(tx: ReadTx, input: SqlInput): Promise<SqlOutput> {
   const latest = await logPosition(tx);
   const identity = digest({ sql, params: values, at: atGiven ? at : null });
   const position = has(params, "position")
-    ? decodePosition(String(get(params, "position")), { identity, restoreCount: restore, latest })
+    ? decodePosition(String(get(params, "position")), {
+        identity,
+        restoreCount: restore,
+        latest,
+        deletionChangedAt: await deletionChangedAt(tx),
+      })
     : undefined;
   if (position !== undefined && !atGiven) at = position.at;
   const offset = position === undefined ? 0 : position.offset;

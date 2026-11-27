@@ -248,11 +248,14 @@ export async function historyTarget(
     const r = normalizeValue(f, get(v, k), { op: 0, name: f.name, zone: named.slot.timezone });
     if (!r.ok) throw invalid("malformed", `entity_key/${k}`);
     // Compare each stored key value, decoded from all its columns (a zoned date-time has two: the
-    // instant and the zone), with the one given.
+    // instant and the zone), with the one given. Not a cell whose value a deletion still pending
+    // removed (03-data-model/03-deletion «版本表»): a key that only deleted content held answers
+    // as one never held, else a guess could tell it was.
     const columns = selectOf(f);
     const cells = await tx.query<Record<string, string | null>>(
-      `SELECT DISTINCT row_id, ${columns.map((c, i) => `${c} AS v${i}`).join(", ")}
-         FROM ${versions} WHERE field_id = $1`,
+      `SELECT DISTINCT v.row_id, ${columns.map((c, i) => `${c} AS v${i}`).join(", ")}
+         FROM ${versions} v WHERE v.field_id = $1
+           AND NOT ${cellWithheld("v", await withholdingIn(tx))}`,
       [f.id],
     );
     const want = canonicalize(r.value as JsonValue);
@@ -648,7 +651,7 @@ export async function asOfInTx(
     valid_at: has(params, "valid_at") ? (get(params, "valid_at") as JsonValue) : null,
   });
   const specs: KeySpec[] = [{ type: target.kind === "state" ? "plain" : "text", dir: "asc" }];
-  const position = positionOf(params, {
+  const position = await positionOf(tx, params, {
     identity,
     specs,
     restoreCount: restore,
@@ -866,8 +869,10 @@ export async function asOfInTx(
       specs,
       identity,
       position,
-      // The record point resolved on the first page, and the read's condition, carried on.
+      // The record point resolved on the first page, and the read's condition, carried on; and the
+      // log position then, which a deletion changed since is compared with (04-contract §15).
       seq: point.seq,
+      logAt: position?.logAt ?? latest,
       at: position?.at ?? input.now,
       restoreCount: restore,
       limit: limitOf(params),

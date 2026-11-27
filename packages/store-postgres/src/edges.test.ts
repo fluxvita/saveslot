@@ -82,6 +82,10 @@ class StandIn extends EventEmitter implements DriverClient {
       }[String(values[0])];
       return { rows: value === undefined ? [] : [{ value }] };
     }
+    // What each read and write checks first: the format, no seal.
+    if (sql.startsWith("SELECT key, value FROM meta")) {
+      return { rows: [{ key: META_KEYS.storageFormat, value: String(STORAGE_FORMAT_VERSION) }] };
+    }
     if (sql.startsWith("INSERT INTO meta")) return { rows: [{ value: "1" }] };
     return {};
   }
@@ -128,7 +132,7 @@ describe("a connection that ends, by where the transaction was", () => {
       expect(client.sent).toEqual([
         "BEGIN",
         "SELECT pg_advisory_xact_lock(1397967956, 1)",
-        "SELECT value FROM",
+        "SELECT key, value",
         "INSERT INTO t",
       ]);
       expect(await codeOf(store.write(async () => {}))).toBe("connection_lost");

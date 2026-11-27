@@ -1,7 +1,6 @@
 # 02 · One example from start to finish
 
-> Translated from docs/zh-CN/guide/02-walkthrough.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/guide/02-walkthrough.md)
 
 This chapter walks through saveslot's main mechanisms with one ledger: recording an expense, correcting it, two agents editing at the same time, and deleting a sentence.
 

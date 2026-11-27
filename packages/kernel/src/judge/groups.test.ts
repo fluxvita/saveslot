@@ -129,6 +129,36 @@ describe("a candidate's impact at a value ↔ no value boundary", () => {
   });
 });
 
+// The first creation on a table with no required field (03-deletion «首次创建标记»): the first
+// write with a field in effect, a clearing too, whatever fields are written after it.
+describe("the first creation, no required field", () => {
+  const d = (md: string) => `2026-${md}` as BizPoint;
+  const write = (op: number, seen: number, fields: Record<string, string | null>): Op =>
+    ({
+      kind: "write",
+      op,
+      event: op + 1,
+      seen,
+      valid: { from: { mode: "given", value: d("11-01") }, to: { mode: "open" } },
+      fields: Object.fromEntries(
+        Object.entries(fields).map(([f, value]) => [f, { value, sources: [`S${op}${f}`] }]),
+      ),
+      acknowledge: ["overwrite"],
+    }) as Op;
+  const schema: TableSchema = { kind: "state", required: [] };
+  it.each([
+    [
+      "f2 first, f3 later: the first write",
+      [write(10, 0, { f2: "1" }), write(20, 10, { f3: "a" })],
+    ],
+    ["a clearing first: the clearing", [write(10, 0, { f2: null }), write(20, 10, { f3: "a" })]],
+  ] as const)("%s", (_, ops) => {
+    const { steps } = judged(schema, [...ops], []);
+    expect(view(steps.at(-1)?.state as never).created).toBe(11);
+    expect(evaluate(schema, [...ops]).created).toBe(11);
+  });
+});
+
 // 09 «组值», the example's two halves: W and L, from the same version, write one field of a group
 // to the same value. On a state table the group values are equal, so W takes effect; on an event
 // table values are not compared, the unit changed after V is a conflict.

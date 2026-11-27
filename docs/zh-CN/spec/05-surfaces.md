@@ -1,5 +1,7 @@
 # saveslot · 外化面：MCP 与 HTTP
 
+[English](../../spec/05-surfaces.md) · 简体中文
+
 > 操作的规则见 [`04-contract.md`](04-contract.md)，参数、结果与错误的结构见 [`04-contract-types.md`](04-contract-types.md)；内核规则见 [`03-data-model/`](03-data-model/README.md)；分层见 [`02-architecture.md`](02-architecture.md) §2、§6、§11。CLI 是另一个外化面，见 [`06-cli.md`](06-cli.md)。
 > **本文写的是完整设计**，第一版不开的工具、端点与增强当场标"后续"，范围以 [`07-scope-v1.md`](07-scope-v1.md) 为准（MCP 第一版开 10 个工具与 3 个 prompts；elicitation 后续）。接口层调研见 [`../research/references-mcp.md`](../research/references-mcp.md)。待定项统一记在 [`08-open-questions.md`](08-open-questions.md)。
 > 第一版部署：本地 saveslot 服务只供本机访问（同一台机器上的多个 Agent 共用），跨设备用服务器模式（我们的云服务或自部署）；例子里的两个连接实例都在同一台 MacBook 上。
@@ -308,7 +310,7 @@ runs r_01JC… · 截至 #41（2026-11-03 21:05）· schema v2
 r_01JC… ver=h41.0（历史版本，不可用于写入）| 2026-11-03 | 15 km
 ```
 
-`changes`：第一行写表（给了行 / 实体时再写它的 ID）、范围"#41 之后至 #57"（`since` 是 0 时写"从头至 #57"）与变化条数；每次变化一行，写操作号、时刻、意图、写入者、目标、改了哪些字段的前后值，没有前值的只写后值；值消失的写 `前值 → —`。状态类表上字段的每一段后面括号里写它的业务时间区间。`*` 写成"撤销"（`before` 为 `true`）或"恢复"（`before` 为 `false`），带区间的写那段区间。没有变化写"没有变化"。
+`changes`：第一行写表（给了行 / 实体时再写它的 ID）、范围"#41 之后至 #57"（`since` 是 0 时写"从头至 #57"）与变化条数；每次变化一行，写操作号、时刻、意图、写入者、目标、改了哪些字段的前后值，没有前值的只写后值；值消失的写 `前值 → —`。一条带 `partially_deleted` 时（某个字段的一侧出自之后被删除的内容，那一侧不给），这条改动里缺着的那一侧写"未列出"，不写 `—`、也不只写后值（新插入的行没有前值，照旧只写后值），行末写"部分数据已删除：未列出的值出自之后被删除的内容"，不让缺着的一侧看起来像"被清空"或"之前没有值"。状态类表上字段的每一段后面括号里写它的业务时间区间。`*` 写成"撤销"（`before` 为 `true`）或"恢复"（`before` 为 `false`），带区间的写那段区间。没有变化写"没有变化"。
 
 ```
 runs · #41 之后至 #57 · 2 处变化
@@ -376,6 +378,8 @@ pi_7C… 冲突 · runs r_01JC… distance · 已挂 1 天 · 版本 iv_4f…
   候选 1：5.5 km（#61，MacBook · Codex，变更）
   可选：keep_effective（保持 5 km）/ take_candidate candidate=0 或 1 / take_previous（回到 #41 时的 15 km，会回掉 #57）
 ```
+
+`previous` 带 `partially_deleted` 时，在合并基那一行与 `take_previous` 的说明里写明"其中一部分之后被删除了、没有列出，take_previous 写回的是删除之后那里的状态"，不让缺着的字段看起来像"当时没有值"。已关闭事项详情里的 `effective`、`current` 与 flagged 事项详情带 `partially_deleted` 时，同样在那一行写明"其中一部分之后被删除了、没有列出"。
 
 待确认事项的详情必须写出 `impact`（会被覆盖的段 / 会被填掉的空洞 / 会被回掉的写入 / 仍引用该行的行），与写入回执给的一样多：
 
@@ -539,7 +543,7 @@ expenses r_01JC… 整行删除：date、category 只来自这句话
 - **下面是第一版的工具描述**：不提第一版没有的东西。后续功能加入时再补对应的句子。
 - **这一版不出现的句子**：这一版内核一律拒绝的参数、取值与写法，在工具的描述与输入 schema 里都不出现；仍然发来时，内核照旧回 `not_in_this_version`（输入 schema 里不列的顶层参数由 MCP 一侧回 `invalid_argument`；宿主若先按 schema 校验，就在宿主一侧拦下）。下面全文里这类句子前标〔P2 起〕〔P3 起〕〔P4 起〕，指它随 07-scope-v1 的哪一步出现；代码里它们留在原处、标着阶段，这一版组装文本时略过。
 - **按 scope 出现的句子**：工具描述与参数说明里，指向**别的工具**的句子只在那个工具也在本凭证的工具清单里时出现；凭证没有的工具，它自己的描述也不出现。所以描述仍是静态文本，只是按 scope 组合有有限几个版本，每个版本都经过评审。下面全文里这类句子前标〔有 saveslot.xxx〕，标记本身不出现在文本里；没标的句子只提读工具，读工具总在。prompts 的模板同此（10.1）。
-- **语言**：第一版模型看得到的文字（工具描述、参数说明、`instructions`、prompt、回执与报错文本）用英文；用户内容原样返回。本文的中文文字是内容的权威版本，英文定稿在 P1 随实现写出，由 eval 1 用中文对话验证。理由：项目以英文为主；这些文字是给模型读的，模型照样用用户的语言回答；一份文本便于评测与维护。多语言是后续。
+- **语言**：第一版模型看得到的文字（工具描述、参数说明、`instructions`、prompt、回执与报错文本）用英文；用户内容原样返回。本文规定这些文字要说什么；这一版实际发出的英文文字随实现写出，由 eval 1 用中文对话验证；它说的内容与本文不一致算缺陷。理由：项目以英文为主；这些文字是给模型读的，模型照样用用户的语言回答；一份文本便于评测与维护。多语言是后续。
 
 **服务器的 `instructions`**：按凭证的 scope 选段落，按凭证的 slot 范围生成最后的 slot 清单；同一组 scope 与 slot 范围、同一份数据，生成的文本相同。下面方括号里是条件，不出现在文本里：
 
@@ -885,7 +889,8 @@ MCP 端点（Streamable HTTP）挂在 `/mcp`，适配器只有这一份实现；
 - 表名在路径里拆成两段：`/v1/slots/{slot}/tables/{table}`；在凭证的可见范围内不重名时可用 `/v1/tables/{table}`。单段路由收到带 slot 的名字（`slot.table`）时报 `invalid_argument`（`malformed`，`param: "table"`），两段都合名字的写法时 `example` 给出两段路径（`{"path": "/v1/slots/<slot>/tables/<table>"}`）。路径参数按 RFC 3986 百分号编码。
 - 不按结果预算截断，只按 `limit` 分页；`sql` 支持 `cursor`。第 2 节表里 MCP 收窄的字段在 HTTP 全部开放。
 - **脚本必须看回执的 `status`**：`pending` 是成功的状态码，但含义不是"已生效"。
-- **浏览器里的跨源调用（服务器模式）**：部署方在 `SAVESLOT_ALLOWED_ORIGINS`（[`06-cli.md`](06-cli.md) §4.1「服务器模式的配置」）里列出的来源，它的页面可以在浏览器里直接调用 `/v1/*`、`/oauth/token` 与 `/oauth/revoke`（例如托管的网页控制台）。列出的来源与请求的 `Origin` 原样比较，不支持通配。请求恰好带一个 `Origin` 且它在列表里时：响应带 `Access-Control-Allow-Origin: <这个来源>`、`Vary: Origin` 与 `Access-Control-Expose-Headers: Retry-After, WWW-Authenticate`（页面据此在限流后退避、处理会话过期与 scope 不足）；这几个路径上的预检（`OPTIONS`）以 204 回答，允许的方法是 `GET`、`POST`、`PATCH`、`DELETE`，允许的请求头是 HTTP 面定义的请求头，目前是 `Authorization`、`Content-Type`、`Idempotency-Key`、`X-Task-Id`。列表不空时，这几个路径上的每个响应都带 `Vary: Origin`，不论请求带不带 `Origin`、带的在不在列表里：响应随 `Origin` 而不同，缓存不能把不带上述头的响应交给列出的来源。**任何响应都不带 `Access-Control-Allow-Credentials`**：令牌放在 `Authorization` 里，不靠 cookie。不在列表里的来源照常处理，只是响应不带这些头，浏览器拦下响应（`/v1` 上它按第 14 节报 403）。`/mcp` 不在此列：带了不是对外地址的 `Origin` 一律 403，列出的来源也一样。列表缺省为空：不允许任何浏览器跨源调用。
+- **调用 ID（服务器模式）**：通过了认证、并且路径是一条已有路由的 `/v1` 应答都带应答头 `Saveslot-Call`，值是这次调用的 ID（`call_` 加 32 位十六进制），与部署方开启的调用记录里那一条的 `call` 相同（[`02-architecture.md`](02-architecture.md) §9「调用记录」）；不论调用记录开没开都带，被拒的（权限不够、被限流、契约错误）也带。没通过认证的应答、服务还没就绪时的 503、不存在的路径不带。导出这种流式应答，头在流开始之前发出。`/mcp` 上不给。本机模式不带。
+- **浏览器里的跨源调用（服务器模式）**：部署方在 `SAVESLOT_ALLOWED_ORIGINS`（[`06-cli.md`](06-cli.md) §4.1「服务器模式的配置」）里列出的来源，它的页面可以在浏览器里直接调用 `/v1/*`、`/oauth/token` 与 `/oauth/revoke`（例如托管的网页控制台）。列出的来源与请求的 `Origin` 原样比较，不支持通配。请求恰好带一个 `Origin` 且它在列表里时：响应带 `Access-Control-Allow-Origin: <这个来源>`、`Vary: Origin` 与 `Access-Control-Expose-Headers: Retry-After, WWW-Authenticate, Saveslot-Call`（页面据此在限流后退避、处理会话过期与 scope 不足，并读到这次调用的 ID）；这几个路径上的预检（`OPTIONS`）以 204 回答，允许的方法是 `GET`、`POST`、`PATCH`、`DELETE`，允许的请求头是 HTTP 面定义的请求头，目前是 `Authorization`、`Content-Type`、`Idempotency-Key`、`X-Task-Id`。列表不空时，这几个路径上的每个响应都带 `Vary: Origin`，不论请求带不带 `Origin`、带的在不在列表里：响应随 `Origin` 而不同，缓存不能把不带上述头的响应交给列出的来源。**任何响应都不带 `Access-Control-Allow-Credentials`**：令牌放在 `Authorization` 里，不靠 cookie。不在列表里的来源照常处理，只是响应不带这些头，浏览器拦下响应（`/v1` 上它按第 14 节报 403）。`/mcp` 不在此列：带了不是对外地址的 `Origin` 一律 403，列出的来源也一样。列表缺省为空：不允许任何浏览器跨源调用。
 
 ## 14. 端点
 

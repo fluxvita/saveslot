@@ -1,7 +1,6 @@
 # 05 · Writes and conflicts
 
-> Translated from docs/zh-CN/guide/05-write-and-conflict.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/guide/05-write-and-conflict.md)
 
 Chapter 2 walked through a write, a correction and a conflict using one ledger. This chapter covers them in full: what a write goes through from request to receipt, what the version mark `ver` actually protects against, how conflicts are detected and handled, how evidence is matched to fields, and what to do about resending and undoing a write. Reading comes in the next chapter.
 

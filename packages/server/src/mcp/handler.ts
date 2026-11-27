@@ -18,10 +18,15 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
+  type CallEffect,
+  type CallEnd,
   ContractError,
+  callRecord,
   contractError,
   kernelCall,
+  newCallId,
   type Principal,
+  RetryOnLostConnection,
   releaseWithResponse,
   runOperation,
   type ServedTenant,
@@ -78,10 +83,29 @@ interface Caller {
    * `instructions` (05 §11): only then are the slots read to make them.
    */
   readonly handshake: boolean;
+  /**
+   * Set when a read-only tool met the tenant's connection gone with nothing given yet: the
+   * request is made once more on the tenant opened again (the use throws RetryOnLostConnection).
+   */
+  readonly lost: { hit: boolean; readonly retryable: boolean };
+  /** Writes a tool call's record, in the server mode; absent: none (the local mode). */
+  readonly record?: (tool: Tool, started: number, end: CallEnd) => void;
 }
 
 /** The methods whose results carry `instructions` (05 §11). */
 const HANDSHAKES: ReadonlySet<unknown> = new Set(["initialize", "server/discover"]);
+
+/**
+ * Whether a request body holds exactly one `tools/call`: only then is a request whose call met the
+ * tenant's connection gone made once more (no other call of it may have done anything).
+ */
+export function singleToolCall(body: unknown): boolean {
+  return (
+    (Array.isArray(body) ? body : [body]).filter(
+      (m) => (m as { method?: unknown } | null | undefined)?.method === "tools/call",
+    ).length === 1
+  );
+}
 
 /** Whether a request body is, or holds, a message of a method that gives `instructions`. */
 export function isHandshake(body: unknown): boolean {
@@ -164,17 +188,22 @@ async function serverFor(caller: Caller, version: string): Promise<Server> {
 
 /** Calls the tool's operation: the result, or the contract's error as an error result. */
 async function call(
-  { principal, ctx, tenant }: Caller,
+  { principal, ctx, tenant, lost, record }: Caller,
   tool: Tool,
   args: Readonly<Record<string, unknown>>,
 ): Promise<CallToolResult> {
   const { operation } = tool;
+  const t0 = performance.now();
+  let effect: CallEffect | undefined;
+  let refused: ContractError | undefined;
   let outcome:
     | { readonly result: Record<string, unknown> }
     | { readonly error: Record<string, unknown> };
   try {
     // A tool call is what the per-tenant limit counts on MCP: refused, it is the tool's error.
-    ctx.rateLimit?.take(tenant.tenant);
+    // Taken once a call: not again when the call is made once more (its first try met the
+    // connection gone).
+    if (tenant.retryOnLost !== false) ctx.rateLimit?.take(tenant.tenant);
     // What MCP does not expose (05 §2) is refused here: the operation itself would take it.
     const withheld =
       Object.keys(args).find((k) => Object.hasOwn(tool.withheld, k)) ?? tool.refuse?.(args);
@@ -218,11 +247,29 @@ async function call(
         }),
         warn: ctx.warn,
         fit: budget.fit,
+        onEffect: (e) => {
+          effect = e;
+        },
       })) as Record<string, unknown>;
     outcome = { result: budget.finish(plain(await run(params))) };
   } catch (e) {
-    outcome = { error: errorBody(contractError(e, ctx.warn)) };
+    // Made once more by the use, when this call is the request's only one (no other call of it
+    // has done anything): this try is not told, nor answered. Else answered busy, as a write is.
+    if (e instanceof RetryOnLostConnection && lost.retryable) {
+      lost.hit = true;
+      return { isError: true, content: [] };
+    }
+    refused = contractError(e, ctx.warn, { tenant: tenant.tenant });
+    outcome = { error: errorBody(refused) };
   }
+  // Its record (02-architecture §9 «调用记录»): one a tool call, the one answered.
+  record?.(
+    tool,
+    t0,
+    refused !== undefined
+      ? { ok: false, error: refused }
+      : { ok: true, ...(effect !== undefined ? { effect } : {}) },
+  );
   // Told once, after the call, outside it: an observer that fails changes nothing of the answer
   // (a write that took effect is not reported as an error), and is not told twice.
   try {
@@ -261,6 +308,19 @@ async function call(
  * The scope a `tools/call` in `body` needs and `principal` does not have, if any: a call of a
  * tool that exists but is not in the credential's list (05 §1 «越权怎么报»).
  */
+/** The tools of every `tools/call` in `body` the credential may not make, in their order. */
+export function refusedTools(body: unknown, principal: Principal): Tool[] {
+  const out: Tool[] = [];
+  for (const m of Array.isArray(body) ? body : [body]) {
+    if (m === null || typeof m !== "object") continue;
+    const { method, params } = m as { method?: unknown; params?: { name?: unknown } };
+    if (method !== "tools/call") continue;
+    const tool = TOOLS.find((t) => t.name === params?.name);
+    if (tool !== undefined && !mayCall(principal, tool)) out.push(tool);
+  }
+  return out;
+}
+
 export function missingScope(body: unknown, principal: Principal): string | undefined {
   for (const m of Array.isArray(body) ? body : [body]) {
     if (m === null || typeof m !== "object") continue;
@@ -326,9 +386,46 @@ export function handleMcp(
         (m) => (m as { method?: unknown } | undefined)?.method === "tools/call",
       ) as { params?: { name?: unknown } } | undefined;
       tool = TOOLS.find((t) => t.name === called?.params?.name)?.name;
+      // Each tool call's record, in the server mode (02-architecture §9 «调用记录»): its own ID,
+      // from when the call began to when its result was made.
+      const source = resolved.source;
+      const record =
+        source === undefined
+          ? undefined
+          : (t: Tool, started: number, end: CallEnd) =>
+              ctx.callRecords?.write(
+                callRecord({
+                  call: newCallId(),
+                  at: new Date().toISOString(),
+                  started,
+                  now: performance.now(),
+                  tenant: resolved.tenant,
+                  actor: who.actor,
+                  source,
+                  surface: "mcp",
+                  operation: t.operation,
+                  route: t.name,
+                  end,
+                }),
+              );
       const scope = missingScope(parsed, who);
       if (scope !== undefined) {
         const status = HTTP_STATUS.insufficient_scope;
+        // The whole request refused: each call of it the credential may not make has its record.
+        // A call of it that would have been let through did not happen, and has none.
+        const t0 = performance.now();
+        for (const t of refusedTools(parsed, who)) {
+          record?.(t, t0, {
+            ok: false,
+            error: new ContractError(
+              "insufficient_scope",
+              "the credential may not call this tool",
+              {
+                required_scope: t.scope,
+              },
+            ),
+          });
+        }
         send(
           req,
           res,
@@ -348,6 +445,7 @@ export function handleMcp(
       const headers = sdkHeaders(req.headers);
       // The whole response is made while the tenant is lent: its body is read before it goes back.
       const { response, body } = await resolved.use(async (tenant) => {
+        const lost = { hit: false, retryable: singleToolCall(parsed) };
         const response = await adapter.handler.fetch(
           new Request("http://local/mcp", {
             method: req.method ?? "GET",
@@ -365,6 +463,8 @@ export function handleMcp(
                   ctx,
                   tenant,
                   handshake: isHandshake(parsed),
+                  lost,
+                  ...(record !== undefined ? { record } : {}),
                 } satisfies Caller,
               },
             },
@@ -373,6 +473,8 @@ export function handleMcp(
         );
         const body =
           response.body === null ? undefined : new Uint8Array(await response.arrayBuffer());
+        // Nothing of it was sent: the request is made once more, on the tenant opened again.
+        if (lost.hit) throw new RetryOnLostConnection();
         return { response, body };
       });
       const out: Record<string, string> = { "cache-control": "no-store" };

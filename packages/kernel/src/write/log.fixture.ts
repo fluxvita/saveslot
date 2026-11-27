@@ -80,6 +80,8 @@ export function eventsOfSteps(
   ctx: RowContext,
   steps: readonly Judged[],
   itemSeq: (after: number, n: number) => number,
+  /** An op's interval sources (`valid_sources`), when not its own number. */
+  intervalOf?: (op: number) => readonly number[],
 ): LoggedEvent[][] {
   // The open conflict items in the order they were opened (01-objects «目标与合并»: a conflict
   // joins the earliest open item of its unit whose interval meets its candidate items').
@@ -153,7 +155,7 @@ export function eventsOfSteps(
         ...(j.created ? { created: true as const } : {}),
         sv: 1,
         sources: [r.op],
-        ...intervalSources(s.input, [r.op]),
+        ...intervalSources(s.input, intervalOf?.(r.op) ?? [r.op]),
         explicit: explicitOf(ctx, s.input),
         // The operation's sources (09 §5.7 `op_sources`): an undo's, the request's evidence or its
         // api_call; a revoke's, its evidence not taken as the interval's source — all of it for a

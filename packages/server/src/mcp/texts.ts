@@ -1,6 +1,6 @@
 // Every static text a model sees on MCP (docs/zh-CN/spec/05-surfaces.md §4.3 «措辞：两类文本»,
-// §9, §9.1): tool descriptions and parameter descriptions, here and nowhere else. The Chinese text
-// of 05 §9 and §9.1 is authoritative; this is the English of this version (05 §9 «语言»).
+// §9, §9.1): tool descriptions and parameter descriptions, here and nowhere else. 05 §9 and §9.1
+// say what these texts must say; this is the English this version sends (05 §9 «语言»).
 //
 // A sentence that points to another tool is a `Piece` with `needs`: it appears only when that
 // tool is in the credential's tool list (05 §9 «按 scope 出现的句子»), so the text is still static,

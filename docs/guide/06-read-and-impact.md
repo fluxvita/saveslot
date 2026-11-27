@@ -1,7 +1,6 @@
 # 06 · Reads and impact queries
 
-> Translated from docs/zh-CN/guide/06-read-and-impact.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../zh-CN/guide/06-read-and-impact.md)
 
 The previous chapter was about writing. This chapter is about reading: how an agent finds out what data there is, how it queries, and what comes back with the result; how saveslot records "who read what", and finds the people affected when a value later changes; and finally a comparison with another kind of notice: a premise declared at write time has changed.
 

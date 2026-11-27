@@ -57,6 +57,7 @@ import {
   sendError,
 } from "@fluxvita/saveslot-server";
 import {
+  CallRecorder,
   ContractError,
   CursorKeys,
   checkAudience,
@@ -106,6 +107,16 @@ export class ServerStartRefused extends Error {
   }
 }
 
+/**
+ * One line on the standard output, resolved once it is handed to the system: while the output is
+ * not read (a collector stopped), what waits counts against the call records' bound.
+ */
+function stdoutLine(line: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    process.stdout.write(`${line}\n`, (e) => (e ? reject(e) : resolve()));
+  });
+}
+
 /** The control database could not be reached; the driver's message is not kept (it may name hosts). */
 export class ControlUnreachable extends Error {
   override readonly name = "ControlUnreachable";
@@ -131,6 +142,11 @@ export interface RunServerOptions {
   readonly idleMs?: number;
   readonly log?: (fields: Readonly<Record<string, string | number>>) => void;
   readonly warn?: (event: string, fields: Readonly<Record<string, string>>) => void;
+  /**
+   * Where call records go when the configuration turns them on: one line each, resolved once it is
+   * written (a test gives its own); the standard output otherwise.
+   */
+  readonly callRecordSink?: (line: string) => Promise<void>;
   /** Sees each MCP tool call's contract result (the contract tests' MCP driver reads it). */
   readonly onToolResult?: ApiContext["onToolResult"];
   /** Tests only: how long an import's body may give nothing (local-import.ts's default otherwise). */
@@ -219,6 +235,12 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
   const now = o.now ?? (() => new Date().toISOString());
   const log = o.log ?? (() => {});
   const warn = o.warn ?? (() => {});
+  // The call records, when the deployer turned them on (02-architecture §9 «调用记录»): on the
+  // standard output, never waited for (CallRecorder's bound); off, nothing more is written.
+  const callRecords =
+    config.callRecords === true
+      ? new CallRecorder({ sink: o.callRecordSink ?? stdoutLine, warn })
+      : undefined;
   // The external login's settings read before anything is opened.
   const external = await readIdentity(config);
   let db: ControlDatabase;
@@ -317,8 +339,10 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
         checkCredential: checkAudience(oauth, config.publicUrl),
         oauth,
         now,
+        warn,
       }),
       resourceMetadata: `${config.publicUrl}/.well-known/oauth-protected-resource`,
+      ...(callRecords !== undefined ? { callRecords } : {}),
       ...(config.rateLimit !== undefined
         ? {
             rateLimit: new TenantRateLimiter(
@@ -566,6 +590,8 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
         tenantsClosed.catch(() => {});
         warn("shutdown_tenants_left", {});
       }
+      // Call records dropped and not yet told: told now, not at a minute's end the process misses.
+      callRecords?.flushDropped();
       // A lost connection took the lock with it: there is nothing to release, and none to close.
       if (!lost) await releaseServerLock(db);
       await db.close().catch((e: unknown) => {

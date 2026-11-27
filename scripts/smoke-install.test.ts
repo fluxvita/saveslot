@@ -9,8 +9,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   BUGS,
   ENTRY,
+  ENTRY_HOMEPAGE,
   FILES,
   HOMEPAGE,
+  homepageOf,
   INTERNAL_NOTE,
   REPOSITORY,
   releaseProblems,
@@ -56,7 +58,7 @@ function repo(pkgs: Spec[], fixed: string[][]): string {
         publishConfig: { access: p.access ?? "public" },
         dependencies: p.deps ?? {},
         repository: { type: "git", url: REPOSITORY, directory: dir },
-        homepage: HOMEPAGE,
+        homepage: homepageOf(p.name),
         bugs: BUGS,
         engines: { node: NODE },
         ...p.meta,
@@ -163,10 +165,26 @@ describe("release set", () => {
     );
     expect(releaseProblems(root)).toEqual([
       `${ENTRY}: repository is not {"type": "git", "url": "${REPOSITORY}", "directory": "packages/saveslot"}`,
-      `${ENTRY}: homepage is not ${HOMEPAGE}`,
+      `${ENTRY}: homepage is not ${ENTRY_HOMEPAGE}`,
       `${ENTRY}: bugs is not ${BUGS}`,
       `${ENTRY}: engines.node is not the root's "${NODE}"`,
     ]);
+  });
+
+  it("requires the website as the home page of the entry package only, and the repository elsewhere", () => {
+    const root = repo(
+      [
+        { name: ENTRY, meta: { homepage: HOMEPAGE } },
+        { name: KERNEL, meta: { homepage: ENTRY_HOMEPAGE } },
+      ],
+      [[ENTRY, KERNEL]],
+    );
+    expect(releaseProblems(root)).toEqual([
+      `${KERNEL}: homepage is not ${HOMEPAGE}`,
+      `${ENTRY}: homepage is not ${ENTRY_HOMEPAGE}`,
+    ]);
+    expect(homepageOf(ENTRY)).toBe("https://saveslot.ai");
+    expect(homepageOf(KERNEL)).toBe(HOMEPAGE);
   });
 
   it("reports a missing README, and an opening that does not say what the package is", () => {

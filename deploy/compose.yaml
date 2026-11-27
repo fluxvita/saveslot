@@ -14,7 +14,9 @@ services:
       - db:/var/lib/postgresql
       - ./initdb:/docker-entrypoint-initdb.d:ro
   saveslot:
-    image: saveslot:0.0.0
+    # The published image. SAVESLOT_VERSION picks another version; the default is the latest release,
+    # moved by the maintainer at each release (RELEASING.md, "A release").
+    image: ghcr.io/fluxvita/saveslot:${SAVESLOT_VERSION:-0.1.0}
     depends_on: [db]
     environment:
       SAVESLOT_CONTROL_DATABASE_URL: postgres://saveslot@db:5432/saveslot_control

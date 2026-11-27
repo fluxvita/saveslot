@@ -27,7 +27,7 @@ import {
 let s: ReusableStore;
 beforeAll(async () => {
   await loadRsql();
-  s = await openReusable("saveslot-sqlexec-");
+  s = await openReusable("saveslot-sqlexec-", { buffered: true });
   await buildTenant(s);
 }, 300_000);
 afterAll(async () => {

@@ -20,6 +20,8 @@ let failTake = false;
 let failRefresh = false;
 /** Whether the identity provider takes assertions, and the sources it was given. */
 let assertions = false;
+/** Thrown by the identity's current user, as a page's step reaching the user's tenant would. */
+let pageThrows: unknown;
 const sources: string[] = [];
 const TENANT = `tn_${"0".repeat(26)}`;
 const USER = `u_${"1".repeat(26)}`;
@@ -52,6 +54,9 @@ const deps = {
             // As the external login refuses one whose tenant waited too long to be made.
             if (assertion === "busy")
               throw Object.assign(new Error("busy"), { code: "maintenance_busy" });
+            // As the user's tenant refusing this process: upgraded by a newer version, or sealed.
+            if (assertion === "format_too_new" || assertion === "tenant_sealed")
+              throw Object.assign(new Error("refused"), { code: assertion });
             return assertion === "good" ? { user: USER, session: "s1" } : undefined;
           }
         : undefined;
@@ -65,7 +70,10 @@ beforeAll(async () => {
     handleOAuth(req, res, {
       deps,
       identity: {
-        currentUser: async () => undefined,
+        currentUser: async () => {
+          if (pageThrows !== undefined) throw pageThrows;
+          return undefined;
+        },
         beginLogin: async () => ({ kind: "redirect", location: "/account/login" }),
         userState: async () => "active",
         paths: new Set<string>(),
@@ -306,6 +314,25 @@ describe("token endpoint", () => {
     }
   });
 
+  it.each(["format_too_new", "tenant_sealed"])(
+    "jwt-bearer whose user's tenant refuses this process (%s): 503 temporarily_unavailable, Retry-After",
+    async (code) => {
+      assertions = true;
+      warned.length = 0;
+      try {
+        const r = await token(form({ grant_type: JWT, assertion: code }));
+        expect(r.status).toBe(503);
+        expect(r.headers.get("retry-after")).toBe("1");
+        expect(r.headers.get("cache-control")).toBe("no-store");
+        expect(await r.json()).toEqual({ error: "temporarily_unavailable" });
+        expect(warned).not.toContain("oauth.token_failed");
+        expect(warned.includes("tenant_format_too_new")).toBe(code === "format_too_new");
+      } finally {
+        assertions = false;
+      }
+    },
+  );
+
   it("a form field named __proto__ is a field like any other", async () => {
     await refused(
       await token(`grant_type=authorization_code&__proto__=x&constructor=y`),
@@ -335,6 +362,29 @@ describe("token endpoint", () => {
       failTake = false;
     }
   });
+});
+
+describe("a page whose step meets the user's tenant refusing this process", () => {
+  it.each(["format_too_new", "tenant_sealed"])(
+    "%s: 503 with Retry-After, not 500; anything else still 500",
+    async (code) => {
+      warned.length = 0;
+      pageThrows = Object.assign(new Error("refused"), { code });
+      try {
+        const r = await fetch(`${base}${OAUTH_PATHS.deviceVerify}`);
+        expect(r.status).toBe(503);
+        expect(r.headers.get("retry-after")).toBe("1");
+        expect(r.headers.get("cache-control")).toBe("no-store");
+        expect(warned).not.toContain("oauth.device_verify_failed");
+        pageThrows = new Error("the database is gone");
+        const other = await fetch(`${base}${OAUTH_PATHS.deviceVerify}`);
+        expect(other.status).toBe(500);
+        expect(warned).toContain("oauth.device_verify_failed");
+      } finally {
+        pageThrows = undefined;
+      }
+    },
+  );
 });
 
 describe("revocation endpoint (RFC 7009)", () => {

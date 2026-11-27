@@ -44,7 +44,13 @@ import {
   fold,
   internalDetailOf,
 } from "../apply/index.ts";
-import { appendOperation, type NewEvent, readTail } from "../log/index.ts";
+import {
+  appendOperation,
+  type EffectSlot,
+  type NewEvent,
+  readTail,
+  restoresAt,
+} from "../log/index.ts";
 import { itemVer } from "../pending/index.ts";
 import { type VisibleSlot, visibleSlots, wholeSlot } from "../read/index.ts";
 import { restoreCount } from "../read/select.ts";
@@ -271,6 +277,7 @@ async function readSchemaResolution(
   op: OpNumber,
   restore: number,
   replayed: boolean,
+  slot: EffectSlot | undefined,
 ): Promise<ResolveReceipt> {
   const r = await tx.query<{ type: string; body: string | null }>(
     `SELECT e.type, c.body FROM events e LEFT JOIN content c ON c.seq = e.seq AND c.path = 'target'
@@ -301,7 +308,7 @@ async function readSchemaResolution(
     if (x?.compiled != null && changes.some((c) => c.change === "rename_slot"))
       renamed = (JSON.parse(x.compiled) as CompiledSchema).name;
   }
-  return {
+  const receipt: ResolveReceipt = {
     id: t.item,
     type: "schema_change",
     decision: t.decision,
@@ -317,6 +324,16 @@ async function readSchemaResolution(
         : { switched: false },
     ...(replayed ? { replayed: true as const } : {}),
   };
+  // Its effect for the call records (log/effect.ts), handed back explicitly: this decision's own
+  // operation; a replay's restore count is its operation's time's.
+  if (slot !== undefined) {
+    slot.effect = {
+      effect: replayed ? "replayed" : "appended",
+      seq: op,
+      restores: replayed ? await restoresAt(tx, op) : restore,
+    };
+  }
+  return receipt;
 }
 
 /** The item, if the caller sees it: a slot's schema items only with every table of it in range. */
@@ -344,7 +361,7 @@ export async function resolveSchemaChangeInTx(tx: Tx, input: WriteInput): Promis
   const seen = await visibleSlots(tx, input.visibility as never);
   const slot = placeOf(item, seen);
   if (item === undefined || slot === undefined || item.type !== "schema_change") throw notFound();
-  if (hit !== undefined) return readSchemaResolution(tx, hit, restore, true);
+  if (hit !== undefined) return readSchemaResolution(tx, hit, restore, true, input.effect);
 
   // A closed item: the same decision again is a repeat, any other is refused.
   if (item.state === "resolved") {
@@ -354,7 +371,7 @@ export async function resolveSchemaChangeInTx(tx: Tx, input: WriteInput): Promis
         reason: "inconsistent",
       });
     if ((done.target as { decision: string }).decision === req.decision)
-      return readSchemaResolution(tx, done.op, restore, true);
+      return readSchemaResolution(tx, done.op, restore, true, input.effect);
     throw await closed(tx, item.id, "the item was resolved another way");
   }
   if (item.state !== "open") throw await closed(tx, item.id, "the item was superseded");
@@ -545,6 +562,6 @@ export async function resolveSchemaChangeInTx(tx: Tx, input: WriteInput): Promis
       throw new WriteError("internal", "the decision could not be applied", internalDetailOf(e));
     throw e;
   }
-  const out = await readSchemaResolution(tx, op, restore, false);
+  const out = await readSchemaResolution(tx, op, restore, false, input.effect);
   return warnings.length > 0 ? { ...out, warnings } : out;
 }

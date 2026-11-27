@@ -166,8 +166,8 @@ let reused: ReusableStore;
 let opened: ReusableStore;
 let fresh: Awaited<ReturnType<typeof state>>;
 beforeAll(async () => {
-  reused = await openReusable("saveslot-reset-");
-  opened = await openReusable("saveslot-reset-fresh-");
+  reused = await openReusable("saveslot-reset-", { buffered: true });
+  opened = await openReusable("saveslot-reset-fresh-", { buffered: true });
   fresh = await state(opened.store);
 }, T);
 afterAll(async () => {
@@ -218,10 +218,11 @@ describe("reset", () => {
       "a row",
       (s) => s.write((tx) => tx.exec("INSERT INTO meta (key, value) VALUES ('left', '1')")),
     ],
-    // Not the ownership epoch: the open store checks it when it writes, and without it gives up.
+    // Not a row the open store checks: the storage format (each read and write of the server
+    // mode's reads it) nor the ownership epoch (each write of the local mode's checks it).
     [
       "a row missing from meta",
-      (s) => s.write((tx) => tx.exec("DELETE FROM meta WHERE key = 'storage_format'")),
+      (s) => s.write((tx) => tx.exec("DELETE FROM meta WHERE key = 'session_settings'")),
     ],
     [
       "an identity not restarted",

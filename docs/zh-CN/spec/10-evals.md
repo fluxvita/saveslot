@@ -1,5 +1,7 @@
 # saveslot · eval 规格
 
+[English](../../spec/10-evals.md) · 简体中文
+
 > 第一版各阶段以"能跑通哪些 eval"为验收（[`07-scope-v1.md`](07-scope-v1.md) 第 4 节）。本文把 eval 写成可执行的规格：每个任务的夹具、对话脚本、对工具调用与存储状态的断言、对回复的要求、通过线。
 > 操作名、参数名、枚举值、错误码以 [`04-contract-types.md`](04-contract-types.md) 为准；MCP 工具与文本渲染见 [`05-surfaces.md`](05-surfaces.md)；规则见 [`03-data-model/`](03-data-model/README.md)。本文与它们不一致时以它们为准，并修订本文。
 > 数值（重复次数、通过线、用哪些模型）都是初值，见文末「本文待定项」。

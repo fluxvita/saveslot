@@ -1,6 +1,6 @@
 {
   "name": "@fluxvita/saveslot-kernel",
-  "version": "0.1.0-rc.0",
+  "version": "0.1.0",
   "description": "The saveslot kernel: log, apply, judge, write, read, delete and the operation layer. Defines the storage and anchor store ports.",
   "license": "Apache-2.0",
   "repository": {

@@ -1,7 +1,6 @@
 # saveslot · Data-layer mechanisms · 08 Schema version evolution (part two)
 
-> Translated from docs/zh-CN/spec/03-data-model/08-schema-migration.md, updated in the same commit as this file.
-> The Chinese edition is authoritative; where the two differ, the Chinese one holds.
+English · [简体中文](../../zh-CN/spec/03-data-model/08-schema-migration.md)
 
 > Part of the data-layer mechanisms; for the contents, see [`README.md`](README.md). A section quoted in "…" may be in another file of the same directory; look it up in the contents.
 

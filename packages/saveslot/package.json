@@ -1,14 +1,28 @@
 {
   "name": "@fluxvita/saveslot",
-  "version": "0.1.0-rc.0",
-  "description": "saveslot: a shared data layer for all of your agents.",
+  "version": "0.1.0",
+  "description": "The open-source database all your AI tools share.",
+  "keywords": [
+    "agent-infrastructure",
+    "agent-memory",
+    "agent-state",
+    "ai-agents",
+    "mcp",
+    "mcp-server",
+    "ai-memory",
+    "personal-data",
+    "database",
+    "claude",
+    "open-source",
+    "personal-ai"
+  ],
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/fluxvita/saveslot.git",
     "directory": "packages/saveslot"
   },
-  "homepage": "https://github.com/fluxvita/saveslot#readme",
+  "homepage": "https://saveslot.ai",
   "bugs": "https://github.com/fluxvita/saveslot/issues",
   "type": "module",
   "exports": {

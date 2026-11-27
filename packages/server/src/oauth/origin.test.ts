@@ -83,7 +83,7 @@ describe("CORS of the listed origins", () => {
     expect(corsHeaders(req("Origin", CONSOLE), LISTED)).toEqual({
       "access-control-allow-origin": CONSOLE,
       vary: "Origin",
-      "access-control-expose-headers": "Retry-After, WWW-Authenticate",
+      "access-control-expose-headers": "Retry-After, WWW-Authenticate, Saveslot-Call",
     });
     expect(corsHeaders(req("Origin", "https://evil.example"), LISTED)).toEqual({ vary: "Origin" });
     expect(corsHeaders(req("Host", "saveslot.example"), LISTED)).toEqual({ vary: "Origin" });

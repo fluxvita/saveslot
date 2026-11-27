@@ -1232,15 +1232,22 @@ function changesOf(r: R, now: Date): Line[] {
   if (list.length === 0 && r["total"] === 0) out.push(t`No changes.`);
   for (const e of list) {
     const x = obj(e);
+    // A side that came from content deleted since is not given (`partially_deleted`): in such a
+    // change a missing side is "not shown", never `—` (cleared) nor left out (no value before).
+    // An inserted row has no earlier value either way.
+    const deleted = x["partially_deleted"] === true;
+    const side = (c: R, k: "before" | "after"): Part[] =>
+      !Object.hasOwn(c, k) && deleted ? t`not shown` : fieldValue(c[k]);
     const fields = Object.entries(obj(x["fields"])).map(([f, v]) =>
       join(
         (Array.isArray(v) ? v : [v]).map((p) => {
           const c = obj(p);
           const period = isObj(c["valid"]) ? t` (${periodOf(c["valid"])})` : [];
           if (f === "*") return t`${c["before"] === true ? t`revoked` : t`restored`}${period}`;
-          const change = Object.hasOwn(c, "before")
-            ? t`${fieldValue(c["before"])} → ${fieldValue(c["after"])}`
-            : fieldValue(c["after"]);
+          const change =
+            Object.hasOwn(c, "before") || (deleted && x["intent"] !== "insert")
+              ? t`${side(c, "before")} → ${side(c, "after")}`
+              : side(c, "after");
           return t`${fieldOf(f)} ${change}${period}`;
         }),
         t`; `,
@@ -1248,7 +1255,7 @@ function changesOf(r: R, now: Date): Line[] {
     );
     const target = obj(x["target"]);
     out.push(
-      t`${op(x["seq"])} ${inZone(x["recorded_at"], r["timezone"])} ${codeIn(x["intent"], INTENTS)}  ${actorOf(x["actor"])}  ${idOf(target["row"] ?? target["entity"])}  ${join(fields, t`; `)}`,
+      t`${op(x["seq"])} ${inZone(x["recorded_at"], r["timezone"])} ${codeIn(x["intent"], INTENTS)}  ${actorOf(x["actor"])}  ${idOf(target["row"] ?? target["entity"])}  ${join(fields, t`; `)}${deleted ? t` · partly deleted: what is not shown came from content deleted since` : []}`,
     );
   }
   return [...out, ...pageOf(r, list.length, () => t`changes`), ...remindersOf(r, now)];
@@ -1415,6 +1422,24 @@ function openFor(opened: unknown, now: Date): Part[] {
 }
 
 /**
+ * A merge base part of which a deletion has since removed (04-contract-types
+ * `ConflictDetail.previous.partially_deleted`): the missing values are not "no value then", and
+ * take_previous writes back what is there after the deletion.
+ */
+const previousDeleted = (x: R): Part[] =>
+  x["partially_deleted"] === true
+    ? t`; part of it has since been deleted and is left out, and take_previous writes back what is there after the deletion`
+    : [];
+
+/**
+ * A side of a closed item part of which a deletion has since removed (04-contract-types
+ * `ConflictDetail.effective`, `AwaitingDetail.current`, `FlaggedDetail`: `partially_deleted`):
+ * the missing values are not "no value then".
+ */
+const sideDeleted = (x: R): Part[] =>
+  x["partially_deleted"] === true ? t`; part of it has since been deleted and is left out` : [];
+
+/**
  * A side of an item (its effective side, the merge base, an awaiting item's current values): a
  * state table's by stretch, each with the write that gave it when the stretch says so; other
  * tables' by field. `no value` for a stretch without one: on a state table a stretch without a value
@@ -1469,7 +1494,7 @@ function conflictChoices(r: R): Line[] {
       }
     } else if (d === "take_previous") {
       out.push(
-        t`    take_previous: go back to the value at ${op(prev["seq"])} (${sideOf(prev)})${undoes}`,
+        t`    take_previous: go back to the value at ${op(prev["seq"])} (${sideOf(prev)}${previousDeleted(prev)})${undoes}`,
       );
     } else out.push(t`    ${codeIn(d, DECISIONS)}`);
   }
@@ -1596,7 +1621,9 @@ function pending(r: R, now: Date): Line[] {
       const keys = arr(r["keys"]);
       if (keys.length > 0) {
         const values = isObj(r["matched_values"]) ? t` (${namedValues(r["matched_values"])})` : [];
-        out.push(t`  Duplicate keys matched: ${join(keys.map(fieldOf), t` + `)}${values}`);
+        out.push(
+          t`  Duplicate keys matched: ${join(keys.map(fieldOf), t` + `)}${values}${sideDeleted(r)}`,
+        );
       }
       for (const rel of arr(r["related"])) out.push(t`  May duplicate ${targetOf(rel)}`);
     }
@@ -1604,7 +1631,7 @@ function pending(r: R, now: Date): Line[] {
       const e = r["effective"];
       // By stretch, each stretch names its write; otherwise the side's own.
       const by = byStretch(e) ? [] : t` (${op(e["seq"])}, ${actorOf(e["actor"])})`;
-      out.push(t`  In effect: ${sideOf(e)}${by}`);
+      out.push(t`  In effect: ${sideOf(e)}${by}${sideDeleted(e)}`);
     }
     const candidateImpact = obj(r["candidate_impact"]);
     for (const c of arr(r["candidates"])) {
@@ -1622,14 +1649,15 @@ function pending(r: R, now: Date): Line[] {
     }
     if (isObj(r["previous"])) {
       const p = r["previous"];
-      out.push(t`  Before (${op(p["seq"])}): ${sideOf(p)}`);
+      out.push(t`  Before (${op(p["seq"])}): ${sideOf(p)}${previousDeleted(p)}`);
     }
     const reverted = arr(r["reverted_by_previous"]);
     if (reverted.length > 0) {
       out.push(t`  take_previous would undo: ${join(reverted.map(revertedWrite), t`; `)}`);
     }
     if (isObj(r["proposal"])) out.push(t`  Proposed: ${proposalOf(r["proposal"])}`);
-    if (isObj(r["current"])) out.push(t`  In effect now: ${sideOf(r["current"])}`);
+    if (isObj(r["current"]))
+      out.push(t`  In effect now: ${sideOf(r["current"])}${sideDeleted(r["current"])}`);
     if (isObj(r["impact"])) {
       const isUndo = isObj(obj(r["proposal"])["revert"]);
       out.push(...impactHead(impactLines(r["impact"], "    "), isUndo));
@@ -3017,6 +3045,9 @@ function ownNext(error: R): Part[] | undefined {
   }
   if (c === "not_found" && reason === "slot") {
     return t`No slot of that name in this connection's range; saveslot_catalog lists the slots.`;
+  }
+  if (c === "handle_expired" && reason === "deletion_changed") {
+    return t`A deletion was confirmed or cancelled since the first page: read again from the first page, without cursor.`;
   }
   if (c === "handle_expired" && reason === "derived_changed") {
     return t`The derived table was refreshed since the first page: read again from the first page, without cursor.`;
