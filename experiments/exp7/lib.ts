@@ -11,7 +11,10 @@ import { scratch } from "../lib/util.ts";
 
 const PG_BIN = "/opt/homebrew/opt/postgresql@18/bin";
 
-/** The places a marker is put (the clearance list in 03-deletion.md "删除之后"; the same names are the report's columns). */
+/**
+ * The places a marker is put (the clearance list in 03-deletion.md «删除之后»; the same names are
+ * the report's columns).
+ */
 export const CLASSES = [
   "short",
   "long",

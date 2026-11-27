@@ -1,5 +1,5 @@
 // The built-in local accounts of a self-hosted server (docs/zh-CN/spec/02-architecture.md §9
-// «服务器自部署», §12 身份提供者): people's accounts, made by the deployer's `saveslot server user`
+// «服务器自部署», §12 «身份提供者»): people's accounts, made by the deployer's `saveslot server user`
 // commands, no sign-up. One implementation of the identity provider; the hosted service's comes from
 // its own account system, and has none of these tables.
 //

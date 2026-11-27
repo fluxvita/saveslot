@@ -310,7 +310,7 @@ export const WRITE_SHAPES: Record<string, ShapeChecker> = {
       check(!("entity" in v), at, "by_external_key on an entity", issues);
       check(!("key_from" in v), at, "key_from on a write by external key", issues);
     }
-    // An insert has no `ver` (§5.7: "新增时没有 ver").
+    // An insert has no `ver` (§5.7: "When adding there is no `ver`").
     check(!(v["intent"] === "insert" && "ver" in v), at, "ver on an insert", issues);
     if ("ver" in v) {
       const ver = v["ver"];

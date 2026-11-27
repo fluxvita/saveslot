@@ -132,7 +132,7 @@ export function describeError(
         ...(bound.length > 0 ? t` (${join(bound, t`, `)})` : []),
         ...(where.length > 0 ? t`${words(TEXTS.detail)} ${join(where, t`, `)}` : []),
       ]);
-      // The rule an alias breaks, in the CLI's words (07 «schema 文档格式» 别名).
+      // The rule an alias breaks, in the CLI's words (07 «schema 文档格式 · 别名»).
       const rule =
         x["code"] === "alias_invalid" &&
         typeof x["reason"] === "string" &&

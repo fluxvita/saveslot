@@ -1,9 +1,10 @@
-// log.reconcile in the service, on either backend (04-contract, the operation table; 02-architecture
-// §3, §7 "对拍"): the run borrows the live storage from the pool and compares it with a scratch
-// storage made for it; one run per tenant, a second refused with `rate_limited` (`busy`); the scratch
-// storage dropped after a run that succeeded or failed, and one left over dropped before; an
-// exclusive started during a run waits for it; the local opening drops a scratch storage a crash
-// left. The kernel's comparison itself is tested in store-pglite. Fictional IDs.
+// log.reconcile in the service, on either backend (04-contract, the operation table;
+// 02-architecture §3, §7, the replay comparison): the run borrows the live storage from the pool
+// and compares it with a scratch storage made for it; one run per tenant, a second refused with
+// `rate_limited` (`busy`); the scratch storage dropped after a run that succeeded or failed, and
+// one left over dropped before; an exclusive started during a run waits for it; the local opening
+// drops a scratch storage a crash left. The kernel's comparison itself is tested in store-pglite.
+// Fictional IDs.
 
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";

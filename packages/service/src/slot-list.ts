@@ -1,10 +1,10 @@
-// The slots a credential can see, by name and table count only: for the MCP server's
-// `instructions` (docs/zh-CN/spec/05-surfaces.md §9 «slot 清单») and for checking the `slot`
-// argument of the `pending` prompt (§10.1 rule 2). Neither is a read of the contract: 05 §9 item 7
-// says generating `instructions` "不是契约里的读取操作，不记读取记录", and §10.1 rule 1 says
-// `prompts/get` records no read either. So this reads the store directly, outside any operation,
-// and gives back nothing but names, counts, and whether the user created the slot: no table
-// names, descriptions, fields, rows or versions.
+// The slots a credential can see, by name and table count only: for the MCP server's `instructions`
+// (docs/zh-CN/spec/05-surfaces.md §9 «slot 清单») and for checking the `slot` argument of the
+// `pending` prompt (§10.1 rule 2). Neither is a read of the contract: 05 §9 item 7 says generating
+// `instructions` "is not a read operation of the contract, keeps no read record", and §10.1 rule 1
+// says `prompts/get` records no read either. So this reads the store directly, outside any
+// operation, and gives back nothing but names, counts, and whether the user created the slot: no
+// table names, descriptions, fields, rows or versions.
 
 import {
   slotCreators,

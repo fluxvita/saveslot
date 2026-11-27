@@ -867,9 +867,9 @@ function catalog(r: R, now: Date, who?: RenderFor): Line[] | { json: true; lead:
 // --- query and history --------------------------------------------------------------------------
 
 /**
- * The entity a page of a state table's rows is all of, by its key (05 §6 `saveslot_query`: 实体);
- * undefined when the page holds more than one entity, or rows without one. The business range the
- * read asked for is not in the result, so the first line does not say it.
+ * The entity a page of a state table's rows is all of, by its key (05 §6 `saveslot_query`:
+ * "entity"); undefined when the page holds more than one entity, or rows without one. The business
+ * range the read asked for is not in the result, so the first line does not say it.
  */
 function oneEntity(rows: readonly unknown[]): unknown {
   const entities = new Set(rows.map((x) => obj(x)["entity"]));
@@ -1091,9 +1091,9 @@ function sourcesOf(x: unknown): Part[] {
 }
 
 /**
- * How a write came about, when not by a plain write (05 §6 `saveslot_history`: 由 resolve、撤回触发的
- * 写明来由): resolving an item with a decision, or undoing an operation. Any other shape is shown as
- * written, inside the boundary.
+ * How a write came about, when not by a plain write (05 §6 `saveslot_history`: "one triggered by
+ * `resolve`, a deletion or an undo states the reason"): resolving an item with a decision, or
+ * undoing an operation. Any other shape is shown as written, inside the boundary.
  */
 function viaOf(x: unknown): Part[] {
   if (x === undefined) return [];
@@ -1408,8 +1408,8 @@ function proposalOf(x: unknown): Part[] {
 }
 
 /**
- * How long an item has been open (05 §6 `saveslot_pending`: 已挂多久): whole minutes, hours, or
- * days from 48 hours on; as recorded when the moment is not one this can read.
+ * How long an item has been open (05 §6 `saveslot_pending`: "how long it has been open"): whole
+ * minutes, hours, or days from 48 hours on; as recorded when the moment is not one this can read.
  */
 function openFor(opened: unknown, now: Date): Part[] {
   const at = typeof opened === "string" ? Date.parse(opened) : Number.NaN;
@@ -1470,9 +1470,9 @@ const byStretch = (x: R): boolean => arr(x["spans"]).some((sp) => obj(sp)["seq"]
 const SUPERSEDED: ReadonlySet<string> = new Set<string>(SUPERSEDED_REASONS);
 
 /**
- * What each of a conflict's decisions would do (05 §6 `saveslot_pending`: 可选), for the decisions
- * this credential has; what take_previous would undo is listed once, above. Any other decision is
- * named by its code.
+ * What each of a conflict's decisions would do (05 §6 `saveslot_pending`: "Choices"), for the
+ * decisions this credential has; what take_previous would undo is listed once, above. Any other
+ * decision is named by its code.
  */
 function conflictChoices(r: R): Line[] {
   const candidates = arr(r["candidates"]).map((c) => obj(c)["index"]);
@@ -1501,7 +1501,7 @@ function conflictChoices(r: R): Line[] {
   return out;
 }
 
-/** The decisions each item type takes (04-contract §6 事项类型 × 处理方式). */
+/** The decisions each item type takes (04-contract §6: kind × decision). */
 const DECISIONS_BY_TYPE: ReadonlyMap<string, readonly string[]> = new Map([
   ["conflict", ["keep_effective", "take_candidate", "take_previous"]],
   ["awaiting_confirmation", ["confirm", "reject"]],
@@ -1551,10 +1551,10 @@ function blockedBy(subject: Part[], deletions: unknown, expiresAt: unknown): Par
 }
 
 /**
- * An open item's choices (05 §6 `saveslot_pending`: 可选): the decisions the detail lists, which are
- * those this credential may take. None listed on an open item: this connection lacks the scope its
- * type takes, and says which, so that the item is not taken for one nobody can decide. A closed
- * item has none and says nothing here.
+ * An open item's choices (05 §6 `saveslot_pending`: "Choices"): the decisions the detail lists,
+ * which are those this credential may take. None listed on an open item: this connection lacks the
+ * scope its type takes, and says which, so that the item is not taken for one nobody can decide. A
+ * closed item has none and says nothing here.
  */
 function choicesOf(r: R): Line[] {
   if (r["status"] !== "open") return [];
@@ -1718,7 +1718,7 @@ function fieldResult(f: string, x: unknown): Part[] {
   return t`${fieldOf(f)}${period} ${before}${fieldValue(c["after"])}${merged}`;
 }
 
-/** The conflict item's decisions (05 §6 `saveslot_write`: 处理). */
+/** The conflict item's decisions (05 §6 `saveslot_write`: "To resolve"). */
 const CONFLICT_DECISIONS = ["keep_effective", "take_candidate", "take_previous"] as const;
 
 /**
@@ -1800,10 +1800,10 @@ function candidateLines(f: string, c: R, at: number, r: R): Line[] {
 }
 
 /**
- * A write awaiting confirmation (05 §6 `saveslot_write`: 高影响写入进待确认时): the parts that
- * await, the item and its version, what carrying it out would change, and that it is not in
- * effect until the user agrees and it is confirmed. One block per item of an op: the item's impact
- * is the op's, given on each of its parts.
+ * A write awaiting confirmation (05 §6 `saveslot_write`: "When a high-impact write goes to awaiting
+ * confirmation"): the parts that await, the item and its version, what carrying it out would
+ * change, and that it is not in effect until the user agrees and it is confirmed. One block per
+ * item of an op: the item's impact is the op's, given on each of its parts.
  */
 function awaitingLines(parts: readonly { f: string; c: R }[], r: R, isUndo: boolean): Line[] {
   const first = parts[0];
@@ -2640,7 +2640,7 @@ function detailGuide(x: R): Line[] {
   const allowed = arr(x["allowed_values"]);
   if (allowed.length > 0) lines.push(t`    allowed: ${allowedOf(allowed)}`);
   if (x["reason"] === "not_required") lines.push(t`    the field it names needs required: true`);
-  // The rule an alias breaks (07 «schema 文档格式» 别名), in our words: not the alias itself.
+  // The rule an alias breaks (07 «schema 文档格式 · 别名»), in our words: not the alias itself.
   if (x["code"] === "alias_invalid") {
     const rule = ALIAS_RULES.get(String(x["reason"]));
     if (rule !== undefined) lines.push(t`    ${rule}`);

@@ -58,8 +58,8 @@ export type ErrorCode = keyof typeof ERROR_REASONS;
 export type ErrorReason<C extends ErrorCode = ErrorCode> = (typeof ERROR_REASONS)[C][number];
 
 /**
- * 04-contract-types §9 the extra fields of an error, per code (the "其余附带字段" column), all
- * optional here: which ones appear depends on `code` and `reason`.
+ * 04-contract-types §9 the extra fields of an error, per code (the "Other accompanying fields"
+ * column), all optional here: which ones appear depends on `code` and `reason`.
  */
 export interface ErrorDetails {
   // invalid_argument
