@@ -1432,6 +1432,14 @@ const previousDeleted = (x: R): Part[] =>
     : [];
 
 /**
+ * A side of a closed item part of which a deletion has since removed (04-contract-types
+ * `ConflictDetail.effective`, `AwaitingDetail.current`, `FlaggedDetail`: `partially_deleted`):
+ * the missing values are not "no value then".
+ */
+const sideDeleted = (x: R): Part[] =>
+  x["partially_deleted"] === true ? t`; part of it has since been deleted and is left out` : [];
+
+/**
  * A side of an item (its effective side, the merge base, an awaiting item's current values): a
  * state table's by stretch, each with the write that gave it when the stretch says so; other
  * tables' by field. `no value` for a stretch without one: on a state table a stretch without a value
@@ -1613,7 +1621,9 @@ function pending(r: R, now: Date): Line[] {
       const keys = arr(r["keys"]);
       if (keys.length > 0) {
         const values = isObj(r["matched_values"]) ? t` (${namedValues(r["matched_values"])})` : [];
-        out.push(t`  Duplicate keys matched: ${join(keys.map(fieldOf), t` + `)}${values}`);
+        out.push(
+          t`  Duplicate keys matched: ${join(keys.map(fieldOf), t` + `)}${values}${sideDeleted(r)}`,
+        );
       }
       for (const rel of arr(r["related"])) out.push(t`  May duplicate ${targetOf(rel)}`);
     }
@@ -1621,7 +1631,7 @@ function pending(r: R, now: Date): Line[] {
       const e = r["effective"];
       // By stretch, each stretch names its write; otherwise the side's own.
       const by = byStretch(e) ? [] : t` (${op(e["seq"])}, ${actorOf(e["actor"])})`;
-      out.push(t`  In effect: ${sideOf(e)}${by}`);
+      out.push(t`  In effect: ${sideOf(e)}${by}${sideDeleted(e)}`);
     }
     const candidateImpact = obj(r["candidate_impact"]);
     for (const c of arr(r["candidates"])) {
@@ -1646,7 +1656,8 @@ function pending(r: R, now: Date): Line[] {
       out.push(t`  take_previous would undo: ${join(reverted.map(revertedWrite), t`; `)}`);
     }
     if (isObj(r["proposal"])) out.push(t`  Proposed: ${proposalOf(r["proposal"])}`);
-    if (isObj(r["current"])) out.push(t`  In effect now: ${sideOf(r["current"])}`);
+    if (isObj(r["current"]))
+      out.push(t`  In effect now: ${sideOf(r["current"])}${sideDeleted(r["current"])}`);
     if (isObj(r["impact"])) {
       const isUndo = isObj(obj(r["proposal"])["revert"]);
       out.push(...impactHead(impactLines(r["impact"], "    "), isUndo));

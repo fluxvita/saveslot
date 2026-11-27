@@ -500,6 +500,18 @@ describe("what 05 §6 asks for", () => {
     );
   });
 
+  it("pending: a closed item's side part of which a deletion removed says so", () => {
+    const s = sample("pending_detail");
+    const eff = s.result["effective"] as R;
+    const d = renderResult(s.tool, {
+      ...s.result,
+      status: "resolved",
+      effective: { ...eff, values: {}, partially_deleted: true },
+    });
+    expect(d).toMatch(/\n {2}In effect: [^\n]*; part of it has since been deleted and is left out/);
+    expect(renderResult(s.tool, s.result)).not.toContain("part of it has since been deleted");
+  });
+
   it("pending: a resolved item says which candidate was taken, by the index it is listed with", () => {
     const s = sample("pending_detail");
     const resolved = (resolution: R) =>

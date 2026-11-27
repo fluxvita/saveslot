@@ -232,6 +232,24 @@ describe("pending (06 §5.1)", () => {
     );
   });
 
+  it("in effect: part of it a deletion has since removed is said", () => {
+    const conflict = {
+      ...AWAITING,
+      type: "conflict",
+      status: "resolved",
+      reason: "stale_write",
+      decisions: [],
+      effective: { seq: 103, actor, values: {}, exists: true, partially_deleted: true },
+      candidates: [],
+      previous: { seq: 90, exists: true, values: { amount: { value: "2000", unit: "CNY" } } },
+      reverted_by_previous: [],
+    };
+    const lines = render(pendingDetail(conflict as never, NOW), terminal).split("\n");
+    expect(lines.find((l) => l.startsWith("  in effect:"))).toMatch(
+      /; part of it has since been deleted and is left out$/,
+    );
+  });
+
   it("a take_previous receipt: the writes it undid, as the details listed them", () => {
     const lines = render(
       resolveResult({

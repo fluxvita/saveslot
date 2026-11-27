@@ -525,9 +525,11 @@ async function flaggedOf(
           )
         ).rows[0]?.body;
   const keys: string[] = typeof r === "string" ? (JSON.parse(r) as { keys: string[] }).keys : [];
+  // Less what a deletion still pending removed: a closed item's version is not moved by a later
+  // deletion (and an open flagged item's rows a deletion does not reach: pending_items_touched).
   const row =
     keys.length > 0
-      ? rowOf(t, await rowCellsAsOf(tx, t, e.row as string, versionOp), keys)
+      ? rowOf(t, await rowCellsAsOf(tx, t, e.row as string, versionOp, { withheld: true }), keys)
       : undefined;
   return {
     related: e.matched.map((b) => ({
@@ -536,6 +538,7 @@ async function flaggedOf(
     })),
     keys: keys.map((f) => n.field(f)),
     ...(row?.values !== undefined ? { matched_values: valuesOut(row.values) } : {}),
+    ...(row?.withheld === true ? { partially_deleted: true as const } : {}),
   };
 }
 
@@ -546,8 +549,10 @@ async function conflictOf(tx: ReadTx, e: ItemEntries, n: N, table: Table, versio
     const blocks = candidateImpactBlocks(e, event);
     return blocks.length > 0 ? [[String(c.index), impactOut(e, n, blocks)] as const] : [];
   });
-  // The side in effect as of the item's version; the merge base's as of its operation.
-  const now = await sideOf(tx, e, n, table, versionOp);
+  // The side in effect as of the item's version; the merge base's as of its operation. Both are
+  // read less what a deletion still pending removed: a closed item's version is not moved by a
+  // later deletion, so its cells may hold such a value (an open one's are refreshed past it).
+  const now = await sideOf(tx, e, n, table, versionOp, { withheld: true });
   let effective: {
     readonly seq?: number;
     readonly actor?: Actor;
@@ -558,6 +563,7 @@ async function conflictOf(tx: ReadTx, e: ItemEntries, n: N, table: Table, versio
       readonly actor?: Actor;
     })[];
     readonly exists: boolean;
+    readonly partially_deleted?: true;
   };
   if (now.kind === "state") {
     const top = Math.max(0, ...now.pieces.map((p) => p.op ?? 0));
@@ -568,6 +574,7 @@ async function conflictOf(tx: ReadTx, e: ItemEntries, n: N, table: Table, versio
         ...(p.op !== undefined ? { seq: p.op, actor: now.who.get(p.op) as Actor } : {}),
       })),
       exists: now.pieces.some((p) => p.values !== null),
+      ...(partialOf(now) ? { partially_deleted: true as const } : {}),
     };
   } else {
     const r = now.row;
@@ -575,6 +582,7 @@ async function conflictOf(tx: ReadTx, e: ItemEntries, n: N, table: Table, versio
       ...(r.op !== undefined ? { seq: r.op, actor: now.who.get(r.op) as Actor } : {}),
       ...(r.values !== undefined ? { values: valuesOut(r.values) } : {}),
       exists: r.exists,
+      ...(partialOf(now) ? { partially_deleted: true as const } : {}),
     };
   }
   // A conflict item always has a merge base (09-event-format: `merge_base_op` on every conflict
@@ -588,10 +596,7 @@ async function conflictOf(tx: ReadTx, e: ItemEntries, n: N, table: Table, versio
   // and `previous` is marked. Not the state at that place in the replay, which `take_previous`
   // writes back: with the mark, the two may differ.
   const base = await sideOf(tx, e, n, table, e.mergeBase, { withheld: true });
-  const partial =
-    base.kind === "state"
-      ? base.pieces.some((p) => p.withheld === true)
-      : base.row.withheld === true;
+  const partial = partialOf(base);
   const previous =
     base.kind === "state"
       ? {
@@ -652,7 +657,8 @@ async function awaitingOf(tx: ReadTx, e: ItemEntries, n: N, table: Table, versio
           }
         : proposalOut(e, n)),
     },
-    current: currentOf(n, await sideOf(tx, e, n, table, versionOp)),
+    // Read less what a deletion still pending removed, as `effective` is (a closed item's version).
+    current: currentOf(n, await sideOf(tx, e, n, table, versionOp, { withheld: true })),
     impact: impactOut(e, n, e.impact),
   };
 }
@@ -703,9 +709,17 @@ async function schemaChangeOf(tx: ReadTx, item: string) {
 
 /** The awaiting item's current side (`AwaitingDetail.current`): the row as of the item's version. */
 function currentOf(n: N, side: Awaited<ReturnType<typeof sideOf>>) {
-  if (side.kind === "state") return { spans: side.pieces.map((p) => pieceOut(n, p)) };
-  return side.row.values !== undefined ? { values: valuesOut(side.row.values) } : {};
+  const mark = partialOf(side) ? { partially_deleted: true as const } : {};
+  if (side.kind === "state") return { spans: side.pieces.map((p) => pieceOut(n, p)), ...mark };
+  return {
+    ...(side.row.values !== undefined ? { values: valuesOut(side.row.values) } : {}),
+    ...mark,
+  };
 }
+
+/** Whether a side read with `withheld` left a value out (03-data-model/03-deletion «版本表»). */
+const partialOf = (side: Awaited<ReturnType<typeof sideOf>>): boolean =>
+  side.kind === "state" ? side.pieces.some((p) => p.withheld === true) : side.row.withheld === true;
 
 /** `pending`'s result (04-contract-types §4.8): a page of items, or one item's details. */
 export type PendingReadResult =

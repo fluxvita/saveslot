@@ -1080,7 +1080,7 @@ interface AwaitingDetail extends ItemBase {
   /** 提议的内容，三种之一：set 是字段值；set: null 是撤销；提议是一次回退时不给 set，给 revert（成因 undo_includes_later）。
    *  回退会写回什么不在这里列：会被回掉的写入见 impact.reverted，回到的值执行后见回执。 */
   proposal: { seq: Seq; actor: Actor; intent: Intent; set?: Values | null; revert?: { undo: Seq; include_later?: boolean }; valid?: Interval };
-  current: { values?: Values; spans?: Span[] };   // 按事项版本的操作号读这一行，范围同 ConflictDetail.effective
+  current: { values?: Values; spans?: Span[]; partially_deleted?: true };   // 按事项版本的操作号读这一行，范围同 ConflictDetail.effective；partially_deleted 同 ConflictDetail.effective
   impact: AwaitingImpact;
 }
 
@@ -1101,6 +1101,8 @@ interface FlaggedDetail extends ItemBase {
   /** 命中的那一组 duplicate_keys 与键值。 */
   keys: FieldName[];
   matched_values?: Values;
+  /** matched_values 里有值出自仍待执行的删除去掉的贡献：那些字段不出现，不写成 null（已关闭的事项按它自己的事项版本读，之后的删除不刷新它）。 */
+  partially_deleted?: true;
 }
 
 interface ConflictDetail extends ItemBase {
@@ -1115,7 +1117,8 @@ interface ConflictDetail extends ItemBase {
    *  顶层 seq / actor 是这些段里操作号最大的那次（事件类表与无时间表只有一个）；一段都没有操作给出时不给。
    *  撤销被撤回之后"由谁给出"两种表不同：事件类表、无时间表上是那次撤回（它让这一行重新存在）；
    *  状态类表上是原来给出这一段值的写入（撤回只让那些值重新生效）。不对称来自版本表：撤回撤销在事件类表、无时间表上给"存在"记一格，在状态类表上不记；这里照格走，不另求一致。 */
-  effective: { seq?: Seq; actor?: Actor; values?: Values; spans?: Array<Span & { seq?: Seq; actor?: Actor }>; exists: boolean };
+  /** partially_deleted：这一侧有值出自仍待执行的删除去掉的贡献，那些字段不出现，不写成 null；已关闭的事项按它自己的事项版本读，之后的删除不刷新它。 */
+  effective: { seq?: Seq; actor?: Actor; values?: Values; spans?: Array<Span & { seq?: Seq; actor?: Actor }>; exists: boolean; partially_deleted?: true };
   candidates: Candidate[];
   /** 成因是 restored_candidate 时：候选原来所在的那个事项。@later */
   related_item?: ItemId;

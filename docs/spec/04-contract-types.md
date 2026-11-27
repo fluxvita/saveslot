@@ -1078,7 +1078,7 @@ interface AwaitingDetail extends ItemBase {
   /** The proposed content, one of three: set is field values; set: null is a revoke; when the proposal is a revert, set is not given and revert is given (cause undo_includes_later).
    *  What a revert will write back is not listed here: the writes that will be reverted are in impact.reverted, and the values gone back to are in the receipt after execution. */
   proposal: { seq: Seq; actor: Actor; intent: Intent; set?: Values | null; revert?: { undo: Seq; include_later?: boolean }; valid?: Interval };
-  current: { values?: Values; spans?: Span[] };   // this row read at the operation number of the item version, with the same range as ConflictDetail.effective
+  current: { values?: Values; spans?: Span[]; partially_deleted?: true };   // this row read at the operation number of the item version, with the same range as ConflictDetail.effective; partially_deleted as on ConflictDetail.effective
   impact: AwaitingImpact;
 }
 
@@ -1099,6 +1099,8 @@ interface FlaggedDetail extends ItemBase {
   /** The set of duplicate_keys that matched, and the key values. */
   keys: FieldName[];
   matched_values?: Values;
+  /** A value of matched_values came from a contribution a deletion still pending removed: those fields are not there, and are not written as null (a closed item is read at its own version, which a later deletion does not refresh). */
+  partially_deleted?: true;
 }
 
 interface ConflictDetail extends ItemBase {
@@ -1113,7 +1115,8 @@ interface ConflictDetail extends ItemBase {
    *  The top-level seq / actor is the one with the largest operation number among these segments (event tables and timeless tables have only one); not given when no operation gave any segment.
    *  After a revoke is undone, "who gave it" differs between the two kinds of table: on event tables and timeless tables it is that undo (it makes the row exist again);
    *  on state tables it is the write that originally gave the value for this segment (the undo only makes those values take effect again). The asymmetry comes from the version table: undoing a revoke records a cell for "exists" on event tables and timeless tables and records none on state tables; this follows the cells and does not seek consistency. */
-  effective: { seq?: Seq; actor?: Actor; values?: Values; spans?: Array<Span & { seq?: Seq; actor?: Actor }>; exists: boolean };
+  /** partially_deleted: a value on this side came from a contribution a deletion still pending removed; those fields are not there, and are not written as null. A closed item is read at its own version, which a later deletion does not refresh. */
+  effective: { seq?: Seq; actor?: Actor; values?: Values; spans?: Array<Span & { seq?: Seq; actor?: Actor }>; exists: boolean; partially_deleted?: true };
   candidates: Candidate[];
   /** When the cause is restored_candidate: the item the candidate was originally in. @later */
   related_item?: ItemId;
