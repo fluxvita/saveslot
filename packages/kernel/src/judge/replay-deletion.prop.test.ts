@@ -375,6 +375,10 @@ function compare(
             (isState && JSON.stringify(lb.valid) !== JSON.stringify(x.valid)) ||
             JSON.stringify(lb.deps.map(r).sort()) !== JSON.stringify(x.deps.map(r).sort()) ||
             (x.content !== undefined && JSON.stringify(lb.content) !== JSON.stringify(x.content)) ||
+            // A revert's write-back restated as a restore where a revoke was left, or the reverse:
+            // a restatement gives that kind as `restored`, not as its content.
+            ((lb.content?.kind === "restore" || lb.content?.kind === "revoke") &&
+              (x.restored === true) !== (lb.content.kind === "restore")) ||
             JSON.stringify((lb.carried ?? []).map(r)) !== JSON.stringify((x.carried ?? []).map(r));
           const rests =
             (before?.deps ?? []).some((d) => goneHere(d) || byRef.has(r(d))) ||
@@ -1403,6 +1407,77 @@ describe("a group value past a field's seen interval (a property counterexample)
       },
     ] as Op[];
     compare({ ...STATE, groups: GROUPS }, true, ops, [], 112260546, [60]);
+  });
+});
+
+describe("a revert's write-back restated as a restore after a revoke was left (a property counterexample)", () => {
+  // The state table with group {f2, f3}, seed -1366647956 of the reverts property. #10 (1, a) from
+  // 10-01; #20 revokes [11-03, 11-09); #30 (2, b) over [11-05, 11-07); #40 f2 = 9 over
+  // [11-01, 11-03); #50 f2 = 9 from 11-01; #60 revokes [11-05, 11-07); the decision inserts an undo
+  // whose write-back (event 64) is over [11-05, 11-07).
+  // Deleting S3 (#50) leaves that write-back a revoke; deleting S10 (#10) as well restates it as a
+  // restore, the same interval and deps. That restatement is a change (09 §5.9 rule 1): the kind of
+  // a write-back is given as `restored`, not as content.
+  it("the deletion's replay leaves what the reference evaluator gives, in both orders", () => {
+    const span = (from: string, to: string) => ({
+      from: { mode: "given", value: from },
+      to: { mode: "given", value: to },
+    });
+    const ops = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        valid: { from: { mode: "given", value: "2026-10-01" }, to: { mode: "open" } },
+        fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "a", sources: ["S10"] } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "revoke",
+        op: 20,
+        event: 21,
+        seen: 10,
+        valid: span("2026-11-03", "2026-11-09"),
+        validSources: ["S20"],
+      },
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        seen: 10,
+        valid: span("2026-11-05", "2026-11-07"),
+        fields: { f2: { value: "2", sources: ["S30"] }, f3: { value: "b", sources: ["S30"] } },
+      },
+      {
+        kind: "write",
+        op: 40,
+        event: 41,
+        seen: 0,
+        valid: span("2026-11-01", "2026-11-03"),
+        fields: { f2: { value: "9", sources: ["S1"], explicit: false } },
+      },
+      {
+        kind: "write",
+        op: 50,
+        event: 51,
+        seen: 10,
+        valid: { from: { mode: "given", value: "2026-11-01" }, to: { mode: "open" } },
+        fields: { f2: { value: "9", sources: ["S3"], explicit: false } },
+      },
+      {
+        kind: "revoke",
+        op: 60,
+        event: 61,
+        seen: 50,
+        valid: span("2026-11-05", "2026-11-07"),
+        validSources: ["S1"],
+      },
+    ] as Op[];
+    const decisions: Decision[] = [
+      { after: 1138313729, pick: 1248658181, kind: "undo", flag: 0, focus: false },
+    ];
+    compare({ ...STATE, groups: GROUPS }, true, ops, decisions, ["S3", "S10"]);
   });
 });
 
