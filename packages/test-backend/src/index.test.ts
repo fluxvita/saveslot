@@ -157,7 +157,6 @@ describe.skipIf(TEST_BACKEND !== "postgres")("with SAVESLOT_TEST_BACKEND=postgre
     try {
       expect(store).toBeInstanceOf(PostgresTenantStore);
       expect(store.dir).toBe(dir);
-      expect(store.epoch).toBe(1);
       // The directory is made, as PGlite makes it: tests look for it and remove it.
       expect(existsSync(dir)).toBe(true);
       expect(await exists(databaseOf(dir))).toBe(true);
@@ -167,7 +166,6 @@ describe.skipIf(TEST_BACKEND !== "postgres")("with SAVESLOT_TEST_BACKEND=postgre
     }
     const again = await testBackend().open({ kind: "pglite", dir }, {});
     try {
-      expect(again.epoch).toBe(2);
       const r = await again.read((tx) => tx.query("SELECT x FROM kept"));
       expect(r.rows).toEqual([{ x: 1 }]);
     } finally {

@@ -1513,7 +1513,7 @@ The judgement is made online, once, at the time: comparing "the value now" with 
 | a write whose ops are all `unchanged` / `skipped` by external key | No (§4.2). The receipt is still given, with no operation number |
 | all read operations (including the deletion preview) | No. Reads are recorded in the read record, not in the log |
 | log verification, replay comparison, export, read audit queries | No |
-| persisting and cleaning up the read record, residue cleanup, advancing the high-water mark, the ownership epoch | No |
+| persisting and cleaning up the read record, residue cleanup, advancing the high-water mark, the ownership epoch (local mode) | No |
 
 ### 5.12 What the materialized state maintained by `apply` is rebuilt from
 

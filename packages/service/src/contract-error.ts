@@ -131,6 +131,24 @@ export function lostConnectionOf(e: unknown): "connection_lost" | "commit_unknow
   return undefined;
 }
 
+/**
+ * A tenant's storage refusing this process (02-architecture §7 «进程、单写者、串行写»), by the
+ * store's code: `format_too_new`, the storage of a newer format than this version knows (another
+ * version upgraded it), the error itself or the one a read's record failed over; `tenant_sealed`,
+ * a write refused while an import is in progress.
+ */
+export function storageRefusal(e: unknown): "format_too_new" | "tenant_sealed" | undefined {
+  const code = (e as { code?: unknown } | null | undefined)?.code;
+  if (e instanceof Error && (code === "format_too_new" || code === "tenant_sealed")) return code;
+  if (e instanceof ReadNotRecorded) {
+    const cause = e.cause;
+    if (cause instanceof Error && (cause as { code?: unknown }).code === "format_too_new") {
+      return "format_too_new";
+    }
+  }
+  return undefined;
+}
+
 /** A tenant's connection gone, raised over the store's error with the tenant it was met on. */
 export class LostConnectionOf extends Error {
   override readonly name = "LostConnectionOf";
@@ -152,6 +170,9 @@ export class RetryOnLostConnection extends Error {
   }
 }
 
+/** Seconds a call refused for a storage newer than this server is tried again after (elsewhere). */
+const FORMAT_RETRY_AFTER = 1;
+
 /** Seconds a call refused for its tenant's connection gone is tried again after. */
 const LOST_RETRY_AFTER = 1;
 
@@ -172,6 +193,23 @@ export function contractError(
   o: { readonly tenant?: string } = {},
 ): ContractError {
   if (e instanceof ContractError) return e;
+  // The tenant's storage refused this process (02-architecture §7 «进程、单写者、串行写»): of a
+  // newer format than this version knows, the process is to be replaced and a retry goes to
+  // another; sealed by an import in progress, a write waits for it. Before a read not recorded: a
+  // record refused for the format refuses its read as the read itself would be.
+  const refused = storageRefusal(e);
+  if (refused === "format_too_new") {
+    warn("tenant_format_too_new", o.tenant !== undefined ? { tenant: o.tenant } : {});
+    return new ContractError("unavailable", "this server is older than the tenant's storage", {
+      reason: "stopping",
+      retry_after: FORMAT_RETRY_AFTER,
+    });
+  }
+  if (refused === "tenant_sealed") {
+    return new ContractError("unavailable", "the tenant is being imported into", {
+      reason: "importing",
+    });
+  }
   // A read whose record could not be written is not given (02-architecture §7 «read_log 的持久性»):
   // the caller tries again, and reading again is right. Also when the record's COMMIT went
   // unanswered: the caller has nothing, and a record that may be there is harmless. Before the

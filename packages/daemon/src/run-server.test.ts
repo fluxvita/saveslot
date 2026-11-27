@@ -3210,6 +3210,81 @@ describe.skipIf(TEST_BACKEND !== "postgres")(
   },
 );
 
+// A tenant's storage of a newer format than this version knows (02-architecture §7): another version
+// upgraded it. The call is answered unavailable (stopping), to retry elsewhere, and logged; the
+// process stays ready, for its other tenants. The store's refusal stood in for by a wrapped store.
+describe("runServer: a storage newer than this version", () => {
+  it(
+    "the call is unavailable (stopping, retry_after 1) and logged; /ready stays 200",
+    async () => {
+      const c = await controlDb();
+      const t = tenants();
+      let newer = false;
+      type Store = Awaited<ReturnType<TenantPoolOptions["backend"]["open"]>>;
+      const refuse = <T>(go: () => Promise<T>): Promise<T> =>
+        newer
+          ? Promise.reject(
+              Object.assign(new Error("storage format 6 is newer than this version's"), {
+                code: "format_too_new",
+              }),
+            )
+          : go();
+      const backend: TenantPoolOptions["backend"] = {
+        open: async (ref, opts) => {
+          const store: Store = await t.backend.open(ref, opts);
+          return {
+            write: (fn) => refuse(() => store.write(fn)),
+            read: (fn) => refuse(() => store.read(fn)),
+            purgeResidue: () => store.purgeResidue(),
+            snapshot: () => store.snapshot(),
+            formatVersion: store.formatVersion,
+            close: () => store.close(),
+          };
+        },
+      };
+      const cfg = config();
+      await CursorKeys.createFile(cfg.handleKeyFile);
+      const { user } = await addLocalUser(c.accounts as NonNullable<typeof c.accounts>, {
+        control: c.cp as ServerControlPlane,
+        backend,
+        name: "robin",
+        password: "correct horse battery",
+        cell: CELL,
+        cells: new Set([CELL]),
+        now: NOW,
+      });
+      const token = await sessionFor(c.store, user);
+      const warned: string[] = [];
+      const s = await runServer({
+        config: cfg,
+        version: "0.0.0-test",
+        openControl: async () => c.db,
+        backend,
+        now: () => NOW,
+        warn: (event) => warned.push(event),
+      });
+      const auth = { authorization: `Bearer ${token}` };
+      try {
+        expect((await send(s, { path: "/v1/slots", headers: auth })).status).toBe(200);
+        expect((await send(s, { path: "/ready" })).status).toBe(200);
+        newer = true;
+        const refused = await send(s, { path: "/v1/slots", headers: auth });
+        expect(refused.status).toBe(503);
+        expect(JSON.parse(refused.body)).toMatchObject({
+          error: { code: "unavailable", reason: "stopping", retry_after: 1 },
+        });
+        expect(warned).toContain("tenant_format_too_new");
+        const ready = await send(s, { path: "/ready" });
+        expect(ready.status).toBe(200);
+        expect(JSON.parse(ready.body)).not.toHaveProperty("reason");
+      } finally {
+        await s.close();
+      }
+    },
+    T,
+  );
+});
+
 // The call records (02-architecture §9 «调用记录»): with SAVESLOT_CALL_RECORDS on, one line a call
 // that passed authentication, on the server's output (here a sink of the test's); each /v1 call's ID
 // in `Saveslot-Call`, on or off. Nothing of the request in any record: names, task, key and values

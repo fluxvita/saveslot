@@ -99,6 +99,25 @@ describe.skipIf(TEST_BACKEND !== "postgres")("a read on one store, a write on an
   );
 });
 
+describe.skipIf(TEST_BACKEND !== "postgres")("two stores of one tenant (two processes)", () => {
+  it(
+    "write by turns, each reading the other's; neither refused, no ownership taken",
+    async () => {
+      const { dir, store } = await tenant("saveslot-two-writers-");
+      const other = await reopen(dir);
+      const rows = async (s: TenantStore) =>
+        ((await query(s, ctx("count"), { table: "spend" })) as unknown as { rows: unknown[] }).rows
+          .length;
+      const before = await rows(store);
+      await insert(store, "one", "from the first");
+      await insert(other, "two", "from the second");
+      await insert(store, "three", "from the first again");
+      expect([await rows(store), await rows(other)]).toEqual([before + 3, before + 3]);
+    },
+    T,
+  );
+});
+
 describe.skipIf(TEST_BACKEND !== "postgres")("two stores recording reads of the same rows", () => {
   it(
     "read in opposite orders at once, again and again: every read answered (no deadlock between the records)",
