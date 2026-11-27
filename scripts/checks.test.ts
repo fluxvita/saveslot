@@ -6,6 +6,14 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import {
+  type Changed,
+  changedSince,
+  changesetProblem,
+  noChangesetReason,
+  publishedIn,
+  titleType,
+} from "./check-changesets.ts";
 import { checkClaims, claimRows, testCases } from "./check-claims.ts";
 import { dcoProblem } from "./check-dco.ts";
 import { checkDocLinks, headingAnchors, slugify } from "./check-doc-links.ts";
@@ -634,19 +642,131 @@ describe("the CI run's variables", () => {
       ciEnv({
         SAVESLOT_CI_BASE: "def",
         SAVESLOT_CI_TITLE: "docs: y",
+        SAVESLOT_CI_BODY: "Some text.\nNo changeset: docs only",
         SAVESLOT_CI_TERMS_REQUIRED: "false",
       }),
-    ).toEqual({ base: "def", title: "docs: y", termsRequired: false });
+    ).toEqual({
+      base: "def",
+      title: "docs: y",
+      body: "Some text.\nNo changeset: docs only",
+      termsRequired: false,
+    });
     expect(ciEnv({ SAVESLOT_CI_TERMS_REQUIRED: "true" }).termsRequired).toBe(true);
-    expect(ciEnv({})).toEqual({ base: undefined, title: undefined, termsRequired: false });
+    expect(ciEnv({})).toEqual({
+      base: undefined,
+      title: undefined,
+      body: undefined,
+      termsRequired: false,
+    });
   });
 
   it("an empty base is none; an empty title is still a title, to be refused", () => {
     expect(ciEnv({ SAVESLOT_CI_BASE: "", SAVESLOT_CI_TITLE: "" })).toEqual({
       base: undefined,
       title: "",
+      body: undefined,
       termsRequired: false,
     });
+  });
+});
+
+describe("changesets", () => {
+  const published = (dir: string) => !["reference", "connector-ts", "test-backend"].includes(dir);
+  const src: Changed = { path: "packages/kernel/src/write/write.ts", status: "M" };
+  const added: Changed = { path: ".changeset/some-fix.md", status: "A" };
+  const check = (title: string, changed: Changed[], body = "") =>
+    changesetProblem(title, body, changed, published);
+
+  it("asks a fix, feat or perf that changes a published package's source for a changeset", () => {
+    for (const t of ["fix(kernel): x", "feat: x", "perf(kernel)!: x"]) {
+      expect(check(t, [src]), t).toMatch(
+        /packages\/kernel\/src\/write\/write\.ts\) adds no changeset/,
+      );
+    }
+    // A file shipped from src/ that is not TypeScript counts too.
+    expect(
+      check("fix: x", [{ path: "packages/daemon/src/templates.json", status: "M" }]),
+    ).toBeDefined();
+  });
+
+  it("passes with an added changeset, and not with one only changed or the README", () => {
+    expect(check("fix: x", [src, added])).toBeUndefined();
+    expect(check("fix: x", [src, { ...added, status: "M" }])).toBeDefined();
+    expect(check("fix: x", [src, { path: ".changeset/README.md", status: "A" }])).toBeDefined();
+    expect(check("fix: x", [src, { path: ".changeset/pre/a.md", status: "A" }])).toBeDefined();
+  });
+
+  it("passes with a line in the description that begins `No changeset:` and gives a reason", () => {
+    expect(
+      check("fix: x", [src], "Summary.\n\nNo changeset: internal refactor, no change seen"),
+    ).toBeUndefined();
+    expect(noChangesetReason("No changeset:   a reason  ")).toBe("a reason");
+    for (const body of [
+      "No changeset:",
+      "No changeset:   ",
+      "No changeset: <reason>",
+      "- [ ] or a line `No changeset: <reason>` in the description",
+      "<!-- No changeset: hidden in a comment -->",
+      "no changeset: lower case",
+    ]) {
+      expect(check("fix: x", [src], body), JSON.stringify(body)).toBeDefined();
+    }
+  });
+
+  it("passes what users cannot notice: tests, private packages, other title types", () => {
+    for (const path of [
+      "packages/kernel/src/write/write.test.ts",
+      "packages/kernel/src/write/write.prop.test.ts",
+      "packages/store-pglite/src/testing.fixture.ts",
+      "packages/server/src/mcp/__golden__/catalog.txt",
+      "packages/reference/src/evaluate.ts",
+      "packages/connector-ts/src/index.ts",
+      "packages/kernel/README.md",
+      "docs/spec/04-contract.md",
+    ]) {
+      expect(check("fix: x", [{ path, status: "M" }]), path).toBeUndefined();
+    }
+    for (const t of [
+      "docs: x",
+      "test(kernel): x",
+      "chore: x",
+      "refactor(kernel): x",
+      "not a title",
+    ]) {
+      expect(check(t, [src]), t).toBeUndefined();
+    }
+    expect(titleType("feat(cli)!: x")).toBe("feat");
+  });
+
+  it("reads which packages are published from their package.json", () => {
+    const root = tree({
+      "packages/kernel/package.json": JSON.stringify({ name: "k" }),
+      "packages/reference/package.json": JSON.stringify({ name: "r", private: true }),
+    });
+    const p = publishedIn(root);
+    expect([p("kernel"), p("reference"), p("missing")]).toEqual([true, false, false]);
+  });
+
+  it("reads the changed files from git, a rename as a deletion and an addition", () => {
+    const root = tree({ "a.txt": "a\n", "b.txt": "b\n" });
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: root, stdio: "pipe" });
+    const commit = (m: string) =>
+      git("-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", m);
+    git("init", "-q");
+    git("add", ".");
+    commit("a");
+    const base = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+    writeFileSync(join(root, "a.txt"), "a2\n");
+    writeFileSync(join(root, "c.txt"), "c\n");
+    git("mv", "b.txt", "d.txt");
+    git("add", ".");
+    commit("b");
+    expect(changedSince(root, base).sort((x, y) => x.path.localeCompare(y.path))).toEqual([
+      { path: "a.txt", status: "M" },
+      { path: "b.txt", status: "D" },
+      { path: "c.txt", status: "A" },
+      { path: "d.txt", status: "A" },
+    ]);
   });
 });
 
