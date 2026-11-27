@@ -46,3 +46,8 @@ export async function restoresOf(store: object, tx: ReadTx): Promise<number> {
   restores.set(store, n);
   return n;
 }
+
+/** Forgets a store's restore count: a restore or an import just appended its event on it. */
+export function forgetRestores(store: object): void {
+  restores.delete(store);
+}

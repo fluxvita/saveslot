@@ -4,6 +4,9 @@
 // request is sent again or a removal is asked again; `none` when nothing was appended. Every
 // operation that appends has a case here, so an operation added later without its effect fails.
 
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   createOpsContext,
   createTenant,
@@ -12,10 +15,12 @@ import {
   removeSlot,
   renameConnection,
   resolve,
+  restoreTenant,
   revokeConnection,
   schemaDraft,
   write,
 } from "@fluxvita/saveslot-kernel";
+import { openFileAnchorStore } from "@fluxvita/saveslot-kernel/anchor-file";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { openReusable, type ReusableStore } from "./testing/reusable-store.fixture.ts";
 
@@ -144,6 +149,33 @@ describe("an operation's effect, beside its result", () => {
       expect(effectOf(first)).toEqual({ effect: "appended", seq: await lastOp(), restores: 0 });
       const again = await removeSlot(s.store, ctx(), { slot_id: slot } as never);
       expect(effectOf(again)).toEqual({ ...effectOf(first), effect: "replayed" });
+    },
+    T,
+  );
+
+  it(
+    "a write after a restore on the same store: the new restore count, not the one kept from before",
+    async () => {
+      await schemaDraft(s.store, ctx(), { document: DOCUMENT });
+      const insert = (note: string) =>
+        write(s.store, ctx(), {
+          sv: 1,
+          ops: [{ table: "expenses", intent: "insert", set: { date: "2026-11-01", note } }],
+        });
+      expect(effectOf(await insert("before"))).toMatchObject({ restores: 0 });
+      const dir = mkdtempSync(join(tmpdir(), "saveslot-call-effects-anchor-"));
+      try {
+        const anchor = openFileAnchorStore(join(dir, "anchor.json"));
+        await anchor.advanceHighWater(TENANT as never, await lastOp());
+        await restoreTenant({ store: s.store, anchor, tenant: TENANT as never, now: ctx().now });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+      expect(effectOf(await insert("after"))).toMatchObject({
+        effect: "appended",
+        seq: await lastOp(),
+        restores: 1,
+      });
     },
     T,
   );

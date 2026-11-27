@@ -17,7 +17,7 @@
 
 import type { Instant, NodeId, Seq, TenantId } from "@fluxvita/saveslot-contract-core";
 import { applyEvents, eventsOf } from "../apply/index.ts";
-import { appendOperation, readTail } from "../log/index.ts";
+import { appendOperation, forgetRestores, readTail } from "../log/index.ts";
 import type { Anchor, AnchorStore, RestoreId } from "../store/anchor.ts";
 import type { TenantStore } from "../store/ports.ts";
 import { OpsError } from "./errors.ts";
@@ -155,6 +155,8 @@ export async function restoreTenant(o: RestoreInput): Promise<RestoreResult> {
       await applyEvents(tx, eventsOf(op));
       return { seq: op.op, restoreCount: a.restoreCount };
     });
+    // The restore count changed under this store: what effects noted of it is read again.
+    forgetRestores(o.store);
   }
 
   // Step 3.
