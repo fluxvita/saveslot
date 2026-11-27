@@ -74,8 +74,10 @@ async function baseEvents(tx: ReadTx, table: string, id: string): Promise<BaseEv
       removed_by: unknown;
       pending_by: unknown;
     }>(
+      // In the log's order: `before` takes the first block of a field that matches, so the
+      // order the database scans them in must not decide it.
       `SELECT seq, path, body, removed_by, pending_by FROM ${READABLE_CONTENT} c
-       WHERE seq = ANY($1)`,
+       WHERE seq = ANY($1) ORDER BY seq, path COLLATE "C"`,
       [seqs] as never,
     );
     for (const b of r.rows) {
