@@ -16,6 +16,8 @@ import {
   history,
   pending,
   previewDeletion,
+  query,
+  readBufferOf,
   resolve,
   schemaDraft,
   write,
@@ -108,6 +110,14 @@ async function cancel(del: Any, entity: string, words: string) {
   });
 }
 
+/** The write's pending item confirmed, when it has one; else the write. */
+async function confirmFirst(wr: Any): Promise<Any> {
+  const item = wr.pending?.[0]?.id as string | undefined;
+  if (item === undefined) return wr;
+  const d: Any = await pending(s.store, ctx(), { id: item });
+  return resolve(s.store, ctx(), { id: item, decision: "confirm", item_ver: d.item_ver } as never);
+}
+
 const asOf = (entity: string, op: number, more: Record<string, unknown> = {}): Promise<Any> =>
   history(s.store, ctx(), {
     table: "budget",
@@ -134,6 +144,7 @@ afterAll(async () => {
 }, T);
 beforeEach(async () => {
   await s.reset();
+  s.buffered(false);
   minute = 0;
   dir = mkdtempSync(join(tmpdir(), "saveslot-interval-ends-as-of-anchor-"));
   anchor = openFileAnchorStore(join(dir, "anchor.json"));
@@ -424,6 +435,87 @@ describe("an end from deleted content, read by record time", () => {
     },
     T,
   );
+  it(
+    "a write with no interval: its start `now` is stated and given, its end resolved at a removed write's change point is left out",
+    async () => {
+      const { entity, ver } = await base();
+      const b = await w("DELETED 4000 from 11-20", {
+        intent: "update",
+        entity,
+        ver,
+        valid_from: "2026-11-20",
+        set: { amount: "SECRET-4000" },
+      });
+      // Now is 11-10: the head says from `now`, to `next_change` (11-20, the removed write's).
+      const c = await w("3000 now", {
+        intent: "update",
+        entity,
+        ver: b.ops[0].ver,
+        set: { amount: "3000" },
+      });
+      await deleteSource("DELETED 4000 from 11-20");
+      const r = await asOf(entity, c.seq);
+      expect(shape(r)).toEqual([
+        ["2026-10-01", "2026-11-10", "5000", false],
+        ["2026-11-10", "—", "3000", true],
+      ]);
+      expect(daysIn(r)).not.toContain("2026-11-20");
+    },
+    T,
+  );
+
+  it(
+    "an undo whose write-back stops at a removed write's start: neither the date nor the value",
+    async () => {
+      const { entity, ver } = await base();
+      const b = await w("DELETED 4000 from 11-20", {
+        intent: "update",
+        entity,
+        ver,
+        valid_from: "2026-11-20",
+        set: { amount: "SECRET-4000" },
+      });
+      // Over the removed write's change point at 11-20: high impact, confirmed.
+      const c0 = await w("3000 for 11-01 to 12-01", {
+        intent: "update",
+        entity,
+        ver: b.ops[0].ver,
+        valid_from: "2026-11-01",
+        valid_to: "2026-12-01",
+        set: { amount: "3000" },
+      });
+      const c = await confirmFirst(c0);
+      const cSeq = c.write?.seq ?? c.seq;
+      const cur: Any = await query(s.store, ctx(), { table: "budget" } as never);
+      const d0: Any = await write(s.store, ctx(), {
+        sv: 1,
+        evidence: [{ kind: "user_message", text: "undo that" }],
+        idempotency_key: `k-${++n}`,
+        ops: [
+          {
+            table: "budget",
+            intent: "update",
+            entity,
+            ver: cur.rows[0].ver,
+            revert: { undo: cSeq },
+          },
+        ],
+      } as never);
+      const d = await confirmFirst(d0);
+      const dSeq = d.write?.seq ?? d.seq;
+      // The write-back gives 5000 back to 11-20 and the removed write's value from there.
+      expect(shape(await asOf(entity, dSeq))).toEqual([
+        ["2026-10-01", "2026-11-20", "5000", false],
+        ["2026-11-20", null, "SECRET-4000", false],
+      ]);
+      await deleteSource("DELETED 4000 from 11-20");
+      const r = await asOf(entity, dSeq);
+      expect(shape(r)).toEqual([["2026-10-01", "—", "5000", true]]);
+      expect(daysIn(r)).not.toContain("2026-11-20");
+      expect(daysIn(r)).not.toContain("SECRET");
+    },
+    T,
+  );
 });
 
 describe("a business time condition, the order and the pages", () => {
@@ -457,6 +549,47 @@ describe("a business time condition, the order and the pages", () => {
       const days = ["2026-11-12", "2026-11-19", "2026-11-20", "2026-11-25", "2026-12-31"];
       const answers = await Promise.all(days.map((d) => asOf(entity, c.seq, { valid_at: d })));
       expect(answers.map((x) => x.rows.length)).toEqual([0, 0, 0, 0, 0]);
+    },
+    T,
+  );
+
+  it(
+    "a carried valid_during: a stretch whose given start is in the window hits though its end is left out; one only the withheld end could place does not",
+    async () => {
+      const { entity, ver } = await base();
+      const b = await w("DELETED 4000 from 11-20", {
+        intent: "update",
+        entity,
+        ver,
+        valid_from: "2026-11-20",
+        set: { amount: "SECRET-4000" },
+      });
+      const c = await w("3000 from 11-10", {
+        intent: "update",
+        entity,
+        ver: b.ops[0].ver,
+        valid_from: "2026-11-10",
+        set: { amount: "3000" },
+      });
+      s.buffered(true);
+      const readOf = async (during: [string, string]) => {
+        await query(s.store, ctx(), { table: "budget", valid_during: during } as never);
+        return readBufferOf(s.store).entries().at(-1)?.read as string;
+      };
+      // Starts 11-10, inside the window: its end is after 10-05 whatever it is.
+      const wide = await readOf(["2026-10-05", "2026-11-12"]);
+      // Starts 11-10, before the window: only its end could say it reaches 11-15.
+      const late = await readOf(["2026-11-15", "2026-11-18"]);
+      await deleteSource("DELETED 4000 from 11-20");
+      const r = await asOf(entity, c.seq, { as_of: { read: wide } });
+      expect(shape(r)).toEqual([
+        ["2026-10-01", "2026-11-10", "5000", false],
+        ["2026-11-10", "—", "3000", true],
+      ]);
+      const k = await asOf(entity, c.seq, { as_of: { read: late } });
+      expect(k.rows).toEqual([]);
+      expect(k.partially_deleted).toBe(true);
+      expect(daysIn(r) + daysIn(k)).not.toContain("2026-11-20");
     },
     T,
   );

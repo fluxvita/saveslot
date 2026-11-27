@@ -820,14 +820,20 @@ export async function asOfInTx(
               ? undefined
               : true;
         if (at !== undefined && !known(both(startsBy(at), endsAfter(at)))) continue;
+        // A stretch is never empty: a given start at or after the window's start already puts its
+        // end after it, and a given end at or before the window's end already puts its start
+        // before it.
+        const endsAfterStart = (p: string): boolean | undefined =>
+          !fromWithheld && p <= s.from ? true : endsAfter(p);
+        const startsBeforeEnd = (p: string | null): boolean | undefined =>
+          p === null || (!toWithheld && s.to !== null && s.to <= p)
+            ? true
+            : fromWithheld
+              ? undefined
+              : s.from < p;
         if (
           during !== undefined &&
-          !known(
-            both(
-              endsAfter(during[0]),
-              during[1] === null ? true : fromWithheld ? undefined : s.from < during[1],
-            ),
-          )
+          !known(both(endsAfterStart(during[0]), startsBeforeEnd(during[1])))
         )
           continue;
         kept.push({ s, fromWithheld, toWithheld });
