@@ -74,6 +74,8 @@ export function pageAfter<T>(
     readonly limit: number;
     readonly condition?: Position["condition"];
     readonly since?: number;
+    /** The log position when the first page was read, where `seq` is another point. */
+    readonly logAt?: number;
   },
 ): { readonly page: T[]; readonly next?: string } {
   const after = o.position?.keys;
@@ -92,6 +94,7 @@ export function pageAfter<T>(
             keys: last.keys,
             ...(o.condition !== undefined ? { condition: o.condition } : {}),
             ...(o.since !== undefined ? { since: o.since } : {}),
+            ...(o.logAt !== undefined ? { logAt: o.logAt } : {}),
           }),
         }
       : {}),

@@ -292,9 +292,19 @@ describe("history changes: the side a removed contribution gave is not given, th
   );
 });
 
+/** How a read ends: refused with [code, reason], or "given". */
+const outcome = (p: Promise<unknown>) =>
+  p.then(
+    () => "given",
+    (e: { code?: string; detail?: { reason?: string } }) => {
+      if (e.code === undefined) throw e;
+      return [e.code, e.detail?.reason];
+    },
+  );
+
 describe("a query's later page, read as of its first page's operation", () => {
   it(
-    "after a deletion between the pages: the removed value not given, the row marked",
+    "after a deletion between the pages: the position expired, read again from the first page",
     async () => {
       // Newest first: the corrected lunch is on the second page.
       await lunchCorrected();
@@ -306,11 +316,13 @@ describe("a query's later page, read as of its first page's operation", () => {
       const position = first.next_position ?? first.position ?? first.next;
       expect(position, text(first)).toBeDefined();
       await deleteSource("DELETED-WORDS");
-      const second: Any = await query(s.store, ctx(), { table: "lunches", limit: 1, position });
-      expect(text(second)).not.toContain("CAFE-SECRET");
-      const hit = second.rows.find((x: Any) => x.values.amount !== "10");
-      expect(hit, text(second)).toBeDefined();
-      expect(hit.marks).toMatchObject({ partially_deleted: true });
+      // What is not given changed between the pages: the position expired (04-contract §15).
+      expect(
+        await outcome(query(s.store, ctx(), { table: "lunches", limit: 1, position })),
+      ).toEqual(["handle_expired", "deletion_changed"]);
+      // Read again from the first page: the removed value is not there.
+      const again: Any = await query(s.store, ctx(), { table: "lunches" });
+      expect(text(again)).not.toContain("CAFE-SECRET");
     },
     T,
   );
@@ -360,26 +372,25 @@ describe("what the deletion itself gave, and the other reads by record time", ()
       });
       expect(later.rows[0].values).toEqual({ name: "v4000", tag: "x" });
       expect(later.rows[0].marks?.partially_deleted).toBeUndefined();
-      // And a page read as of the first page's operation, from before the deletion: withheld.
-      const before: Any = await query(s.store, ctx(), {
-        table: "people",
-        limit: 1,
-        position: first.next_position,
-      });
-      expect(text(before)).not.toContain("NAME-SECRET");
-      expect(before.rows[0].marks).toMatchObject({ partially_deleted: true });
+      // And the later page of a first page from before the deletion: its position expired
+      // (04-contract §15); read by record time, the value is withheld (as `atDeletion` shows).
+      expect(
+        await outcome(
+          query(s.store, ctx(), { table: "people", limit: 1, position: first.next_position }),
+        ),
+      ).toEqual(["handle_expired", "deletion_changed"]);
     },
     T,
   );
 
   it(
-    "a state table's later page: the stretch the removed write gave, its value withheld and marked",
+    "a state table over an interval: the later page expired, the stretch withheld by record time",
     async () => {
       const a = await w("budget is 5000 from october", [
         { intent: "insert", table: "budget", valid_from: "2026-10-01", set: { amount: "5000" } },
       ]);
       const entity = a.ops[0].target.entity as string;
-      await w("DELETED-WORDS: 4000 for ten days", [
+      const b = await w("DELETED-WORDS: 4000 for ten days", [
         {
           intent: "update",
           table: "budget",
@@ -394,10 +405,15 @@ describe("what the deletion itself gave, and the other reads by record time", ()
       const first: Any = await query(s.store, ctx(), during);
       expect(first.rows[0].valid_from).toBe("2026-10-01");
       await deleteSource("DELETED-WORDS");
-      const second: Any = await query(s.store, ctx(), { ...during, position: first.next_position });
-      expect(text(second)).not.toContain("SECRET-4000");
-      expect(second.rows[0]).toMatchObject({ valid_from: "2026-11-10", values: { note: null } });
-      expect(second.rows[0].marks).toMatchObject({ partially_deleted: true });
+      expect(
+        await outcome(query(s.store, ctx(), { ...during, position: first.next_position })),
+      ).toEqual(["handle_expired", "deletion_changed"]);
+      // Read by record time as of the removed write: its stretch, the value withheld and marked.
+      const r = await asOf("budget", { entity }, b.seq);
+      expect(text(r)).not.toContain("SECRET-4000");
+      const stretch = r.rows.find((x: Any) => x.valid_from === "2026-11-10");
+      expect(stretch, text(r)).toBeDefined();
+      expect(stretch.marks).toMatchObject({ partially_deleted: true });
     },
     T,
   );
@@ -464,16 +480,14 @@ describe("what the deletion itself gave, and the other reads by record time", ()
           set: { note: "NOTE-SECRET" },
         },
       ]);
-      // A query's first page before the deletion; its next page read after it, as of then.
+      // A query's first page before the deletion: its next page expired after it (04-contract
+      // §15). Read by record time, the withheld stretch stays apart from its neighbours.
       const during = { table: "budget", valid_during: ["2026-10-01", null], limit: 1 };
       const first: Any = await query(s.store, ctx(), during);
       await deleteSource("DELETED-WORDS");
-      const next: Any = await query(s.store, ctx(), { ...during, position: first.next_position });
-      expect(text(next)).not.toContain("NOTE-SECRET");
-      // Merging the rows of an interval keeps the withheld stretch apart from its neighbours.
       expect(
-        next.rows.map((x: Any) => [x.valid_from, x.valid_to, x.marks?.partially_deleted]),
-      ).toEqual([["2026-11-10", "2026-11-20", true]]);
+        await outcome(query(s.store, ctx(), { ...during, position: first.next_position })),
+      ).toEqual(["handle_expired", "deletion_changed"]);
       const r = await asOf("budget", { entity }, b.seq);
       expect(text(r)).not.toContain("NOTE-SECRET");
       expect(r.rows.map((x: Any) => [x.valid_from, x.marks?.partially_deleted])).toEqual([

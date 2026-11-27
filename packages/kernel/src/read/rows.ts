@@ -794,6 +794,14 @@ export interface Position {
    */
   readonly since?: number;
   /**
+   * `history` `as_of`: the log position when the first page was read, where `seq` is the record
+   * point read (an earlier operation). A deletion confirmed or cancelled is compared with this, so
+   * that one between the record point and the first page does not expire the position. Absent from
+   * a position made before it was carried, when `seq` is compared instead (expiring it more often,
+   * never less).
+   */
+  readonly logAt?: number;
+  /**
    * `query`: the first page's `total`, carried to the later pages. They read the state after the
    * same operation at the same evaluation time, so the total is the same; absent from a position
    * made before it was carried, when a later page counts it again.
@@ -813,6 +821,7 @@ export function encodePosition(identity: string, p: Position): string {
       ...(p.condition !== undefined ? { c: p.condition } : {}),
       ...(p.since !== undefined ? { f: p.since } : {}),
       ...(p.total !== undefined ? { n: p.total } : {}),
+      ...(p.logAt !== undefined ? { l: p.logAt } : {}),
     }),
     "utf8",
   ).toString("base64url");
@@ -857,6 +866,7 @@ export function decodePosition(
   const shape = isObj(o)
     ? [...keysOf(o)]
         .filter((x) => !(x === "n" && check.total === true))
+        .filter((x) => !(x === "l" && check.condition === true))
         .sort()
         .join(",")
     : "";
@@ -884,7 +894,14 @@ export function decodePosition(
   // A deletion confirmed or cancelled since the first page, in any slot (04-contract §15): what a
   // read leaves out changed between the pages, so a later one could give a stretch twice or miss
   // one. Wider than needed on purpose: one rule for every position, and a deletion is rare.
-  const seen = check.opOf === undefined ? seq : check.opOf(seq);
+  let logAt: number | undefined;
+  if (has(o, "l")) {
+    const l = get(o, "l");
+    if (typeof l !== "number" || !Number.isSafeInteger(l) || l < seq || l > check.latest)
+      throw bad();
+    logAt = l;
+  }
+  const seen = check.opOf !== undefined ? check.opOf(seq) : (logAt ?? seq);
   if (seen === undefined || check.deletionChangedAt > seen) {
     throw new ReadError(
       "handle_expired",
@@ -960,5 +977,6 @@ export function decodePosition(
     ...(condition !== undefined ? { condition } : {}),
     ...(since !== undefined ? { since } : {}),
     ...(total !== undefined ? { total } : {}),
+    ...(logAt !== undefined ? { logAt } : {}),
   };
 }

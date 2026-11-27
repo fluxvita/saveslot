@@ -866,8 +866,10 @@ export async function asOfInTx(
       specs,
       identity,
       position,
-      // The record point resolved on the first page, and the read's condition, carried on.
+      // The record point resolved on the first page, and the read's condition, carried on; and the
+      // log position then, which a deletion changed since is compared with (04-contract §15).
       seq: point.seq,
+      logAt: position?.logAt ?? latest,
       at: position?.at ?? input.now,
       restoreCount: restore,
       limit: limitOf(params),
