@@ -4,7 +4,7 @@
 
 import { isId, type SlotId } from "@fluxvita/saveslot-contract-core";
 import { applyEvents, eventsOf } from "../apply/index.ts";
-import { appendOperation } from "../log/index.ts";
+import { appendOperation, noteEffect, restoresAt, restoresOf } from "../log/index.ts";
 import { RULESET_VERSION } from "../rules/version.ts";
 import type { ReadTx, TenantStore } from "../store/ports.ts";
 import type { OpsContext } from "./context.ts";
@@ -92,10 +92,13 @@ async function assertEmpty(tx: ReadTx, slot: SlotId): Promise<void> {
     });
 }
 
-/** The result of the slot's `slot.removed`, if it was removed. */
-async function removed(tx: ReadTx, slot: SlotId): Promise<RemoveSlotResult | undefined> {
-  const r = await tx.query<{ at: string; path: string; body: string | null }>(
-    `SELECT e.at, c.path, c.body FROM events e JOIN content c ON c.seq = e.seq
+/** The result of the slot's `slot.removed`, if it was removed, and that operation's number. */
+async function removed(
+  tx: ReadTx,
+  slot: SlotId,
+): Promise<{ result: RemoveSlotResult; op: number } | undefined> {
+  const r = await tx.query<{ at: string; op: unknown; path: string; body: string | null }>(
+    `SELECT e.at, e.op, c.path, c.body FROM events e JOIN content c ON c.seq = e.seq
      WHERE e.slot = $1 AND e.type = 'slot.removed' AND c.path IN ('target', 'name')`,
     [slot],
   );
@@ -109,11 +112,14 @@ async function removed(tx: ReadTx, slot: SlotId): Promise<RemoveSlotResult | und
   if (target === undefined)
     throw new OpsError("internal", "the slot's removal is not in the log as written");
   return {
-    slot_id: slot,
-    // The name block has no source, so no deletion takes it; kept defensive all the same.
-    name: typeof name?.["name"] === "string" ? name["name"] : "",
-    sv: target["sv"] as number,
-    removed_at: (r.rows[0] as { at: string }).at,
+    result: {
+      slot_id: slot,
+      // The name block has no source, so no deletion takes it; kept defensive all the same.
+      name: typeof name?.["name"] === "string" ? name["name"] : "",
+      sv: target["sv"] as number,
+      removed_at: (r.rows[0] as { at: string }).at,
+    },
+    op: Number((r.rows[0] as { op: unknown }).op),
   };
 }
 
@@ -150,8 +156,15 @@ export async function removeSlot(
   const slot = id as SlotId;
   return store.write(async (tx) => {
     const actor = await begin(tx, ctx);
+    // Removed before: its result as it was, a replay of that operation.
     const before = await removed(tx, slot);
-    if (before !== undefined) return before;
+    if (before !== undefined) {
+      return noteEffect(before.result, {
+        effect: "replayed",
+        seq: before.op,
+        restores: await restoresAt(tx, before.op),
+      });
+    }
     const row = (
       await tx.query<{ name: string; current_sv: unknown }>(
         "SELECT name, current_sv FROM slots WHERE id = $1",
@@ -177,6 +190,11 @@ export async function removeSlot(
       ],
     });
     await applyEvents(tx, eventsOf(op));
-    return (await removed(tx, slot)) as RemoveSlotResult;
+    const done = (await removed(tx, slot)) as { result: RemoveSlotResult };
+    return noteEffect(done.result, {
+      effect: "appended",
+      seq: op.op,
+      restores: await restoresOf(store, tx),
+    });
   });
 }

@@ -1,4 +1,10 @@
-# <img src="docs/assets/saveslot-mark.svg" width="32" height="32" alt=""> saveslot
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme-banner-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/readme-banner-light.png">
+  <img alt="SaveSlot" src="docs/assets/readme-banner-light.png">
+</picture>
+
+# saveslot
 
 [English](README.md) · 简体中文
 
@@ -70,14 +76,12 @@ Agent 经 MCP 连 saveslot：本机经 `saveslot mcp`，服务器模式走远程
 
 ## 文档
 
-文档都在 `docs/` 下，四个目录各管一件事。规格与讲解有中文与英文两个版本：中文版在 `docs/zh-CN/`，英文版在 `docs/` 下去掉 `zh-CN/` 的同名路径，清单见 [`docs/README.md`](docs/README.md)。两个版本语义对齐：改一个就在同一个拉取请求里改另一个，两者不一致算缺陷，请提 Issue。过程材料与调研报告目前只有中文版。
+文档都在 `docs/` 下，两个目录各管一件事。规格与讲解有中文与英文两个版本：中文版在 `docs/zh-CN/`，英文版在 `docs/` 下去掉 `zh-CN/` 的同名路径，清单见 [`docs/README.md`](docs/README.md)。两个版本语义对齐：改一个就在同一个拉取请求里改另一个，两者不一致算缺陷，请提 Issue。
 
 | 目录 | 读什么 |
 |---|---|
 | [`docs/zh-CN/guide/`](docs/zh-CN/guide/README.md) | **讲解**：给第一次接触的人，顺着读。解决什么问题、一个例子走到底、核心概念、架构、各机制为什么这样设计 |
 | [`docs/zh-CN/spec/`](docs/zh-CN/spec/README.md) | **规格**：每条规则的完整定义，给实现与审查用，按需查。目录与阅读顺序见 [`docs/zh-CN/spec/README.md`](docs/zh-CN/spec/README.md) |
-| [`docs/zh-CN/process/`](docs/zh-CN/process/README.md) | 过程材料：`decisions/`（设计决定及其理由）、`walkthroughs/`（场景推演）；目前只有中文版 |
-| [`docs/zh-CN/research/`](docs/zh-CN/research/) | 调研报告；目前只有中文版 |
 
 讲解与规格不一致时以规格为准。
 

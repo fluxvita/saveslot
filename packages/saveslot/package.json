@@ -1,6 +1,6 @@
 {
   "name": "@fluxvita/saveslot",
-  "version": "0.1.0-rc.0",
+  "version": "0.1.0",
   "description": "The open-source database all your AI tools share.",
   "keywords": [
     "agent-infrastructure",

@@ -20,7 +20,7 @@ import type {
   UserId,
 } from "@fluxvita/saveslot-contract-core";
 import { applyEvents, eventsOf } from "../apply/index.ts";
-import { appendOperation, readTail } from "../log/index.ts";
+import { appendOperation, forgetRestores, readTail } from "../log/index.ts";
 import { STORAGE_FORMAT_VERSION } from "../store/format-v1.ts";
 import type { TenantStore } from "../store/ports.ts";
 import { restorePoint } from "../store/restore-point.ts";
@@ -90,6 +90,8 @@ export async function appendImportEvent(
     );
   }
   const restoreCount = given + 1;
+  // The restore count changes under this store: what effects noted of it is read again.
+  forgetRestores(staging);
   return staging.write(async (tx) => {
     const tail = await readTail(tx);
     if (tail === undefined) {

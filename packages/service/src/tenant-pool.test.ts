@@ -1001,8 +1001,13 @@ describe("TenantPool: at most maxOpen tenants open", () => {
       ua.release();
       ub.release();
       await Promise.all([ua.done, ub.done]);
-      // Its places back, c opens.
+      // Its places back, c opens. The place made free by the case first (a closed by an exclusive),
+      // not by an idle tenant's close within the 200 ms wait, which a slow machine can outrun; the
+      // use waiting for an idle tenant's close is another case's.
+      await p.exclusive(a.id, async () => {});
+      expect(k.live.has(db(a))).toBe(false);
       await p.use(c.id, async () => {});
+      expect(k.live.has(db(c))).toBe(true);
       await p.closeAll();
     },
     T,

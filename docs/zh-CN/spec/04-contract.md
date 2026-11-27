@@ -733,6 +733,7 @@
 - **`warnings[]`**：与本次调用的某个部分有关的结构化提醒；码表见 types 第 7 节。
 - **`notices[]`**：与本次调用相关的提示，最多 3 条；码表见 types 第 7 节。几种提示的次序是 `deletion_overdue`、`migration_progress`、`schema_updated`、`pending_items`，同一种之内按各自的次序；合起来超过 3 条时按这个次序截断。每一种提示都只按可见范围计算，范围外的 slot 不出现在任何提示里。"相关"指本次调用涉及的 slot：`catalog` 列出或点到的 slot、`query` / `history` 读的表所在的 slot、`write` 写的表所在的 slot、`resolve` 处理的事项所在的 slot、`schema_draft` 新建的 slot。提示按此刻的状态算，计算本身不记进读取记录；报错的结果不带提示。
 - **`replayed`**：幂等重放时为 true。
+- **调用 ID**（服务器模式）：每次契约调用有一个 ID（`call_` 加 32 位十六进制）。HTTP 面用应答头 `Saveslot-Call` 把它回给调用方（[`05-surfaces.md`](05-surfaces.md)「HTTP」），与部署方开启的调用记录里那一条的 `call` 相同（architecture §9「调用记录」）。它不在结果里；MCP 上不给。只增不改：不认识这个头的客户端不受影响。
 
 ## 14. 幂等
 
@@ -749,7 +750,7 @@
 - 同一显式键配不同的请求内容：`invalid_argument`（`idempotency_key_reuse`）。为此显式键另记一份请求内容指纹，指纹是内容，随证据删除（architecture K13）。
 - **只对产生事件的终态结果去重**：`saved`、`pending`（以及后续的 `job`）。**被拒的写入不产生事件，也不去重**：重发时按当时的状态重新校验（例如先按 `read_first` 读过之后原样重发，会正常执行）；`rate_limited`、`unavailable` 这类暂时性错误同样不记。
 - **恰好一次由内核保证**（architecture K13）：请求键随写入同一事务记下、查重；崩溃后重发也不会写两次。请求键是内容，随该写入的证据删除一起删；物理删除前已列入待删除的请求键照样命中，结果带 `original_deleted`，不重新写入（data-model「撤回与宽限期」）。
-- **重放返回什么**：`replayed: true`，没有新写入。回执按日志重建：操作号、每个 op 的逐字段结果、当时得到的 `ver`、新建的行 / 实体 ID、当时生成或并入的事项 ID。按日志重建不出的部分省略并在 `omitted[]` 里列明：`affected_reads`；派生值的改前改后值（`derived_values`；此时 `derived[]` 为空，`derived_total` 按日志里这次操作的派生写入条数给，与首次回执按字段条目计的口径不同）；逐字段结果里的改前值——日志不记写入前的值，它所出自的贡献已被删除时取不回（`before_values`）；`undo` 跳过的部分的区间（`skipped_spans`）；这次写入自己的内容已被删除的部分（`deleted_content`，此时另有 `original_deleted`）；没进事件的按来源键 op（`unrecorded_ops`：这些下标只给 `op_index`，`external_key_summary` 里 `unchanged`、`skipped` 两项的计数也不给）；`existing_keys` 与 `similar_keys`（取值 `existing_keys`；两者由写入那一刻的状态算出，不进事件）。无操作字段的区间与解析结果（`resolved` 里它的那一项）首次回执和重放都不给：日志里只留了它的字段名，没有区间。警告（`warnings`）一律不给，也不列进 `omitted`：警告是写入那一刻附带的提示，不进日志，重放只还原日志里有的东西；逐字段结果里的 `merged` 由日志里的所见版本与行的版本算出，照给。不按当前状态重算这些部分：那会让同一请求的两次回执不同。`notices` 不在此列：它按重放此刻的状态算，提示讲的是现在，本来就不进日志。前提的部分（`premises`、`premise_covered`、`premise_affected`）记在元数据里，可以完整重建，标记状态是当时的。事项只给**当前状态**（未决 / 已解决附处理方式 / 已被取代），不给 `item_ver`；回执里的 `ver` 与事项都不算读到、不参与兜底。
+- **重放返回什么**：`replayed: true`，没有新写入。回执按日志重建：操作号、每个 op 的逐字段结果、当时得到的 `ver`、新建的行 / 实体 ID、当时生成或并入的事项 ID。按日志重建不出的部分省略并在 `omitted[]` 里列明：`affected_reads`；派生值的改前改后值（`derived_values`；此时 `derived[]` 为空，`derived_total` 按日志里这次操作的派生写入条数给，与首次回执按字段条目计的口径不同）；逐字段结果里的改前值——日志不记写入前的值，它所出自的贡献已被删除时取不回（`before_values`）；`undo` 跳过的部分的区间（`skipped_spans`）；这次写入自己的内容已被删除的部分（`deleted_content`，此时另有 `original_deleted`）；没进事件的按来源键 op（`unrecorded_ops`：这些下标只给 `op_index`，`external_key_summary` 里 `unchanged`、`skipped` 两项的计数也不给）；`existing_keys` 与 `similar_keys`（取值 `existing_keys`；两者由写入那一刻的状态算出，不进事件）。无操作字段的区间与解析结果（`resolved` 里它的那一项）首次回执和重放都不给：日志里只留了它的字段名，没有区间。警告（`warnings`）一律不给，也不列进 `omitted`：警告是写入那一刻附带的提示，不进日志，重放只还原日志里有的东西；逐字段结果里的 `merged` 由日志里的所见版本与行的版本算出，照给。不按当前状态重算这些部分：那会让同一请求的两次回执不同。两次都给出的部分，次序也相同：对象里各项的先后由回执的内容定，不随存储读出的次序变，所以首次回执与重放里同样的部分逐字节相同。`notices` 不在此列：它按重放此刻的状态算，提示讲的是现在，本来就不进日志。前提的部分（`premises`、`premise_covered`、`premise_affected`）记在元数据里，可以完整重建，标记状态是当时的。事项只给**当前状态**（未决 / 已解决附处理方式 / 已被取代），不给 `item_ver`；回执里的 `ver` 与事项都不算读到、不参与兜底。
 - 窗口内真的又发生了一笔内容与证据都一字不差的写入时，调用方要带一个不同的 `idempotency_key`；否则按重发处理。
 - 同一请求键的请求还在执行时，后到的等待前一个的结果，不并行执行。
 - `resolve` 对已解决事项、同一处理方式的重发返回原结果；其中触发的写入（`write`）按上面写入重放的规则重建，重建不出的部分同样列在 `write.omitted[]` 里，`derived_total` 同样按派生写入条数给；同一 `dc_` 的 `delete` 重发返回原结果。

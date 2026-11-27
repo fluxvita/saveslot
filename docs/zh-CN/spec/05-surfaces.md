@@ -310,7 +310,7 @@ runs r_01JC… · 截至 #41（2026-11-03 21:05）· schema v2
 r_01JC… ver=h41.0（历史版本，不可用于写入）| 2026-11-03 | 15 km
 ```
 
-`changes`：第一行写表（给了行 / 实体时再写它的 ID）、范围"#41 之后至 #57"（`since` 是 0 时写"从头至 #57"）与变化条数；每次变化一行，写操作号、时刻、意图、写入者、目标、改了哪些字段的前后值，没有前值的只写后值；值消失的写 `前值 → —`。状态类表上字段的每一段后面括号里写它的业务时间区间。`*` 写成"撤销"（`before` 为 `true`）或"恢复"（`before` 为 `false`），带区间的写那段区间。没有变化写"没有变化"。
+`changes`：第一行写表（给了行 / 实体时再写它的 ID）、范围"#41 之后至 #57"（`since` 是 0 时写"从头至 #57"）与变化条数；每次变化一行，写操作号、时刻、意图、写入者、目标、改了哪些字段的前后值，没有前值的只写后值；值消失的写 `前值 → —`。一条带 `partially_deleted` 时（某个字段的一侧出自之后被删除的内容，那一侧不给），这条改动里缺着的那一侧写"未列出"，不写 `—`、也不只写后值（新插入的行没有前值，照旧只写后值），行末写"部分数据已删除：未列出的值出自之后被删除的内容"，不让缺着的一侧看起来像"被清空"或"之前没有值"。状态类表上字段的每一段后面括号里写它的业务时间区间。`*` 写成"撤销"（`before` 为 `true`）或"恢复"（`before` 为 `false`），带区间的写那段区间。没有变化写"没有变化"。
 
 ```
 runs · #41 之后至 #57 · 2 处变化
@@ -889,7 +889,8 @@ MCP 端点（Streamable HTTP）挂在 `/mcp`，适配器只有这一份实现；
 - 表名在路径里拆成两段：`/v1/slots/{slot}/tables/{table}`；在凭证的可见范围内不重名时可用 `/v1/tables/{table}`。单段路由收到带 slot 的名字（`slot.table`）时报 `invalid_argument`（`malformed`，`param: "table"`），两段都合名字的写法时 `example` 给出两段路径（`{"path": "/v1/slots/<slot>/tables/<table>"}`）。路径参数按 RFC 3986 百分号编码。
 - 不按结果预算截断，只按 `limit` 分页；`sql` 支持 `cursor`。第 2 节表里 MCP 收窄的字段在 HTTP 全部开放。
 - **脚本必须看回执的 `status`**：`pending` 是成功的状态码，但含义不是"已生效"。
-- **浏览器里的跨源调用（服务器模式）**：部署方在 `SAVESLOT_ALLOWED_ORIGINS`（[`06-cli.md`](06-cli.md) §4.1「服务器模式的配置」）里列出的来源，它的页面可以在浏览器里直接调用 `/v1/*`、`/oauth/token` 与 `/oauth/revoke`（例如托管的网页控制台）。列出的来源与请求的 `Origin` 原样比较，不支持通配。请求恰好带一个 `Origin` 且它在列表里时：响应带 `Access-Control-Allow-Origin: <这个来源>`、`Vary: Origin` 与 `Access-Control-Expose-Headers: Retry-After, WWW-Authenticate`（页面据此在限流后退避、处理会话过期与 scope 不足）；这几个路径上的预检（`OPTIONS`）以 204 回答，允许的方法是 `GET`、`POST`、`PATCH`、`DELETE`，允许的请求头是 HTTP 面定义的请求头，目前是 `Authorization`、`Content-Type`、`Idempotency-Key`、`X-Task-Id`。列表不空时，这几个路径上的每个响应都带 `Vary: Origin`，不论请求带不带 `Origin`、带的在不在列表里：响应随 `Origin` 而不同，缓存不能把不带上述头的响应交给列出的来源。**任何响应都不带 `Access-Control-Allow-Credentials`**：令牌放在 `Authorization` 里，不靠 cookie。不在列表里的来源照常处理，只是响应不带这些头，浏览器拦下响应（`/v1` 上它按第 14 节报 403）。`/mcp` 不在此列：带了不是对外地址的 `Origin` 一律 403，列出的来源也一样。列表缺省为空：不允许任何浏览器跨源调用。
+- **调用 ID（服务器模式）**：通过了认证、并且路径是一条已有路由的 `/v1` 应答都带应答头 `Saveslot-Call`，值是这次调用的 ID（`call_` 加 32 位十六进制），与部署方开启的调用记录里那一条的 `call` 相同（[`02-architecture.md`](02-architecture.md) §9「调用记录」）；不论调用记录开没开都带，被拒的（权限不够、被限流、契约错误）也带。没通过认证的应答、服务还没就绪时的 503、不存在的路径不带。导出这种流式应答，头在流开始之前发出。`/mcp` 上不给。本机模式不带。
+- **浏览器里的跨源调用（服务器模式）**：部署方在 `SAVESLOT_ALLOWED_ORIGINS`（[`06-cli.md`](06-cli.md) §4.1「服务器模式的配置」）里列出的来源，它的页面可以在浏览器里直接调用 `/v1/*`、`/oauth/token` 与 `/oauth/revoke`（例如托管的网页控制台）。列出的来源与请求的 `Origin` 原样比较，不支持通配。请求恰好带一个 `Origin` 且它在列表里时：响应带 `Access-Control-Allow-Origin: <这个来源>`、`Vary: Origin` 与 `Access-Control-Expose-Headers: Retry-After, WWW-Authenticate, Saveslot-Call`（页面据此在限流后退避、处理会话过期与 scope 不足，并读到这次调用的 ID）；这几个路径上的预检（`OPTIONS`）以 204 回答，允许的方法是 `GET`、`POST`、`PATCH`、`DELETE`，允许的请求头是 HTTP 面定义的请求头，目前是 `Authorization`、`Content-Type`、`Idempotency-Key`、`X-Task-Id`。列表不空时，这几个路径上的每个响应都带 `Vary: Origin`，不论请求带不带 `Origin`、带的在不在列表里：响应随 `Origin` 而不同，缓存不能把不带上述头的响应交给列出的来源。**任何响应都不带 `Access-Control-Allow-Credentials`**：令牌放在 `Authorization` 里，不靠 cookie。不在列表里的来源照常处理，只是响应不带这些头，浏览器拦下响应（`/v1` 上它按第 14 节报 403）。`/mcp` 不在此列：带了不是对外地址的 `Origin` 一律 403，列出的来源也一样。列表缺省为空：不允许任何浏览器跨源调用。
 
 ## 14. 端点
 

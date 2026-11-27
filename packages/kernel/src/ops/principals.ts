@@ -19,7 +19,7 @@ import {
   type SlotId,
 } from "@fluxvita/saveslot-contract-core";
 import { applyEvents, eventsOf } from "../apply/index.ts";
-import { appendOperation, type NewEvent } from "../log/index.ts";
+import { appendOperation, type NewEvent, noteEffect, restoresOf } from "../log/index.ts";
 import {
   digest,
   limitOf,
@@ -139,9 +139,21 @@ function duplicateName(): OpsError {
   });
 }
 
-async function commit(tx: Tx, ctx: OpsContext, actor: PrincipalId, event: NewEvent): Promise<void> {
+/** Appends `event` as an operation of its own; its operation number. */
+async function commit(
+  tx: Tx,
+  ctx: OpsContext,
+  actor: PrincipalId,
+  event: NewEvent,
+): Promise<number> {
   const op = await appendOperation(tx, { actor, now: ctx.now, events: [event] });
   await applyEvents(tx, eventsOf(op));
+  return op.op;
+}
+
+/** `result`, noted as appending the operation `seq` (log/effect.ts). */
+async function appended<T>(store: object, tx: ReadTx, result: T, seq: number): Promise<T> {
+  return noteEffect(result, { effect: "appended", seq, restores: await restoresOf(store, tx) });
 }
 
 const ctxBlock = (ctx: OpsContext): JsonValue => ({
@@ -211,7 +223,7 @@ export async function issueConnection(
     if (!isId("connection", id) || (await principal(tx, id)) !== undefined) {
       throw new OpsError("internal", "the connection ID given is not a new connection ID");
     }
-    await commit(tx, ctx, actor, {
+    const seq = await commit(tx, ctx, actor, {
       type: "principal.registered",
       blocks: {
         ctx: ctxBlock(ctx),
@@ -226,7 +238,7 @@ export async function issueConnection(
         name: { name: params.name },
       },
     });
-    return record((await principal(tx, id)) as Row);
+    return appended(store, tx, record((await principal(tx, id)) as Row), seq);
   });
 }
 
@@ -250,9 +262,10 @@ export async function renameConnection(
   return store.write(async (tx) => {
     const actor = await begin(tx, ctx);
     const row = await connection(tx, params.id);
-    if (row.name === params.name) return record(row);
+    // The same name: nothing appended.
+    if (row.name === params.name) return noteEffect(record(row), { effect: "none" });
     if (await nameTaken(tx, params.name, params.id)) throw duplicateName();
-    await commit(tx, ctx, actor, {
+    const seq = await commit(tx, ctx, actor, {
       type: "principal.renamed",
       blocks: {
         ctx: ctxBlock(ctx),
@@ -260,7 +273,7 @@ export async function renameConnection(
         name: { name: params.name },
       },
     });
-    return record((await principal(tx, params.id)) as Row);
+    return appended(store, tx, record((await principal(tx, params.id)) as Row), seq);
   });
 }
 
@@ -306,13 +319,14 @@ export async function revokeConnection(
   return store.write(async (tx) => {
     const actor = await revoker(tx, ctx, params.id);
     const row = await connection(tx, params.id);
-    if (row.state !== "active") return record(row);
-    await commit(tx, ctx, actor, {
+    // Revoked or disabled already: nothing appended.
+    if (row.state !== "active") return noteEffect(record(row), { effect: "none" });
+    const seq = await commit(tx, ctx, actor, {
       type: "principal.revoked",
       ...(actor === "system" ? { trigger: "oauth_refresh_replay" as const } : {}),
       blocks: { ctx: ctxBlock(ctx), principal: { principal: params.id } },
     });
-    return record((await principal(tx, params.id)) as Row);
+    return appended(store, tx, record((await principal(tx, params.id)) as Row), seq);
   });
 }
 

@@ -33,6 +33,10 @@ between them are `workspace:*` in the repository and the exact version when publ
   ([`02-architecture.md` «格式版本、导出、导入与恢复»](docs/zh-CN/spec/02-architecture.md#格式版本导出导入与恢复)).
 - Every change a user can notice comes with a changeset (`pnpm changeset`) in the same pull request.
   The changelogs (`packages/*/CHANGELOG.md`) are written by `changeset version` from them, never by hand.
+  `pnpm changesets:check` checks a pull request for it: a `fix`, `feat` or `perf` that changes a
+  file under `src/` of a published package, other than a test, adds a changeset, or its description
+  has a line `No changeset: <reason>`. It reads the pull request from `SAVESLOT_CI_BASE`,
+  `SAVESLOT_CI_TITLE` and `SAVESLOT_CI_BODY`.
 - A release's git tags are on the commit that was published, a commit of the release branch (see
   "Branches"): one per package, as `changeset tag` / `changeset publish` make them
   (`@fluxvita/saveslot@<version>`, `@fluxvita/saveslot-kernel@<version>`, …), and one for the whole
@@ -61,10 +65,13 @@ between them are `workspace:*` in the repository and the exact version when publ
    `git grep -l -e "The Chinese edition has changed since" -e "英文版此后有改动" -- docs` the ones
    marked as behind. Each is brought in line in a pull request to `main`, with that line removed,
    and cherry-picked onto the release branch, until both lists are empty on the release branch.
-2. The version is set on the release branch. A maintainer adds the commit `chore(release): <version>`
-   there, which runs `pnpm changeset version`: the versions and the changelogs. Before the first
-   release of a minor version it also leaves Changesets pre mode (`changeset pre exit`). This commit
-   is the one made on the release branch itself: until the release there is nothing in it for `main`.
+2. The version is set on the release branch. First, `pnpm exec changeset status --verbose` there
+   must compute every package's next version from the last version released: if it starts from an
+   older one, the previous release was not brought back to `main` (step 5), and that is done first.
+   Then a maintainer adds the commit `chore(release): <version>` there, which runs
+   `pnpm changeset version`: the versions and the changelogs. Before the first release of a minor
+   version it also leaves Changesets pre mode (`changeset pre exit`). This commit is the one made on
+   the release branch itself: until the release there is nothing in it for `main`.
 3. On that push to the release branch, the release workflow builds, runs `pnpm smoke:install` (a
    throwaway local registry, an install from it, the installed `saveslot` run), and publishes the
    versions that are not on npm yet with `changeset publish`, as `latest`, with provenance. Then it
@@ -78,7 +85,26 @@ between them are `workspace:*` in the repository and the exact version when publ
    list the ones still open.
 5. After the release the maintainer brings the release commit to `main` in a pull request (the
    versions, the changelogs, and the changesets it used up), so that the next version on `main` starts
-   from the released one.
+   from the released one. The same pull request moves the default image version in
+   `deploy/compose.yaml` (`SAVESLOT_VERSION`) to the released one. A release is not finished until
+   this pull request is merged.
+6. Once the versions are published (the same condition as for the container image), the release
+   workflow points `next` at the release for every published package (`changeset publish` moves
+   only `latest`, so `next` would stay on the last prerelease and `@next` would be older than
+   `@latest`), and creates the GitHub Release for `v<version>`, its notes gathered from the
+   version's section of the packages' changelogs.
+7. The maintainer checks both: `npm dist-tag ls @fluxvita/saveslot` shows `next` and `latest` on
+   the version, and the Release is there. What the workflow did not do, the maintainer does by hand:
+
+   ```sh
+   v=<version>
+   for p in saveslot saveslot-cli saveslot-client saveslot-contract saveslot-contract-core \
+            saveslot-daemon saveslot-kernel saveslot-server saveslot-service \
+            saveslot-store-pglite saveslot-store-postgres; do
+     npm dist-tag add "@fluxvita/$p@$v" next
+   done
+   gh release create "v$v" --verify-tag --title "v$v" --notes-file <notes> --latest
+   ```
 
 Nothing is published from a laptop, except the prerelease below. npm provenance needs a public
 repository and a GitHub-hosted runner, so it starts with the first release from the public repository.

@@ -56,6 +56,9 @@ export interface PrincipalRow {
   readonly state: string;
   readonly scopes: string | null;
   readonly slots: string | null;
+  /** A connection instance's: how it was registered (`token`, `oauth`), and its client. */
+  readonly via?: string | null;
+  readonly client?: string | null;
 }
 
 /** The principal's row in the tenant's log, if it has one. */
@@ -64,7 +67,10 @@ export async function principalRow(
   id: string,
 ): Promise<PrincipalRow | undefined> {
   const r = await store.read((tx) =>
-    tx.query<PrincipalRow>("SELECT kind, state, scopes, slots FROM principals WHERE id = $1", [id]),
+    tx.query<PrincipalRow>(
+      "SELECT kind, state, scopes, slots, via, client FROM principals WHERE id = $1",
+      [id],
+    ),
   );
   return r.rows[0];
 }

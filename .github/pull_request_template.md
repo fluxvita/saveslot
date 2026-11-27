@@ -19,6 +19,7 @@ Closes #
 
 - [ ] No behaviour change, or the spec is updated in this request
 - [ ] The guide is updated where readers' understanding changes
+- [ ] A change users, integrators or operators can notice adds a changeset (`pnpm changeset`), or the description has a line `No changeset: <reason>`
 
 ## Validation
 

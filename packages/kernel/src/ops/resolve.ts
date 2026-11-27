@@ -11,6 +11,7 @@
 // recorded after the transaction rolled back, as any read is (`keepRead`), before the error goes up.
 
 import { type ReadEntry, readBufferOf } from "../audit/index.ts";
+import { type EffectSlot, noteEffect } from "../log/index.ts";
 import { pendingInTx } from "../read/index.ts";
 import type { TenantStore } from "../store/ports.ts";
 import {
@@ -41,8 +42,10 @@ export async function resolve(
   // The item's detail a mismatch gives, read in the write's transaction: recorded once that
   // transaction is over (it rolls back), before the error goes up.
   let mismatchRead: ReadEntry | undefined;
+  // Where the resolution hands its effect back; noted on the result here, as it is returned.
+  const slot: EffectSlot = {};
   try {
-    return await store.write(async (tx) => {
+    const result = await store.write(async (tx) => {
       try {
         const named = normalizeResolve(params);
         const type = named.ok ? (await itemRow(tx, named.request.id))?.type : undefined;
@@ -59,6 +62,7 @@ export async function resolve(
           params,
           newId: (kind) => `${PREFIX[kind]}${randomCrockford(LENGTH[kind])}`,
           reads,
+          effect: slot,
         });
       } catch (e) {
         if (!(e instanceof WriteError) || e.code !== "confirmation_mismatch") throw e;
@@ -91,6 +95,7 @@ export async function resolve(
         throw new WriteError(e.code, e.message, { ...e.detail, current: result });
       }
     });
+    return slot.effect !== undefined ? noteEffect(result, slot.effect) : result;
   } catch (e) {
     if (mismatchRead !== undefined) await keepRead(store, mismatchRead);
     throw e;

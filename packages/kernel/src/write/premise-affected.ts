@@ -172,8 +172,10 @@ export async function premiseAffected(
   },
 ): Promise<PremiseAffected | undefined> {
   const ev = await tx.query<{ path: string; body: string | null }>(
+    // In the log's order: `by_reason` takes its keys in the order the reasons are met, and a
+    // replayed receipt gives the first one's (04-contract §14).
     `SELECT c.path, c.body FROM events e JOIN ${READABLE_CONTENT} c ON c.seq = e.seq
-     WHERE e.op = $1 AND e.type = 'premise.changed'`,
+     WHERE e.op = $1 AND e.type = 'premise.changed' ORDER BY c.seq, c.path COLLATE "C"`,
     [op],
   );
   const changed = new Map<string, PremiseReason>();

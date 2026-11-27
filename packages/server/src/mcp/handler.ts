@@ -18,9 +18,13 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
+  type CallEffect,
+  type CallEnd,
   ContractError,
+  callRecord,
   contractError,
   kernelCall,
+  newCallId,
   type Principal,
   RetryOnLostConnection,
   releaseWithResponse,
@@ -84,6 +88,8 @@ interface Caller {
    * request is made once more on the tenant opened again (the use throws RetryOnLostConnection).
    */
   readonly lost: { hit: boolean; readonly retryable: boolean };
+  /** Writes a tool call's record, in the server mode; absent: none (the local mode). */
+  readonly record?: (tool: Tool, started: number, end: CallEnd) => void;
 }
 
 /** The methods whose results carry `instructions` (05 §11). */
@@ -182,11 +188,14 @@ async function serverFor(caller: Caller, version: string): Promise<Server> {
 
 /** Calls the tool's operation: the result, or the contract's error as an error result. */
 async function call(
-  { principal, ctx, tenant, lost }: Caller,
+  { principal, ctx, tenant, lost, record }: Caller,
   tool: Tool,
   args: Readonly<Record<string, unknown>>,
 ): Promise<CallToolResult> {
   const { operation } = tool;
+  const t0 = performance.now();
+  let effect: CallEffect | undefined;
+  let refused: ContractError | undefined;
   let outcome:
     | { readonly result: Record<string, unknown> }
     | { readonly error: Record<string, unknown> };
@@ -238,6 +247,9 @@ async function call(
         }),
         warn: ctx.warn,
         fit: budget.fit,
+        onEffect: (e) => {
+          effect = e;
+        },
       })) as Record<string, unknown>;
     outcome = { result: budget.finish(plain(await run(params))) };
   } catch (e) {
@@ -247,8 +259,17 @@ async function call(
       lost.hit = true;
       return { isError: true, content: [] };
     }
-    outcome = { error: errorBody(contractError(e, ctx.warn, { tenant: tenant.tenant })) };
+    refused = contractError(e, ctx.warn, { tenant: tenant.tenant });
+    outcome = { error: errorBody(refused) };
   }
+  // Its record (02-architecture §9 «调用记录»): one a tool call, the one answered.
+  record?.(
+    tool,
+    t0,
+    refused !== undefined
+      ? { ok: false, error: refused }
+      : { ok: true, ...(effect !== undefined ? { effect } : {}) },
+  );
   // Told once, after the call, outside it: an observer that fails changes nothing of the answer
   // (a write that took effect is not reported as an error), and is not told twice.
   try {
@@ -287,6 +308,19 @@ async function call(
  * The scope a `tools/call` in `body` needs and `principal` does not have, if any: a call of a
  * tool that exists but is not in the credential's list (05 §1 «越权怎么报»).
  */
+/** The tools of every `tools/call` in `body` the credential may not make, in their order. */
+export function refusedTools(body: unknown, principal: Principal): Tool[] {
+  const out: Tool[] = [];
+  for (const m of Array.isArray(body) ? body : [body]) {
+    if (m === null || typeof m !== "object") continue;
+    const { method, params } = m as { method?: unknown; params?: { name?: unknown } };
+    if (method !== "tools/call") continue;
+    const tool = TOOLS.find((t) => t.name === params?.name);
+    if (tool !== undefined && !mayCall(principal, tool)) out.push(tool);
+  }
+  return out;
+}
+
 export function missingScope(body: unknown, principal: Principal): string | undefined {
   for (const m of Array.isArray(body) ? body : [body]) {
     if (m === null || typeof m !== "object") continue;
@@ -352,9 +386,46 @@ export function handleMcp(
         (m) => (m as { method?: unknown } | undefined)?.method === "tools/call",
       ) as { params?: { name?: unknown } } | undefined;
       tool = TOOLS.find((t) => t.name === called?.params?.name)?.name;
+      // Each tool call's record, in the server mode (02-architecture §9 «调用记录»): its own ID,
+      // from when the call began to when its result was made.
+      const source = resolved.source;
+      const record =
+        source === undefined
+          ? undefined
+          : (t: Tool, started: number, end: CallEnd) =>
+              ctx.callRecords?.write(
+                callRecord({
+                  call: newCallId(),
+                  at: new Date().toISOString(),
+                  started,
+                  now: performance.now(),
+                  tenant: resolved.tenant,
+                  actor: who.actor,
+                  source,
+                  surface: "mcp",
+                  operation: t.operation,
+                  route: t.name,
+                  end,
+                }),
+              );
       const scope = missingScope(parsed, who);
       if (scope !== undefined) {
         const status = HTTP_STATUS.insufficient_scope;
+        // The whole request refused: each call of it the credential may not make has its record.
+        // A call of it that would have been let through did not happen, and has none.
+        const t0 = performance.now();
+        for (const t of refusedTools(parsed, who)) {
+          record?.(t, t0, {
+            ok: false,
+            error: new ContractError(
+              "insufficient_scope",
+              "the credential may not call this tool",
+              {
+                required_scope: t.scope,
+              },
+            ),
+          });
+        }
         send(
           req,
           res,
@@ -393,6 +464,7 @@ export function handleMcp(
                   tenant,
                   handshake: isHandshake(parsed),
                   lost,
+                  ...(record !== undefined ? { record } : {}),
                 } satisfies Caller,
               },
             },

@@ -1,4 +1,10 @@
-# <img src="docs/assets/saveslot-mark.svg" width="32" height="32" alt=""> saveslot
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme-banner-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/readme-banner-light.png">
+  <img alt="SaveSlot" src="docs/assets/readme-banner-light.png">
+</picture>
+
+# saveslot
 
 English · [简体中文](README.zh-CN.md)
 
@@ -70,14 +76,12 @@ Agents reach saveslot over MCP: locally through `saveslot mcp`, and in server mo
 
 ## Documentation
 
-The documents are under `docs/`, in four directories, each with one job. The guide and the specification have two editions, English and Chinese: the Chinese one is under `docs/zh-CN/`, the English one at the same path under `docs/` without `zh-CN/`, and [`docs/README.md`](docs/README.md) lists them. The two editions are aligned in meaning: a change to one changes the other in the same pull request, and a difference between them is a defect, to be reported as an issue. The process material and the research reports are in Chinese only for now.
+The documents are under `docs/`, in two directories, each with one job. The guide and the specification have two editions, English and Chinese: the Chinese one is under `docs/zh-CN/`, the English one at the same path under `docs/` without `zh-CN/`, and [`docs/README.md`](docs/README.md) lists them. The two editions are aligned in meaning: a change to one changes the other in the same pull request, and a difference between them is a defect, to be reported as an issue.
 
 | Where | What |
 |---|---|
 | [`docs/guide/`](docs/guide/README.md) | **Guide**: for people meeting saveslot for the first time, read in order. The problem it solves, one example from start to finish, the core concepts, the architecture, why each mechanism is designed the way it is |
 | [`docs/spec/`](docs/spec/README.md) | **Specification**: the complete definition of every rule, for implementing and reviewing, looked up as needed. Its contents and reading order are in [`docs/spec/README.md`](docs/spec/README.md) |
-| [`docs/zh-CN/process/`](docs/zh-CN/process/README.md) | Process material: `decisions/` (design decisions and their reasons), `walkthroughs/` (scenario walkthroughs); in Chinese only for now |
-| [`docs/zh-CN/research/`](docs/zh-CN/research/) | Research reports; in Chinese only for now |
 
 Where the guide and the specification differ, the specification holds.
 

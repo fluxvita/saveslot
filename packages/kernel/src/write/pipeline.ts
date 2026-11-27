@@ -76,7 +76,7 @@ import {
   type Unit,
   unitEntries,
 } from "../judge/index.ts";
-import { type NewEvent, readTail } from "../log/index.ts";
+import { type EffectSlot, type NewEvent, readTail } from "../log/index.ts";
 import {
   contentBlocks,
   type ItemContents,
@@ -195,6 +195,8 @@ export interface WriteInput {
   readonly newId: (kind: "row" | "entity" | "source" | "item" | "partition") => string;
   /** The open store's buffered reads: the fallback looks there before the stored ones. */
   readonly reads: ReadBuffer;
+  /** Where a resolution hands its effect back to the operation's entry (log/effect.ts). */
+  readonly effect?: EffectSlot;
 }
 
 export const RULESET = 1;

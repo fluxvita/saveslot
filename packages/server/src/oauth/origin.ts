@@ -63,8 +63,8 @@ export function allowedOrigin(
   return given.length === 1 && allowed.has(given[0] as string) ? given[0] : undefined;
 }
 
-/** What a listed origin's page reads of a response: when to retry, and why it was refused. */
-const EXPOSE = { "access-control-expose-headers": "Retry-After, WWW-Authenticate" };
+/** What a listed origin's page reads of a response: when to retry, why it was refused, its call's ID. */
+const EXPOSE = { "access-control-expose-headers": "Retry-After, WWW-Authenticate, Saveslot-Call" };
 
 /**
  * The CORS headers of a response on a path a listed origin may call: none while no origin is

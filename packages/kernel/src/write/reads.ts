@@ -97,9 +97,12 @@ export interface RowEventsOptions {
  * The blocks of the events given, by their sequence numbers, as everything but a deletion's replay
  * reads them: `content`'s primary key `(seq, path)` finds them, so the cost is the events' blocks,
  * not the log's. (Joined with `events` on another column instead, the planner scans the whole of
- * `content`.) Blocks a deletion cleared, and blocks a pending deletion lists, are left out.
+ * `content`.) Blocks a deletion cleared, and blocks a pending deletion lists, are left out. In the
+ * order of sequence number and path, as the log's own read (../log/log.ts `readEvents`): a receipt
+ * takes its objects' key order from its blocks' order, and a replayed receipt gives the first one's
+ * (04-contract §14), whatever order the database would scan them in.
  */
-export const BLOCKS_OF_EVENTS_SQL = `SELECT seq, path, body FROM ${READABLE_CONTENT} c WHERE seq = ANY($1) AND body IS NOT NULL`;
+export const BLOCKS_OF_EVENTS_SQL = `SELECT seq, path, body FROM ${READABLE_CONTENT} c WHERE seq = ANY($1) AND body IS NOT NULL ORDER BY seq, path COLLATE "C"`;
 
 /** The events `where` selects, in order, with their blocks. */
 export async function eventsAt(
@@ -116,7 +119,7 @@ export async function eventsAt(
   const seqs = heads.rows.map((h) => Number(h.seq));
   const blocks = await tx.query<{ seq: unknown; path: string; body: string | null }>(
     o.includePendingDeletionBlocks === true
-      ? "SELECT seq, path, body FROM content WHERE seq = ANY($1) AND body IS NOT NULL"
+      ? 'SELECT seq, path, body FROM content WHERE seq = ANY($1) AND body IS NOT NULL ORDER BY seq, path COLLATE "C"'
       : BLOCKS_OF_EVENTS_SQL,
     [seqs] as never,
   );

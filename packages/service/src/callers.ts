@@ -11,6 +11,7 @@ import type {
   TenantStore,
 } from "@fluxvita/saveslot-kernel";
 import { type AuthFailure, authenticate, type Principal } from "./auth.ts";
+import type { CallerSource } from "./caller-source.ts";
 import type { Credentials } from "./credentials.ts";
 import { issueLocalConnection, revokeLocalConnection } from "./local-connections.ts";
 import { importingError, type LocalTenantGate } from "./local-import.ts";
@@ -50,6 +51,8 @@ export interface ResolvedCaller {
    * call this once it has (a second call does nothing).
    */
   readonly release?: () => void;
+  /** The server mode: how its credential came to be, for its call records. */
+  readonly source?: CallerSource;
 }
 
 /**

@@ -157,6 +157,8 @@ describe("authenticateServer", () => {
         tenant: tenant.id,
         // The directory's row read at authentication, passed on so the operation reads it no more.
         entry: tenant,
+        // A user session's credential: its call records say so.
+        source: { via: "session" },
         principal: {
           kind: "user",
           actor: tenant.owner,
@@ -179,6 +181,8 @@ describe("authenticateServer", () => {
       expect(caller).toEqual({
         tenant: tenant.id,
         entry: tenant,
+        // An issued connection token: its call records say so.
+        source: { via: "token" },
         principal: {
           kind: "connection",
           actor: c.id,
