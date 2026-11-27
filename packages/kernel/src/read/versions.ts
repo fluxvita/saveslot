@@ -23,7 +23,7 @@ import type {
 import { segmentsOf as segmentsFrom } from "../delta/index.ts";
 import { compare, rationalOf } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
-import { cellWithheld } from "../store/readable-content.ts";
+import { cellWithheld, withholdingIn } from "../store/readable-content.ts";
 import type { Condition, Literal, QueryPlan } from "./params.ts";
 import {
   correctSpansOf,
@@ -76,7 +76,7 @@ async function cellsAsOf(tx: ReadTx, t: CompiledBaseTable, s: number): Promise<C
     : "NULL AS vf, NULL AS vt";
   const cols = t.fields.flatMap((f) => selectOf(f).map((x, i) => `${x} AS c_${f.id}_${i}`));
   const r = await tx.query<Cell>(
-    `SELECT row_id, field_id, ${interval}, rec_from, revoked, no_value, ${cellWithheld("v")} AS withheld,
+    `SELECT row_id, field_id, ${interval}, rec_from, revoked, no_value, ${cellWithheld("v", await withholdingIn(tx))} AS withheld,
        ${cols.join(", ")} FROM ${versions} v
      WHERE rec_from <= $1 AND (rec_to IS NULL OR rec_to > $1)`,
     [s],

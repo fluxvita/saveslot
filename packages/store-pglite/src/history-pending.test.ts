@@ -1,7 +1,8 @@
 // Reads by record time of a row a deletion took something from (03-data-model/03-deletion.md
 // «删除后的样子是一个新版本», «版本表»): the version table keeps the earlier versions, but what a
-// removed contribution gave there is not readable while the deletion is pending, nor once it is
-// carried out; that place is marked `partially_deleted`. `history`'s `as_of` and `changes`, and a
+// removed contribution gave there is not readable while the deletion is pending (and, for a
+// value the write's own block gave, once it is carried out); that place is marked
+// `partially_deleted`. `history`'s `as_of` and `changes`, and a
 // query's later page read as of its first page's operation. A cancellation makes it readable
 // again. Fictional names.
 
@@ -224,8 +225,12 @@ describe("history as_of: what a removed contribution gave is not given, the row 
     T,
   );
 
+  // Carried out, the giver being the write's own block: it is still found once cleared (by the
+  // cell's own src_event, src_field, src_k), so the value stays withheld. Not so for a giver that
+  // is a restatement, found by what its cleared body named: after execution is open
+  // (08-open-questions), and this version does not reach that state.
   it(
-    "carried out: still not given",
+    "carried out, the giver the write's own block: still not given",
     async () => {
       const { row, b } = await lunchCorrected();
       await deleteSource("DELETED-WORDS");
@@ -577,6 +582,47 @@ describe("the block that gave a cell its value, and the deletions confirmed afte
       const now: Any = await query(s.store, ctx(), { table: "people" });
       const latest = await nameAt(row, Number(String(now.rows[0].ver).slice(1).split(".")[0]));
       expect(latest).toEqual({ values: now.rows[0].values, partial: false });
+    },
+    T,
+  );
+
+  it(
+    "D1 restates, its cancellation restates again, D2 lists only D1's: the cancellation's cell is given",
+    async () => {
+      const { row } = await restatedLater();
+      const d1 = await deleteSource("S1-WORDS");
+      const { table, slot } = await compiledOf("people");
+      await cancelDeletion(s.store, {
+        slot,
+        table,
+        row,
+        sources: [(await sourceOf("S1-WORDS")).seq],
+        id: d1.deletion.id,
+        actor: USER,
+        now: ctx().now,
+      });
+      const cancelled = await s.store.read(async (tx) => {
+        const r = await tx.query<{ seq: unknown }>(
+          "SELECT max(seq) AS seq FROM events WHERE type = 'deletion.cancelled'",
+        );
+        return Number(r.rows[0]?.seq);
+      });
+      // The cancellation restates the write-back with S1's value again: the cell it records.
+      expect(await nameAt(row, cancelled)).toEqual({
+        values: { name: "S1-VALUE", tag: "x" },
+        partial: false,
+      });
+      // D2 deletes X: it lists D1's restatement (which carried X's value), not the
+      // cancellation's. The name cell the cancellation recorded is given by the cancellation's;
+      // the tag X's own insert gave is withheld, as D2 deletes X.
+      await deleteSource("X-WORDS");
+      expect(await nameAt(row, cancelled)).toEqual({
+        values: { name: "S1-VALUE" },
+        partial: true,
+      });
+      // The cell D1 recorded, given by D1's restatement, is withheld now.
+      const atD1 = await asOf("people", { row }, d1.seq);
+      expect(text(atD1)).not.toContain("X-4000");
     },
     T,
   );

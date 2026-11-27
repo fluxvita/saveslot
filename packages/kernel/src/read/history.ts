@@ -45,7 +45,7 @@ import {
 } from "../request/index.ts";
 import { computedAtRead } from "../rules/index.ts";
 import type { ReadTx } from "../store/ports.ts";
-import { cellWithheld } from "../store/readable-content.ts";
+import { cellWithheld, withholdingIn } from "../store/readable-content.ts";
 import { valueOut } from "../time/index.ts";
 import { changersOf } from "./changed-by.ts";
 import { danglingOf, revokedTargets } from "./dangling.ts";
@@ -462,7 +462,7 @@ async function cellsAsOf(tx: ReadTx, t: CompiledBaseTable, id: string, s: number
   const r = await tx.query<Cell>(
     `SELECT field_id, ${interval}, rec_from, intent, revoked, no_value,
        (SELECT e.op FROM events e WHERE e.seq = v.src_event) AS src_op,
-       ${cellWithheld("v")} AS withheld, ${cols.join(", ")}
+       ${cellWithheld("v", await withholdingIn(tx))} AS withheld, ${cols.join(", ")}
      FROM ${versions} v
      WHERE row_id = $1 AND rec_from <= $2 AND (rec_to IS NULL OR rec_to > $2)`,
     [id, s],

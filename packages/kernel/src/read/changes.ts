@@ -31,7 +31,7 @@ import { stateFromCells, targetDelta } from "../delta/index.ts";
 import { actorsNow } from "../pending/index.ts";
 import { get, has, isJsonNumber, type Obj } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
-import { cellWithheld } from "../store/readable-content.ts";
+import { cellWithheld, withholdingIn } from "../store/readable-content.ts";
 import { type ValueOut, valueOut } from "../time/index.ts";
 import {
   type HistoryInput,
@@ -256,7 +256,7 @@ export async function changesInTx(
     if (touched.rows.length > 0) {
       const r = await tx.query<Cell>(
         `SELECT row_id, field_id, ${interval}, rec_from, rec_to, intent, src_event, revoked, no_value,
-           ${cellWithheld("v")} AS withheld, ${columns.join(", ")}
+           ${cellWithheld("v", await withholdingIn(tx))} AS withheld, ${columns.join(", ")}
          FROM ${versions} v
          WHERE row_id = ANY($3) AND rec_from <= $2 AND (rec_to IS NULL OR rec_to > $1)`,
         [since, until, touched.rows.map((x) => x.row_id)] as never,

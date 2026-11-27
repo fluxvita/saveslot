@@ -3,6 +3,8 @@
 // by `readEvents`, by every direct reader of `content` and by the export's placeholders, so they
 // never differ.
 
+import type { ReadTx } from "./ports.ts";
+
 /**
  * SQL for the earliest `deletion.confirmed` (its `seq`) listing block (`<a>.seq`, `<a>.path`) and
  * not yet executed or cancelled; NULL when none does. `a` is the alias of a row of `content`.
@@ -46,17 +48,26 @@ export const taskKnown = (seq: string): string =>
  * "giver": the latest `restated/<k>` naming the cell's item (`src_event`, `src_field`, `src_k`) on
  * a `deletion.confirmed` or `deletion.cancelled` up to the cell's operation (`rec_from`) — a
  * restatement keeps the item's `k`, 09 §5.9 — or, when none, the item's own `fields/<f>/<k>` on
- * `src_event`. The cell is withheld when its giver is listed by a deletion confirmed after the
- * cell was recorded: pending (a row of `pending_blocks` with a later `deletion_seq`, of any of the
- * deletions listing it), or carried out (cleared, the tombstone naming a later confirmation). A
- * cell recorded at a deletion or after holds the state after it and is not withheld for it; a
- * cancelled deletion lists nothing any more. A cell no contribution gave (a schema constant, no
- * value, existence) is never withheld. Where a cell is withheld, its value is not read and the
- * read marks `partially_deleted`. One giver a cell: a value another contribution corroborated is
- * withheld all the same (08-open-questions).
+ * `src_event`. The cell is withheld when its giver is listed by a deletion still pending that was
+ * confirmed after the cell was recorded. A cell recorded at a deletion or after holds the state
+ * after it and is not withheld for it; a cancelled deletion lists nothing any more. A cell no
+ * contribution gave (a schema constant, no value, existence) is never withheld. Where a cell is
+ * withheld, its value is not read and the read marks `partially_deleted`. One giver a cell: a
+ * value another contribution corroborated is withheld all the same (08-open-questions).
+ *
+ * Carried out: a cleared giver is withheld too, where it can still be found. A cleared
+ * restatement cannot: it is found by what its body names, and a cleared block has no body, so the
+ * cell falls back to the item's own block. This holds for deletions still pending only; after
+ * execution is left to the change that applies it, which clears what the version tables derived
+ * from those blocks as well (09 §5.9; 08-open-questions).
+ *
+ * `withholding`: whether this tenant has any confirmed deletion (`withholdingIn`). Without one no
+ * block is pending or cleared, and the test is not made at all: `FALSE`.
  */
-export const cellWithheld = (v: string): string =>
-  `(${v}.src_event IS NOT NULL AND ${v}.src_field IS NOT NULL AND EXISTS (
+export const cellWithheld = (v: string, withholding: boolean): string =>
+  !withholding
+    ? "FALSE"
+    : `(${v}.src_event IS NOT NULL AND ${v}.src_field IS NOT NULL AND EXISTS (
      SELECT 1 FROM (
        SELECT COALESCE(r.seq, ${v}.src_event) AS gseq,
          COALESCE(r.path, 'fields/' || ${v}.src_field || '/' || ${v}.src_k) AS gpath
@@ -73,10 +84,26 @@ export const cellWithheld = (v: string): string =>
          ORDER BY rc.seq DESC LIMIT 1
        ) AS r ON TRUE
      ) AS g
-     WHERE EXISTS (SELECT 1 FROM pending_blocks p
-                   WHERE p.seq = g.gseq AND p.path = g.gpath AND p.deletion_seq > ${v}.rec_from)
+     -- The latest deletion listing the giver, by the primary key's prefix, compared outside: a
+     -- condition on the cell inside would have the planner hash the whole table again for each
+     -- cell. "Later than the cell" (not "at or later") and "any deletion listing it" (not only
+     -- the earliest) are as 09 §5.9 says, but untested: no history its rules allow has been found
+     -- that tells either from the other reading, so no case here can fail on them.
+     WHERE (SELECT max(p.deletion_seq) FROM pending_blocks p
+            WHERE p.seq = g.gseq AND p.path = g.gpath) > ${v}.rec_from
         OR EXISTS (SELECT 1 FROM content c
                    WHERE c.seq = g.gseq AND c.path = g.gpath AND c.removed_by IS NOT NULL
                      AND ${v}.rec_from < COALESCE(
                        (SELECT (t.body::jsonb ->> 'confirmed_event')::bigint FROM ${READABLE_CONTENT} t
                         WHERE t.seq = c.removed_by AND t.path = 'target'), c.removed_by))))`;
+
+/**
+ * Whether `cellWithheld` has anything to find in this tenant: a deletion was ever confirmed. A
+ * block is pending or cleared only after one; every store without a deletion skips the test.
+ */
+export async function withholdingIn(tx: ReadTx): Promise<boolean> {
+  const r = await tx.query<{ any: boolean }>(
+    "SELECT EXISTS (SELECT 1 FROM events WHERE type = 'deletion.confirmed') AS any",
+  );
+  return r.rows[0]?.any === true;
+}

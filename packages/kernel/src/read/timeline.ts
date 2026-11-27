@@ -15,7 +15,7 @@ import type { ReadEntry } from "../audit/index.ts";
 import { actorsNow } from "../pending/index.ts";
 import { get, has, isObj, type Obj } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
-import { cellWithheld, READABLE_CONTENT } from "../store/readable-content.ts";
+import { cellWithheld, READABLE_CONTENT, withholdingIn } from "../store/readable-content.ts";
 import { valueOut } from "../time/index.ts";
 import { isCorrection } from "./correction.ts";
 import {
@@ -213,7 +213,7 @@ export async function timelineInTx(
           ? "valid_from::text AS vf, valid_to::text AS vt"
           : `to_char(valid_from, ${INSTANT_TEXT}) AS vf, to_char(valid_to, ${INSTANT_TEXT}) AS vt`
         : "NULL AS vf, NULL AS vt"
-    }, ${cellWithheld("v")} AS withheld,
+    }, ${cellWithheld("v", await withholdingIn(tx))} AS withheld,
        ${t.fields.flatMap((f) => selectOf(f).map((x, i) => `${x} AS c_${f.id}_${i}`)).join(", ")}
      FROM ${versions} v WHERE row_id = $1 AND rec_to IS NOT NULL`,
     [target.id],
