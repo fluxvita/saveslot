@@ -67,6 +67,7 @@ flowchart LR
 | Codex | `saveslot setup` 自动接上 |
 | Cursor | `saveslot connect cursor` 打印要粘贴的配置 |
 | Claude 桌面端 | `saveslot connect claude-desktop` 打印要粘贴的配置 |
+| VS Code（GitHub Copilot Chat 的 Agent 模式）| `saveslot connect vscode` 打印要执行的命令（`code --add-mcp …`） |
 
 Agent 经 MCP 连 saveslot：本机经 `saveslot mcp`，服务器模式走远程 MCP，多数宿主用 OAuth 登录授权，Cursor 用 `saveslot connect http` 签发的令牌（[`06-cli.md`](docs/zh-CN/spec/06-cli.md) 第 3.2 节）。脚本与连接器用 HTTP；人用 `saveslot` 命令。
 

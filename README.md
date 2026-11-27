@@ -67,6 +67,7 @@ flowchart LR
 | Codex | `saveslot setup` adds it |
 | Cursor | `saveslot connect cursor` prints the configuration to paste |
 | Claude Desktop | `saveslot connect claude-desktop` prints the configuration to paste |
+| VS Code (GitHub Copilot Chat, Agent mode) | `saveslot connect vscode` prints the command to run (`code --add-mcp …`) |
 
 Agents reach saveslot over MCP: locally through `saveslot mcp`, and in server mode over remote MCP, where most hosts sign in with OAuth and Cursor uses a token from `saveslot connect http` ([`06-cli.md`](docs/spec/06-cli.md) §3.2). Scripts and connectors use HTTP; people use the `saveslot` command.
 
