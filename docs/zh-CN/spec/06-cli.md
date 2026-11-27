@@ -79,7 +79,7 @@
 | 部署 | 怎么来 | 存在哪 | 失效 |
 |---|---|---|---|
 | 本地 | `saveslot init` 生成一个随机令牌；控制面只存它的哈希 | `~/.saveslot/credentials/session`，0600 | `saveslot init --rotate-session` 换新，旧令牌立即失效。要先 `saveslot stop`：它只换控制面里的哈希、不碰数据目录，saveslot 服务下次启动时读到新哈希；服务在运行时照样拒绝执行 |
-| 云服务 | `saveslot login`：默认打开浏览器走授权码 + PKCE（本机回环接收回调，只收带这次登录的 `state` 的那一个，别的回 400、接着等）；`--device` 用 OAuth 设备码（RFC 8628），适合 SSH 里没有浏览器的情形，轮询间隔最长按 60 秒、设备码最多等一小时，服务器给得更长也一样；用户码是 8 个字母，取自 20 个辅音 `BCDFGHJKLMNPQRSTVWXZ`，响应里写成 `XXXX-XXXX`，输入时不分大小写、横线与空白忽略；CLI 只核形状 `[A-Z]{4}-[A-Z]{4}`、不核字母表，自部署的服务器也能用 | `~/.saveslot/credentials/<profile>.json`（访问令牌 + 刷新令牌，键见下），0600 | `saveslot logout` 吊销刷新令牌并删文件 |
+| 云服务 | `saveslot login`：默认打开浏览器走授权码 + PKCE（本机回环接收回调，只收带这次登录的 `state` 的那一个，别的回 400、接着等）；`--device` 用 OAuth 设备码（RFC 8628），适合 SSH 里没有浏览器的情形；没有终端时（标准输入或标准错误不是终端）不开浏览器，不给 `--device` 也用设备码，轮询间隔最长按 60 秒、设备码最多等一小时，服务器给得更长也一样；用户码是 8 个字母，取自 20 个辅音 `BCDFGHJKLMNPQRSTVWXZ`，响应里写成 `XXXX-XXXX`，输入时不分大小写、横线与空白忽略；CLI 只核形状 `[A-Z]{4}-[A-Z]{4}`、不核字母表，自部署的服务器也能用 | `~/.saveslot/credentials/<profile>.json`（访问令牌 + 刷新令牌，键见下），0600 | `saveslot logout` 吊销刷新令牌并删文件 |
 
 - CLI 发现凭证文件的权限比 0600 宽时拒绝使用并提示修正，与 ssh 处理私钥的做法一致。第一版凭证放文件；放进系统钥匙串（可要求人在场才取出）随桌面打包一起做。
 - **profile** 区分连接目标：`local`（默认）、`cloud`（我们的云服务，地址 `https://api.saveslot.ai`），以及 `saveslot login --server <URL> --profile <名字>` 时为自部署的服务器新建的 profile；`--profile` 或 `saveslot profile use` 切换。各目标互不相通（第一版没有同步）。
@@ -500,7 +500,7 @@ My long-term records (things that change over time: spending, workouts, budgets,
 
 | 命令 | 用途 | 关键参数 | 输出要点 | 出现于 |
 |---|---|---|---|---|
-| `saveslot login` / `saveslot logout` | 服务器模式的用户会话 | `--profile <名字>`（不给时用当前 profile，当前是 `local` 时用 `cloud`；显式给 `local` 是用法错误，退出码 2：本机模式不用登录）、`--server <URL>`（自部署的地址，与 `--profile` 一起给，登录成功后登记这个 profile）、`--device` | profile、服务器、令牌存放位置 | P5 |
+| `saveslot login` / `saveslot logout` | 服务器模式的用户会话 | `--profile <名字>`（不给时用当前 profile，当前是 `local` 时用 `cloud`；显式给 `local` 是用法错误，退出码 2：本机模式不用登录）、`--server <URL>`（自部署的地址，与 `--profile` 一起给，登录成功后登记这个 profile）、`--device`（没有终端时，即标准输入或标准错误不是终端，不给也用设备码） | profile、服务器、令牌存放位置 | P5 |
 | `saveslot profile list` / `use` | 切换连接目标 | — | 当前 profile 与地址 | P5 |
 | `saveslot config get` / `set` | 本地 saveslot 服务的配置，文件是 home 下的 `config.toml`（可选：`saveslot init` 不生成它，没有这个文件时每个键取默认值）。数值策略的键都是正整数：`read_log.retention_days`（读取记录保留期，默认 180，不能低于 30）、`read_log.flush_seconds`（落盘间隔，默认 5，不能低于 1、不能超过 2147483）、`read_log.coarse_threshold`（改记表级记录的阈值，默认 1000，不能低于 1）、`high_water.events` 与 `high_water.seconds`（高水位推进间隔，默认 1000 条事件或 60 秒，都不能低于 1）。另有 `http.loopback`（回环 TCP，默认 `false`）、`mcp.autostart`（`saveslot mcp` 自动拉起服务，默认 `true`）与 `upgrade.backup`（升级存储格式之前先备份，默认 `true`；第 3 节第 3 步），都是布尔值。文件不是 UTF-8 或合法的 TOML、有不认识的键、有这一版还没有用到的键、值的类型不对或超出范围时，saveslot 服务拒绝启动，指出是哪个键、为什么（不认识 / 这一版不支持 / 值的类型与范围），不回落到默认值；文案只含键名、行号与范围，不含文件里的值。`config get` 列出每个键的生效值与来源（默认 / `config.toml`），这一版还没有用到的键也列出，标明"这一版未启用"。`config set <键> <值>` 只收这一版用到的键（`read_log.flush_seconds`、`mcp.autostart`、`upgrade.backup`）：别的键，包括上面列出、这一版还没有用到的，报"这一版不支持"、不写文件（写进去服务反而起不来）；值按键的类型与范围检查（布尔值写 `true` / `false`，也收 `on` / `off`），不合的报用法错误（退出码 2）；文件本身已不合法时不写（退出码 5）。写入时按它认得的键整份重写这个文件（0600），原有的注释不保留，有注释时写明。写完说明何时生效：`mcp.autostart` 在宿主下一次运行 `saveslot mcp` 时，其余在服务下次启动时（服务正在运行就提示先 `stop` 再 `start`）。自部署的服务器模式用同名的配置项 | 键、值 | 改后是否需要重启 | P1（只读），P6（可写） |
 
