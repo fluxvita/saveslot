@@ -13,12 +13,13 @@
 // the run's outcome is open.
 //
 // What the run directory must hold, besides what evals/tools/fixture.ts writes there:
-//   transcript/steps.json   the host's invocations in order (the agent steps and any follow-up
-//                           in the same step): `steps: [{step, key, session, reply?, file?}]`,
-//                           with `session` the host's session (a new one per `new_session`) and
-//                           `reply` the invocation's final reply; without `reply`, the reply is
-//                           read from the host's raw output `transcript/<file>` (Claude Code
-//                           stream-json, or Codex `exec --json`).
+//   transcript/steps.json   10-evals «留档»: `host`, and in `steps` the host's invocations in order
+//                           (the agent steps and any follow-up in the same step), each
+//                           `{step, key, session, model?, reply?, file?}`, with `session` the
+//                           host's session (a new one per `new_session`) and `reply` the
+//                           invocation's final reply; without `reply`, the reply is read from the
+//                           host's raw output `transcript/<file>` (Claude Code stream-json, or
+//                           Codex `exec --json`).
 // A call is in the step of the invocation that made it: each invocation starts the MCP bridge
 // anew, so a connection's record files, by name, are its invocations in order.
 
@@ -242,23 +243,34 @@ function latestRead(run: Run, call: AgentCall, holder: unknown): string | undefi
 function inSteps(a: Obj, c: AgentCall): boolean {
   const after = a["after_step"];
   const before = a["before_step"];
-  // `step: n` (added here, as reply assertions have it): only the calls made in step n.
+  // `step: n`: only the calls made in step n.
   if (typeof a["step"] === "number" && c.step !== a["step"]) return false;
   if (typeof after === "number" && c.step <= after) return false;
   if (typeof before === "number" && c.step >= before) return false;
   return true;
 }
 
-/** Whether `value` is in the result of an earlier `saveslot_write` in `call`'s step and session. */
+/** Every scalar anywhere in `x`. */
+function scalars(x: unknown, out: unknown[] = []): unknown[] {
+  if (Array.isArray(x)) for (const v of x) scalars(v, out);
+  else if (isObj(x)) for (const v of Object.values(x)) scalars(v, out);
+  else out.push(x);
+  return out;
+}
+
+/**
+ * Whether `value` is a whole value (an item ID, a write sequence) in the result of an earlier
+ * `saveslot_write` in `call`'s step and session.
+ */
 function writtenInStep(run: Run, call: AgentCall, value: unknown): boolean {
-  const needle = JSON.stringify(value);
+  if (isObj(value) || Array.isArray(value)) return false;
   return run.calls.some(
     (c) =>
       c.index < call.index &&
       c.step === call.step &&
       c.session === call.session &&
       c.tool === "saveslot_write" &&
-      JSON.stringify(c.result ?? null).includes(needle),
+      scalars(c.result).includes(value),
   );
 }
 
@@ -585,11 +597,12 @@ interface Judging {
 }
 
 /**
- * One assertion of a kind, with the combinators added here: `any_of` (one branch holds; a branch
- * with `path: <label>` records the path the run took, and once a path is recorded only its branch
- * is judged), `all_of` (every branch holds), and `path` on an assertion (it applies only to a run
- * that took that path; on another it holds). A branch is an assertion of the same kind without a
- * level; what a failing branch captured is dropped.
+ * One assertion of a kind, with the combinators of §2.5: `any_of` (in order, one branch holds; the
+ * first labelled branch that holds, `path: <label>`, records the path the run took, and once a path
+ * is recorded only its branch is judged where there is one), `all_of` (every branch holds), and
+ * `path` on an assertion (it applies only to a run that took that path; on another it holds; with
+ * no path recorded yet it is an error). A branch is an assertion of the same kind without a level,
+ * and inherits the step limits; what a failing branch captured is dropped.
  */
 function judgeOne(
   j: Judging,
@@ -624,7 +637,7 @@ function judgeOne(
       const label = typeof b["path"] === "string" ? b["path"] : undefined;
       if (r.verdict === "pass") {
         j.bound = bound;
-        if (label !== undefined) j.path = label;
+        if (label !== undefined && j.path === undefined) j.path = label;
         return {
           verdict: "pass",
           note: [label && `path ${label}`, r.note].filter(Boolean).join(": "),

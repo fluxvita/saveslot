@@ -5,12 +5,14 @@
 // A path is keys joined by dots, with `[n]` for an index, `[*]` for any element and `["k"]` for a
 // key that is not a plain name (`ops[0].fields["*"].result`). An expected value is
 //   - a scalar: equal; numbers and numeric strings compare as numbers; `$name` is a bound value;
-//   - an object with one operator key: that operator. Those of §2.5: `in`, `present`, `absent`,
-//     `quantity`, `from_read`, `contains`, `has_code`, `lacks_code`, `has`, `lacks`. Added here:
-//     `not` (the matcher does not hold), `every` (a non-empty array whose every element matches),
-//     `gt` / `gte` / `lt` / `lte` (numbers, or ISO dates as strings), `quantity` with `within`
-//     (a tolerance in the expected unit), `written_in_step` (the value is in the result of an
-//     earlier `saveslot_write` of the same step and session);
+//   - an object with one operator key: that operator, as §2.5 has them: `in` (any one of the
+//     matchers listed, `{absent: true}` among them), `not` (the matcher does not hold; on an
+//     absent key it holds unless the matcher itself matches absence), `present`, `absent`,
+//     `every` (a non-empty array whose every element matches), `gt` / `gte` / `lt` / `lte`
+//     (numbers, or ISO dates as strings; false when the two cannot be compared), `quantity` (with
+//     an optional `within`, a tolerance in the expected unit), `from_read`, `written_in_step` (a
+//     whole value in the result of an earlier `saveslot_write` of the same step and session),
+//     `contains`, `has_code`, `lacks_code`, `has`, `lacks`;
 //   - any other object: each key is a path under the value, matched in turn (a subset);
 //   - an array: as many elements, each matching in order.
 

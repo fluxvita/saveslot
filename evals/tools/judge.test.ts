@@ -123,6 +123,32 @@ describe("calls", () => {
     expect(j.passed).toBe(false);
   });
 
+  it("written_in_step takes a whole value of the write's result, not a part of one", () => {
+    const dir = makeRun(
+      {
+        calls: [
+          {
+            level: "H",
+            must: { tool: "saveslot_history", args: { seq: { written_in_step: true } } },
+          },
+          {
+            level: "H",
+            must: { tool: "saveslot_resolve", args: { id: { written_in_step: true } } },
+          },
+        ],
+      },
+      {
+        calls: [
+          call(0, "saveslot_write", { ops: [] }, { seq: 15, pending: [{ id: "pi_12" }] }),
+          call(0, "saveslot_history", { seq: 5 }),
+          call(0, "saveslot_resolve", { id: "pi_1" }),
+          call(0, "saveslot_resolve", { id: "pi_12" }),
+        ],
+      },
+    );
+    expect(verdicts(dir)).toEqual(["calls[0] fail", "calls[1] pass"]);
+  });
+
   it("from_read only counts a read in the same host session", () => {
     const steps = [
       { step: 1, key: "A", session: "s1", reply: "" },
@@ -194,6 +220,19 @@ describe("paths and combinators", () => {
       "reply[0] pass",
       "reply[1] rubric",
     ]);
+  });
+
+  it("the first labelled branch that holds records the path; a later one does not change it", () => {
+    const dir = makeRun(
+      {
+        calls: [
+          { level: "H", any_of: [{ path: "甲", must: { tool: "saveslot_query" } }] },
+          { level: "H", any_of: [{ path: "丙", must: { tool: "saveslot_query" } }] },
+        ],
+      },
+      { calls },
+    );
+    expect(judgeRun(readRun(dir)).path).toBe("甲");
   });
 
   it("a branch that names nothing bound fails; another branch can hold", () => {
