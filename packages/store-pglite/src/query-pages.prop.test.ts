@@ -799,21 +799,51 @@ async function pushedAndFull(params: Record<string, unknown>, limit: number) {
   return pages;
 }
 
-/** A later page both ways, pushed down where it can be and as the whole read: result and read. */
+/**
+ * How a later page was read, from the statements it sent: pushed down (a business table read with
+ * LIMIT) or whole (the version table read as of the first page's operation for every row).
+ */
+function pathOf(sent: readonly string[]): "pushed" | "whole" {
+  const whole = sent.some(
+    (x) => /FROM "t_[^"]*__ver"/.test(x) && x.includes("rec_from <= $1") && !x.includes("ANY("),
+  );
+  const pushed = sent.some(
+    (x) => /FROM "t_[^"]*"/.test(x) && !x.includes("__ver") && x.includes(" LIMIT "),
+  );
+  if (whole === pushed) throw new Error(`no single path: ${JSON.stringify(sent)}`);
+  return whole ? "whole" : "pushed";
+}
+
+/**
+ * A later page both ways, pushed down where it can be and as the whole read: result and read, and
+ * the path the first took, from the statements it sent.
+ */
 async function laterBothWays(params: Record<string, unknown>, limit: number, position: string) {
+  const sent: string[] = [];
   const run = (full: boolean) =>
     s.store.read((tx) =>
-      queryInTx(tx, {
-        actor: USER as never,
-        task: null,
-        now: NOW as never,
-        visibility: { kind: "all" },
-        params: { ...params, limit, position },
-        read: "rd_0000000000000000" as never,
-        ...(full ? { full: true } : {}),
-      }),
+      queryInTx(
+        full
+          ? tx
+          : {
+              query: (q, v) => {
+                sent.push(q);
+                return tx.query(q, v);
+              },
+            },
+        {
+          actor: USER as never,
+          task: null,
+          now: NOW as never,
+          visibility: { kind: "all" },
+          params: { ...params, limit, position },
+          read: "rd_0000000000000000" as never,
+          ...(full ? { full: true } : {}),
+        },
+      ),
     );
-  return { pushed: await run(false), full: await run(true) };
+  const pushed = await run(false);
+  return { pushed, full: await run(true), path: pathOf(sent) };
 }
 
 /** A row with every field empty: on `marks`, a stretch whose only contribution is a clear. */
@@ -1083,7 +1113,7 @@ describe("query's two paths and its pages", () => {
             }
             const position = pages.at(-1)?.next_position as string;
             // The later page pushed down is the whole read's: result and read recorded.
-            const later = await laterBothWays(params, limit, position);
+            const { path, ...later } = await laterBothWays(params, limit, position);
             expect({ params, page: pages.length, ...later.pushed }).toEqual({
               params,
               page: pages.length,
@@ -1091,9 +1121,19 @@ describe("query's two paths and its pages", () => {
             });
             const table = params["table"] as string;
             const during = params["valid_during"] !== undefined;
-            // Pushed down: not timeless tables (`notes`), not state tables over an interval with
-            // an order asked for; never here a schema switch, nor more rows changed than the limit.
-            if (table !== "notes" && !(during && params["order"] !== undefined)) {
+            // Pushed down, by the statements sent: every later page but those of timeless tables
+            // (`notes`) and of state tables over an interval with an order asked for (an event
+            // table's interval is a condition like any other); never here a schema switch or a
+            // deletion, nor more rows changed than the limit.
+            const state = table === "budgets" || table === "marks";
+            const pushable =
+              table !== "notes" && !(state && during && params["order"] !== undefined);
+            expect({ params, page: pages.length, path }).toEqual({
+              params,
+              page: pages.length,
+              path: pushable ? "pushed" : "whole",
+            });
+            if (path === "pushed") {
               const k = table === "spend" || !during ? table : `${table} during`;
               laterPushed[k] = (laterPushed[k] ?? 0) + 1;
             }

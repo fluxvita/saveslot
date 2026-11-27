@@ -101,7 +101,12 @@ export async function changedSince(
  * statement, no slot to resolve; a later page it sends to the whole read is the same page.
  *
  * Not here: a restore or an import. Either changes the restore count, and a position from before
- * it is refused when decoded (`handle_expired`, `restored`), before any page is read.
+ * it is refused when decoded (`handle_expired`, `restored`), before any page is read. Nor the
+ * other events (items, a changed premise, a migration started or failed, a slot removed, a policy
+ * set): none of them changes a business table without opening or closing a cell of it in the same
+ * operation, which C then holds, and the marks, facts and premises of a page are read the same way
+ * on both paths. A change that lets one of them change a business table otherwise has to add it
+ * here.
  */
 export async function switchedOrDeletedSince(tx: ReadTx, x: number): Promise<boolean> {
   const r = await tx.query<{ one: unknown }>(
