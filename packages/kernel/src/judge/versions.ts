@@ -14,7 +14,9 @@
 // `noValueGivers` lists the values and the items giving them (including `no_value` write-backs);
 // their "existence" cell is a rule read from 02-architecture §8 rather than computed from the
 // judged state: a revoke adds an existence cell, and so does a restore ("恢复也加一格（出处是那条
-// 恢复项）"), so a step with a revoke or restore item in effect gives a new version.
+// 恢复项）"), so a step with a revoke or restore item in effect gives a new version, unless the row
+// is in the version table neither before nor after it: a row that neither exists (its required
+// fields are not all given) nor is revoked has no cells at all, so a restore on it gives none.
 
 import { view } from "./judge.ts";
 import type { Judgement } from "./model.ts";
@@ -96,6 +98,10 @@ export function givesVersion(
     r.items.some(
       (x) =>
         x.status === "applied" && (x.content.kind === "revoke" || x.content.kind === "restore"),
-    )
+    ) &&
+    (present(before) || present(step.state))
   );
 }
+
+/** Whether an event or timeless table's row has cells in the version table: it exists or is revoked. */
+const present = (state: RowState): boolean => state.revoked(EVERYTHING) || view(state).exists;
