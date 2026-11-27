@@ -11,6 +11,7 @@
 // recorded after the transaction rolled back, as any read is (`keepRead`), before the error goes up.
 
 import { type ReadEntry, readBufferOf } from "../audit/index.ts";
+import { effectOf, noteEffect } from "../log/index.ts";
 import { pendingInTx } from "../read/index.ts";
 import type { TenantStore } from "../store/ports.ts";
 import {
@@ -28,6 +29,23 @@ import { resolveSchemaChangeInTx } from "./schema-resolve.ts";
 
 const PREFIX = { row: "r_", entity: "e_", source: "s_", item: "pi_", partition: "p_" } as const;
 const LENGTH = { row: 26, entity: 26, source: 16, item: 16, partition: 16 } as const;
+
+/**
+ * A resolution's effect: its operation and restore count are the item's version after it
+ * (`iv_<item>.<op>.<restore count>`), the original's when replayed. The status of a write it
+ * triggered is noted where that write's receipt is made (write/resolve.ts).
+ */
+function withResolveEffect(r: ResolveReceipt): ResolveReceipt {
+  const m = /\.(\d+)\.(\d+)$/.exec(r.item_ver);
+  if (m === null) throw new Error("an item version not of its form");
+  const noted = effectOf(r);
+  return noteEffect(r, {
+    effect: r.replayed === true ? "replayed" : "appended",
+    seq: Number(m[1]),
+    restores: Number(m[2]),
+    ...(noted?.status !== undefined ? { status: noted.status } : {}),
+  });
+}
 
 /** Resolves the pending item `params` names (a `ResolveParams` as the caller sent it). */
 export async function resolve(
@@ -47,19 +65,21 @@ export async function resolve(
         const named = normalizeResolve(params);
         const type = named.ok ? (await itemRow(tx, named.request.id))?.type : undefined;
         const path = type === "schema_change" ? resolveSchemaChangeInTx : resolveInTx;
-        return await path(tx, {
-          actor: ctx.actor,
-          task: ctx.task,
-          now: ctx.now,
-          windows: {
-            requestKey: ctx.idempotency_window,
-            idempotencyKey: ctx.idempotency_key_window,
-          },
-          visibility: ctx.visibility,
-          params,
-          newId: (kind) => `${PREFIX[kind]}${randomCrockford(LENGTH[kind])}`,
-          reads,
-        });
+        return withResolveEffect(
+          await path(tx, {
+            actor: ctx.actor,
+            task: ctx.task,
+            now: ctx.now,
+            windows: {
+              requestKey: ctx.idempotency_window,
+              idempotencyKey: ctx.idempotency_key_window,
+            },
+            visibility: ctx.visibility,
+            params,
+            newId: (kind) => `${PREFIX[kind]}${randomCrockford(LENGTH[kind])}`,
+            reads,
+          }),
+        );
       } catch (e) {
         if (!(e instanceof WriteError) || e.code !== "confirmation_mismatch") throw e;
         // The item as it is now, as the pending detail gives it, under the request's task.
