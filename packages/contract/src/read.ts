@@ -525,8 +525,13 @@ export type SourceDeletion =
   | { state: "removed"; at: Instant; reason: TombstoneReason };
 
 /** 04-contract-types §4.6 `SourcesListResult`: newest first (by `seq`). */
-export interface SourcesListResult extends CommonResult, PageResult {
+export interface SourcesListResult extends CommonResult, Omit<PageResult, "total"> {
   mode: "list" | "search";
+  /**
+   * Always for `list`. For `search`, all the matches, only when the sources the filters take fit
+   * in one call's scan; otherwise absent, and `next_cursor` alone says more may follow.
+   */
+  total?: number;
   sources: Array<{
     id: SourceId;
     kind: SourceKind;

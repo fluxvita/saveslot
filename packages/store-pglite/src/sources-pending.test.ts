@@ -125,6 +125,9 @@ describe("sources with one pending deletion", () => {
       expect(text(r)).not.toContain("SECRET-45");
       expect(text(r)).not.toContain("2026-09-09");
       const ids = r.sources.map((x: Any) => x.id);
+      // Counted as listed: the total takes the source pending deletion too.
+      expect(r.total).toBe(r.sources.length);
+      expect((await read({ mode: "list", kind: "user_message" })).total).toBe(2);
       expect(ids).toContain(goneSource.id);
       expect(ids).toContain(keptSource.id);
       const gone = r.sources.find((x: Any) => x.id === goneSource.id);
@@ -151,6 +154,8 @@ describe("sources with one pending deletion", () => {
       expect((await read({ mode: "search", q: "deleted-words" })).sources).toEqual([]);
       const shared = await read({ mode: "search", q: "lunchtalk" });
       expect(shared.sources.map((x: Any) => x.id)).toEqual([keptSource.id]);
+      // Not counted: the total of a search is its matches, and its words are not read.
+      expect(shared.total).toBe(1);
       expect(text(shared)).not.toContain("SECRET-45");
     },
     T,
