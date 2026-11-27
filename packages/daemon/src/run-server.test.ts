@@ -11,6 +11,7 @@ import { Agent, request } from "node:http";
 import { join } from "node:path";
 import {
   addLocalUser,
+  CALL_RECORD_FIELDS,
   CLIENT_FETCH_BOUNDS,
   CursorKeys,
   type DiscardDatabase,
@@ -641,7 +642,7 @@ describe("runServer: origins a deployment lists", () => {
       expect(corsOf(r)).toEqual({
         "access-control-allow-origin": CONSOLE,
         vary: "Origin",
-        "access-control-expose-headers": "Retry-After, WWW-Authenticate",
+        "access-control-expose-headers": "Retry-After, WWW-Authenticate, Saveslot-Call",
         "access-control-allow-methods": "GET, POST, PATCH, DELETE",
         "access-control-allow-headers": "Authorization, Content-Type, Idempotency-Key, X-Task-Id",
       });
@@ -677,7 +678,7 @@ describe("runServer: origins a deployment lists", () => {
         expect(corsOf(r)).toEqual({
           "access-control-allow-origin": CONSOLE,
           vary: "Origin",
-          "access-control-expose-headers": "Retry-After, WWW-Authenticate",
+          "access-control-expose-headers": "Retry-After, WWW-Authenticate, Saveslot-Call",
         });
       }
     },
@@ -2765,9 +2766,10 @@ describe.skipIf(TEST_BACKEND !== "postgres")("runServer: a use meets its connect
       writeUserSession(tx, user, { expiresAt: "2099-01-01T00:00:00.000Z" }),
     );
     const tenantDb = runs(databaseOf((await cp.tenantOf(user))?.id as TenantId));
-    const cfg = config();
+    const cfg = config({ callRecords: true });
     await CursorKeys.createFile(cfg.handleKeyFile);
     const warned: string[] = [];
+    const callLines: string[] = [];
     const s = await runServer({
       config: cfg,
       version: "0.0.0-test",
@@ -2775,6 +2777,9 @@ describe.skipIf(TEST_BACKEND !== "postgres")("runServer: a use meets its connect
       backend,
       now: () => NOW,
       warn: (event, fields) => warned.push(`${event} ${JSON.stringify(fields)}`),
+      callRecordSink: async (line) => {
+        callLines.push(line);
+      },
     });
     const auth = { authorization: `Bearer ${token}` };
     /** Ends the tenant's connection from outside. */
@@ -2807,7 +2812,7 @@ describe.skipIf(TEST_BACKEND !== "postgres")("runServer: a use meets its connect
         },
         body: JSON.stringify(body),
       });
-    return { s, k, auth, warned, terminate, json, reopened, lostLines, mcpBody };
+    return { s, k, auth, warned, terminate, json, reopened, lostLines, mcpBody, callLines };
   }
 
   const INSERT = {
@@ -3005,11 +3010,16 @@ describe.skipIf(TEST_BACKEND !== "postgres")("runServer: a use meets its connect
         const opened = x.k.opened;
         x.k.passFirst = 1;
         x.k.failNext = "connection_lost";
+        const before = x.callLines.length;
         const r = await mcp("tools/call", { name: "saveslot_catalog", arguments: {} }, 2);
         expect(r.status).toBe(200);
         expect(r.body).not.toContain('"isError":true');
         expect(x.k.opened).toBe(opened + 1);
         expect(x.lostLines()).toHaveLength(1);
+        // Made twice, answered once: one record, the answered try's.
+        await new Promise((done) => setTimeout(done, 50));
+        const made = x.callLines.slice(before).map((l) => JSON.parse(l) as Record<string, unknown>);
+        expect(made.map((m) => [m["route"], m["outcome"]])).toEqual([["saveslot_catalog", "ok"]]);
       } finally {
         await x.s.close();
       }
@@ -3199,3 +3209,549 @@ describe.skipIf(TEST_BACKEND !== "postgres")(
     );
   },
 );
+
+// The call records (02-architecture §9 «调用记录»): with SAVESLOT_CALL_RECORDS on, one line a call
+// that passed authentication, on the server's output (here a sink of the test's); each /v1 call's ID
+// in `Saveslot-Call`, on or off. Nothing of the request in any record: names, task, key and values
+// carry a marker no record may hold.
+describe("runServer: call records", () => {
+  const MARK = "MARKER_q7";
+  /** Every record any case here was given: the fields of all of them checked at the end. */
+  const all: Record<string, unknown>[] = [];
+
+  async function recordsServer(over: Partial<ServerConfig> = {}) {
+    const c = await controlDb();
+    const t = tenants();
+    const cfg = config({ callRecords: true, ...over });
+    await CursorKeys.createFile(cfg.handleKeyFile);
+    const { user } = await addLocalUser(c.accounts as NonNullable<typeof c.accounts>, {
+      control: c.cp as ServerControlPlane,
+      backend: t.backend,
+      name: "robin",
+      password: "correct horse battery",
+      cell: CELL,
+      cells: new Set([CELL]),
+      now: NOW,
+    });
+    const token = await sessionFor(c.store, user);
+    const lines: string[] = [];
+    const logged: Record<string, unknown>[] = [];
+    const warned: string[] = [];
+    const s = await runServer({
+      config: cfg,
+      version: "0.0.0-test",
+      openControl: async () => c.db,
+      backend: t.backend,
+      now: () => NOW,
+      log: (f) => logged.push({ ...f }),
+      warn: (event) => warned.push(event),
+      callRecordSink: async (line) => {
+        lines.push(line);
+      },
+    });
+    const auth = { authorization: `Bearer ${token}` };
+    /** The records once there are `n`: written after the answer, within a moment. */
+    const records = async (n: number) => {
+      for (let i = 0; i < 200 && lines.length < n; i++) await new Promise((r) => setTimeout(r, 5));
+      const out = lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+      return out;
+    };
+    const json = (method: string, path: string, body: unknown, more: Record<string, string> = {}) =>
+      send(s, {
+        method,
+        path,
+        headers: { ...auth, "content-type": "application/json", ...more },
+        body: JSON.stringify(body),
+      });
+    const mcp = (body: unknown, as: Record<string, string> = auth) =>
+      send(s, {
+        method: "POST",
+        path: "/mcp",
+        headers: {
+          ...as,
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          "mcp-protocol-version": "2025-11-25",
+        },
+        body: JSON.stringify(body),
+      });
+    return { s, token, auth, lines, logged, warned, records, json, mcp };
+  }
+  const INSERT = (note: string) => ({
+    sv: 1,
+    ops: [
+      {
+        intent: "insert",
+        table: "household.expenses",
+        set: { date: "2026-11-02", amount: 45, note },
+      },
+    ],
+  });
+  const tool = (id: number, name: string, args: Record<string, unknown>) => ({
+    jsonrpc: "2.0",
+    id,
+    method: "tools/call",
+    params: { name, arguments: args },
+  });
+
+  it(
+    "/v1: each call's record, its ID in Saveslot-Call; a write appended and saved, sent again replayed with the same operation",
+    async () => {
+      const x = await recordsServer();
+      try {
+        const answers = [
+          await x.json("POST", "/v1/drafts", { document: SAMPLE_SLOT }),
+          await send(x.s, { path: "/v1/slots", headers: x.auth }),
+          await x.json("POST", "/v1/writes", INSERT(`${MARK}_value`), {
+            "idempotency-key": `${MARK}_key`,
+          }),
+          await x.json("POST", "/v1/writes", INSERT(`${MARK}_value`), {
+            "idempotency-key": `${MARK}_key`,
+          }),
+        ];
+        expect(answers.map((a) => a.status)).toEqual([200, 200, 200, 200]);
+        const r = await x.records(4);
+        all.push(...r);
+        expect(r.map((a) => a["call"])).toEqual(answers.map((a) => a.headers["saveslot-call"]));
+        expect(r[0]).toMatchObject({
+          record: "call",
+          v: 1,
+          via: "session",
+          surface: "http",
+          operation: "schema_draft",
+          route: "drafts",
+          outcome: "ok",
+          effect: "appended",
+          restores: 0,
+        });
+        expect(r[1]).toMatchObject({ operation: "catalog", route: "slots", outcome: "ok" });
+        expect(Object.keys(r[1] as object)).not.toContain("effect");
+        expect(r[2]).toMatchObject({
+          operation: "write",
+          route: "writes",
+          effect: "appended",
+          status: "saved",
+          restores: 0,
+        });
+        expect(r[3]).toMatchObject({
+          effect: "replayed",
+          seq: (r[2] as { seq: number }).seq,
+          restores: 0,
+        });
+        // The request lines are as they were: no `record` field there.
+        expect(x.logged.some((l) => "record" in l)).toBe(false);
+        expect(JSON.stringify(r)).not.toContain(MARK);
+      } finally {
+        await x.s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "a contract error with its reason, one with a name of the caller's: nothing of it in the record",
+    async () => {
+      const x = await recordsServer();
+      try {
+        await x.json("POST", "/v1/drafts", { document: SAMPLE_SLOT });
+        const bad = await x.json(
+          "POST",
+          "/v1/writes",
+          {
+            sv: 1,
+            ops: [
+              { intent: "insert", table: `household.${MARK}_table`, set: { [`${MARK}_field`]: 1 } },
+            ],
+          },
+          { "x-task-id": `${MARK}_task` },
+        );
+        expect(bad.status).toBeGreaterThanOrEqual(400);
+        const unread = await x.json("POST", "/v1/history", {
+          mode: "changes",
+          table: "household.expenses",
+          since: "my_last_read",
+        });
+        expect(JSON.parse(unread.body)).toMatchObject({ error: { code: "read_first" } });
+        const r = await x.records(3);
+        all.push(...r);
+        expect(r[1]).toMatchObject({
+          operation: "write",
+          outcome: JSON.parse(bad.body).error.code,
+        });
+        expect(r[2]).toMatchObject({
+          operation: "history",
+          outcome: "read_first",
+          reason: "no_read",
+        });
+        expect(JSON.stringify(r)).not.toContain(MARK);
+      } finally {
+        await x.s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "no record and no header: a credential not good, a path no route has",
+    async () => {
+      const x = await recordsServer();
+      try {
+        const none = await send(x.s, { path: "/v1/slots" });
+        expect(none.status).toBe(401);
+        expect(none.headers["saveslot-call"]).toBeUndefined();
+        const nowhere = await send(x.s, { path: "/v1/nothing-here", headers: x.auth });
+        expect(nowhere.status).toBe(404);
+        expect(nowhere.headers["saveslot-call"]).toBeUndefined();
+        await new Promise((r) => setTimeout(r, 50));
+        expect(x.lines).toEqual([]);
+      } finally {
+        await x.s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "MCP: a record a tool call, none for initialize, the tool list or a name no tool has; a failing call's record its error, the request 200",
+    async () => {
+      const x = await recordsServer();
+      try {
+        await x.mcp({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2025-11-25",
+            capabilities: {},
+            clientInfo: { name: "example-host", version: "1" },
+          },
+        });
+        await x.mcp({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
+        await x.mcp(tool(3, "saveslot_nonexistent", {}));
+        const both = await x.mcp([
+          tool(4, "saveslot_catalog", {}),
+          tool(5, "saveslot_query", { table: `${MARK}_table` }),
+        ]);
+        expect(both.status).toBe(200);
+        expect(both.headers["saveslot-call"]).toBeUndefined();
+        // The calls of one request run side by side: their records in either order.
+        const r = (await x.records(2)).sort((p, q) =>
+          String(p["route"]).localeCompare(String(q["route"])),
+        );
+        all.push(...r);
+        expect(r).toHaveLength(2);
+        expect(r.map((a) => [a["surface"], a["route"], a["operation"]])).toEqual([
+          ["mcp", "saveslot_catalog", "catalog"],
+          ["mcp", "saveslot_query", "query"],
+        ]);
+        expect(r[0]?.["outcome"]).toBe("ok");
+        expect(r[1]?.["outcome"]).not.toBe("ok");
+        expect(new Set(r.map((a) => a["call"])).size).toBe(2);
+        expect(JSON.stringify(r)).not.toContain(MARK);
+      } finally {
+        await x.s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "a connection token's calls: via token; a tool it may not call is refused 403, a record for that call",
+    async () => {
+      const x = await recordsServer();
+      try {
+        const issued = await x.json("POST", "/v1/connections", {
+          name: `${MARK}_name`,
+          scopes: ["saveslot.read"],
+        });
+        expect(issued.status).toBe(200);
+        const agent = { authorization: `Bearer ${JSON.parse(issued.body).token}` };
+        const refused = await x.mcp(tool(1, "saveslot_write", INSERT("x")), agent);
+        expect(refused.status).toBe(403);
+        const r = await x.records(2);
+        all.push(...r);
+        expect(r[0]).toMatchObject({
+          operation: "connections.issue",
+          via: "session",
+          effect: "appended",
+        });
+        expect(r[1]).toMatchObject({
+          via: "token",
+          surface: "mcp",
+          route: "saveslot_write",
+          operation: "write",
+          outcome: "insufficient_scope",
+        });
+        expect(r[1]?.["actor"]).toMatch(/^ci_/);
+        expect(JSON.stringify(r)).not.toContain(MARK);
+      } finally {
+        await x.s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "rate limited, on both surfaces: a record each",
+    async () => {
+      const x = await recordsServer({ rateLimit: { perMinute: 1, burst: 1 } });
+      try {
+        expect((await send(x.s, { path: "/v1/slots", headers: x.auth })).status).toBe(200);
+        const limited = await send(x.s, { path: "/v1/slots", headers: x.auth });
+        expect(limited.status).toBe(429);
+        expect(limited.headers["saveslot-call"]).toBeDefined();
+        await x.mcp(tool(1, "saveslot_catalog", {}));
+        const r = await x.records(3);
+        all.push(...r);
+        expect(r.slice(1).map((a) => [a["surface"], a["outcome"], a["reason"]])).toEqual([
+          ["http", "rate_limited", "quota"],
+          ["mcp", "rate_limited", "quota"],
+        ]);
+      } finally {
+        await x.s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "an export: its record once the stream has ended whole",
+    async () => {
+      const x = await recordsServer();
+      try {
+        const e = await send(x.s, { path: "/v1/export", headers: x.auth });
+        expect(e.status).toBe(200);
+        const r = await x.records(1);
+        all.push(...r);
+        expect(r[0]).toMatchObject({ operation: "export", outcome: "ok", complete: true });
+        expect(r[0]?.["call"]).toBe(e.headers["saveslot-call"]);
+      } finally {
+        await x.s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "off (the default): no record written; the header given all the same",
+    async () => {
+      const x = await recordsServer({ callRecords: undefined as never });
+      try {
+        const a = await send(x.s, { path: "/v1/slots", headers: x.auth });
+        expect(a.headers["saveslot-call"]).toMatch(/^call_[0-9a-f]{32}$/);
+        await new Promise((r) => setTimeout(r, 50));
+        expect(x.lines).toEqual([]);
+      } finally {
+        await x.s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "every operation that appends gives its record an effect; a first confirmation of an awaiting write: saved",
+    async () => {
+      const x = await recordsServer();
+      try {
+        const body = (r: { body: string }) => JSON.parse(r.body) as Record<string, unknown>;
+        const steps: { status: number; headers: Record<string, unknown> }[] = [];
+        const step = async (p: Promise<Reply>) => {
+          const r = await p;
+          steps.push(r);
+          return r;
+        };
+        await step(x.json("POST", "/v1/drafts", { document: SAMPLE_SLOT }));
+        const spare = body(
+          await step(x.json("POST", "/v1/drafts", { document: { ...SAMPLE_SLOT, slot: "spare" } })),
+        );
+        // A state table: two stretches, then a third across them, left awaiting confirmation.
+        const budget = (amount: number, from: string, more = {}) => ({
+          intent: "update",
+          table: "household.budgets",
+          entity_key: { kind: "food" },
+          set: { amount },
+          valid_from: from,
+          ...more,
+        });
+        await step(x.json("POST", "/v1/writes", { sv: 1, ops: [budget(5000, "2026-10-01")] }));
+        await step(x.json("POST", "/v1/writes", { sv: 1, ops: [budget(4000, "2026-11-10")] }));
+        await step(
+          x.json("POST", "/v1/writes", {
+            sv: 1,
+            ops: [budget(4500, "2026-10-15", { valid_to: "open" })],
+          }),
+        );
+        const items = body(await send(x.s, { path: "/v1/pending", headers: x.auth }))["items"] as {
+          id: string;
+          item_ver: string;
+        }[];
+        const item = items.at(-1) as { id: string; item_ver: string };
+        // Read, then confirmed without its version: the answer carries a warning (the version it
+        // fell back to), the receipt copied to add it, the case that lost the effect once.
+        await send(x.s, { path: `/v1/pending/${item.id}`, headers: x.auth });
+        const confirmed = await step(
+          x.json("POST", `/v1/pending/${item.id}/resolution`, { decision: "confirm" }),
+        );
+        expect(confirmed.status).toBe(200);
+        expect(JSON.stringify(body(confirmed)["warnings"])).toContain("item_ver_fallback");
+        const issued = body(
+          await step(x.json("POST", "/v1/connections", { name: "agent one" })),
+        ) as { id: string };
+        await step(x.json("PATCH", `/v1/connections/${issued.id}`, { name: "agent two" }));
+        await step(
+          send(x.s, { method: "DELETE", path: `/v1/connections/${issued.id}`, headers: x.auth }),
+        );
+        await step(
+          send(x.s, { method: "DELETE", path: `/v1/slots/${spare["slot_id"]}`, headers: x.auth }),
+        );
+        // And on MCP: a write tool's record has its effect too.
+        await x.mcp(tool(9, "saveslot_write", INSERT("tea")));
+        expect(steps.map((r) => r.status)).toEqual(steps.map(() => 200));
+        const r = await x.records(steps.length + 2);
+        all.push(...r);
+        const appending = r.filter((a) =>
+          [
+            "write",
+            "resolve",
+            "schema_draft",
+            "connections.issue",
+            "connections.update",
+            "connections.revoke",
+            "slots.remove",
+          ].includes(String(a["operation"])),
+        );
+        expect(appending.length).toBe(steps.length + 1);
+        // A listed operation's success with no effect is a defect: none here, none told.
+        expect(appending.filter((a) => a["effect"] === undefined)).toEqual([]);
+        expect(x.warned).not.toContain("call_effect_missing");
+        const resolution = r.find((a) => a["operation"] === "resolve");
+        expect(resolution).toMatchObject({ effect: "appended", status: "saved" });
+        expect(r.find((a) => a["surface"] === "mcp")).toMatchObject({
+          operation: "write",
+          effect: "appended",
+          status: "saved",
+        });
+      } finally {
+        await x.s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "an MCP request made once more for a connection gone: one record, the answered try's (on either backend)",
+    async () => {
+      const c = await controlDb();
+      const t = tenants();
+      // The tenant's stores fail one transaction when armed, after the given ones pass, as a
+      // connection ended a moment before does; failed, a store says so, and the pool opens again.
+      const k = { passFirst: 0, armed: false, opened: 0 };
+      type Store = Awaited<ReturnType<TenantPoolOptions["backend"]["open"]>>;
+      const wrap = (store: Store): Store => {
+        let failed = false;
+        const run = async <T>(go: () => Promise<T>): Promise<T> => {
+          if (failed)
+            throw Object.assign(new Error("the connection is gone"), { code: "connection_lost" });
+          if (k.armed) {
+            if (k.passFirst > 0) k.passFirst--;
+            else {
+              k.armed = false;
+              failed = true;
+              throw Object.assign(new Error("the connection is gone"), { code: "connection_lost" });
+            }
+          }
+          return go();
+        };
+        return {
+          write: (fn) => run(() => store.write(fn)),
+          read: (fn) => run(() => store.read(fn)),
+          ...(store.recordReads !== undefined
+            ? {
+                recordReads: <T>(fn: Parameters<NonNullable<Store["recordReads"]>>[0]) =>
+                  run(() =>
+                    (store.recordReads as NonNullable<Store["recordReads"]>)(fn),
+                  ) as Promise<T>,
+              }
+            : {}),
+          purgeResidue: () => store.purgeResidue(),
+          snapshot: () => store.snapshot(),
+          formatVersion: store.formatVersion,
+          ...(store.enforcesStatementTimeout !== undefined
+            ? { enforcesStatementTimeout: store.enforcesStatementTimeout }
+            : {}),
+          close: () => store.close(),
+          get usable() {
+            return !failed;
+          },
+        };
+      };
+      const backend: TenantPoolOptions["backend"] = {
+        open: async (ref, opts) => {
+          const store = await t.backend.open(ref, opts);
+          k.opened++;
+          return wrap(store);
+        },
+      };
+      const cfg = config({ callRecords: true });
+      await CursorKeys.createFile(cfg.handleKeyFile);
+      const { user } = await addLocalUser(c.accounts as NonNullable<typeof c.accounts>, {
+        control: c.cp as ServerControlPlane,
+        backend,
+        name: "robin",
+        password: "correct horse battery",
+        cell: CELL,
+        cells: new Set([CELL]),
+        now: NOW,
+      });
+      const token = await sessionFor(c.store, user);
+      const lines: string[] = [];
+      const s = await runServer({
+        config: cfg,
+        version: "0.0.0-test",
+        openControl: async () => c.db,
+        backend,
+        now: () => NOW,
+        callRecordSink: async (line) => {
+          lines.push(line);
+        },
+      });
+      const auth = { authorization: `Bearer ${token}` };
+      try {
+        expect((await send(s, { path: "/v1/slots", headers: auth })).status).toBe(200);
+        const opened = k.opened;
+        const before = lines.length;
+        // The authentication's read passes; the tool's operation meets the connection gone.
+        k.passFirst = 1;
+        k.armed = true;
+        const r = await send(s, {
+          method: "POST",
+          path: "/mcp",
+          headers: {
+            ...auth,
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+            "mcp-protocol-version": "2025-11-25",
+          },
+          body: JSON.stringify(tool(1, "saveslot_catalog", {})),
+        });
+        expect(r.status).toBe(200);
+        expect(r.body).not.toContain('"isError":true');
+        expect(k.opened).toBe(opened + 1);
+        await new Promise((done) => setTimeout(done, 50));
+        const made = lines.slice(before).map((l) => JSON.parse(l) as Record<string, unknown>);
+        expect(made.map((m) => [m["route"], m["outcome"]])).toEqual([["saveslot_catalog", "ok"]]);
+      } finally {
+        await s.close();
+      }
+    },
+    T,
+  );
+
+  it("every record's fields are the table's, and none is left out of it", () => {
+    expect(all.length).toBeGreaterThan(0);
+    const seen = new Set(all.flatMap((r) => Object.keys(r)));
+    expect([...seen].filter((k) => !(CALL_RECORD_FIELDS as readonly string[]).includes(k))).toEqual(
+      [],
+    );
+  });
+});

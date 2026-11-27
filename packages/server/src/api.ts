@@ -24,14 +24,20 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { type ImportResult, SCOPES } from "@fluxvita/saveslot-contract";
 import {
   type AuthFailure,
+  CALL_HEADER,
+  type CallEffect,
+  type CallEnd,
   type CallerResolver,
+  type CallRecorder,
   ContractError,
   type CursorKeys,
+  callRecord,
   contractError,
   EXPORT_STALL_MS,
   IMPORT_BUSY_RETRY_AFTER,
   type KernelCall,
   kernelCall,
+  newCallId,
   type Operation,
   type Principal,
   releaseWithResponse,
@@ -53,6 +59,11 @@ export interface ApiContext {
   readonly resourceMetadata?: string;
   /** The per-tenant request limit (02-architecture §5 «限流与配额»); absent: none. */
   readonly rateLimit?: TenantRateLimiter;
+  /**
+   * Where the server mode's call records go when the deployer turned them on
+   * (`SAVESLOT_CALL_RECORDS`, 02-architecture §9 «调用记录»); absent: none written.
+   */
+  readonly callRecords?: CallRecorder;
   readonly cursors: CursorKeys;
   readonly windows: { readonly requestKey: number; readonly idempotencyKey: number };
   readonly now: () => string;
@@ -611,6 +622,8 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
   if (!url.pathname.startsWith("/v1/")) return false;
   const started = Date.now();
   let name = "unknown";
+  /** Writes this call's record, once it has a tenant and a route (02-architecture §9). */
+  let record: ((end: CallEnd) => void) | undefined;
   const finish = (status: number) =>
     api.log({ method: req.method ?? "", route: name, status, ms: Date.now() - started });
 
@@ -662,6 +675,32 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
       // Its tenant held until this response ends (02-architecture §7 «连接»).
       releaseWithResponse(caller, res);
       const who = caller.principal;
+      // The server mode: a call of a route there is gets its ID (`Saveslot-Call`, whether records
+      // are written or not) and its record once it has ended (02-architecture §9 «调用记录»). A
+      // path no route has gets neither: an ID with no record behind it only wastes a search.
+      const matched = ROUTES.find((x) => x.method === req.method && x.pattern.test(url.pathname));
+      if (matched !== undefined && caller.source !== undefined) {
+        const call = newCallId();
+        res.setHeader(CALL_HEADER, call);
+        const t0 = performance.now();
+        const source = caller.source;
+        record = (end) =>
+          ctx.callRecords?.write(
+            callRecord({
+              call,
+              at: new Date().toISOString(),
+              started: t0,
+              now: performance.now(),
+              tenant: caller.tenant,
+              actor: who.actor,
+              source,
+              surface: "http",
+              operation: matched.operation ?? matched.name,
+              route: matched.name,
+              end,
+            }),
+          );
+      }
       // Counted once a request has a tenant, before anything else is done for it.
       ctx.rateLimit?.take(caller.tenant);
       if (
@@ -705,6 +744,7 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
         // Not inside `caller.use`: the import holds the tenant, and waits for every use to end.
         const result = await importRequest(req, url, ctx, who, caller.tenant, ctx.import);
         send(req, res, 200, result);
+        record?.({ ok: true });
         finish(200);
         return;
       }
@@ -757,6 +797,7 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
       const idempotencyKey = textHeader(req, "idempotency-key", "idempotency_key");
       const operation = r.operation;
       const now = ctx.now();
+      let effect: CallEffect | undefined;
       const result = await caller.use(async (tenant) => {
         const call = kernelCall({
           principal: who,
@@ -771,16 +812,28 @@ export function handleApi(api: Api, req: IncomingMessage, res: ServerResponse): 
         });
         // The export is written while the tenant is lent: its read runs on the tenant's store.
         if (operation === "export") {
-          await streamExport(api, req, res, { ctx, tenant, call, finish });
+          await streamExport(api, req, res, { ctx, tenant, call, finish, record });
           return STREAMED;
         }
-        return runOperation({ tenant, cursors: ctx.cursors, operation, call, warn: ctx.warn });
+        return runOperation({
+          tenant,
+          cursors: ctx.cursors,
+          operation,
+          call,
+          warn: ctx.warn,
+          onEffect: (e) => {
+            effect = e;
+          },
+        });
       });
       if (result === STREAMED) return;
       send(req, res, 200, result);
+      record?.({ ok: true, ...(effect !== undefined ? { effect } : {}) });
       finish(200);
     } catch (e) {
-      finish(sendError(req, res, contractError(e, ctx.warn)));
+      const c = contractError(e, ctx.warn);
+      finish(sendError(req, res, c));
+      record?.({ ok: false, error: c });
     }
   })();
   return true;
@@ -802,6 +855,8 @@ async function streamExport(
     readonly tenant: ServedTenant;
     readonly call: KernelCall;
     readonly finish: (status: number) => void;
+    /** Its call record: written when the stream ends, whole (`complete`) or cut off. */
+    readonly record: ((end: CallEnd) => void) | undefined;
   },
 ): Promise<void> {
   let started = false;
@@ -848,11 +903,13 @@ async function streamExport(
       },
     });
     res.end();
+    o.record?.({ ok: true, complete: true });
     o.finish(200);
   } catch (e) {
     if (!started) throw e;
     // Cut off: no end chunk, so no reader takes the stream for whole.
     res.destroy();
+    o.record?.({ ok: true, complete: false });
     o.finish(200);
   }
 }

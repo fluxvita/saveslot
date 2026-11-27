@@ -792,6 +792,46 @@ These numbers decide: the values of the two limits; whether log snapshots (repla
   - **The database role the service uses**: it owns the control database (`server init` creates tables in it); on the instance the cell is on it has `CREATEDB` and can connect to the maintenance database (when a tenant is created, `CREATE DATABASE` is run in the maintenance database, so the tenant database is owned by this role). A superuser is not needed.
   - **Plaintext residue after physical erasure**: to clean it up in place, this role also needs four grants and the instance must run with `wal_recycle = off` (§7 "Privileges residue cleanup needs on PostgreSQL"); if any one is missing, residue cleanup in this deployment uses a rebuild instead, and during the rebuild that tenant is not writable (§7 "How residue is cleaned up").
 
+### Call records (server mode)
+
+With them the deployer answers "which tenant, which caller, did what, did it succeed, how many writes really took effect" without reading users' content. The decision and its trade-offs: [`../zh-CN/process/decisions/server-call-records.md`](../zh-CN/process/decisions/server-call-records.md).
+
+- **Turning them on**: the setting `SAVESLOT_CALL_RECORDS` (`on` / `off`, `off` by default; [`06-cli.md`](06-cli.md) §4.1). When on, at the end of each call the service process writes one line of JSON on the standard output, and that line is the call's record; the deployer's log collection takes it, and the program sends it nowhere. When off, the standard output is the same as without this setting. Local mode has no such setting.
+- **Which calls have a record**: each call that passed authentication, one each: one per request on `/v1`; one per tool call on `/mcp` (as many as a request holds). A call refused after authentication has one too: insufficient scope (on `/mcp` the whole request is answered 403, and each refused tool call in its body has one; the calls that would have been let through did not run and have none), and rate limiting. When an MCP request is made once more for a connection gone (§7 "Connections"), only the try that was answered has a record.
+- **Which do not**: requests that did not pass authentication (a disabled account included); requests on `/mcp` that are not contract operations (`initialize`, listing tools, a tool name that does not exist); paths with no route; the OAuth endpoints, `/health`, `/ready`. The existing line per request stays as it is; the `record` field tells the two kinds apart.
+
+| Field | Meaning |
+|---|---|
+| `record` | Always `"call"` |
+| `v` | The record format's version, now `1` |
+| `call` | The call's ID: `call_` and 32 hexadecimal characters, new for each call |
+| `at` | When the call ended (UTC) |
+| `ms` | Milliseconds from passing authentication to the result being settled |
+| `tenant` | The tenant ID |
+| `actor` | The caller's ID: `u_…` for a user session, `ci_…` for a connection instance |
+| `via` | How the credential came to be: `session` (a user session), `token` (an issued connection instance token), `oauth` (an OAuth authorization) |
+| `registration` | With `via` `oauth`, how the client was registered: `document` (a client document), `dynamic` (dynamic registration), `builtin` (built into the program). In this version only `document` occurs: there is no dynamic registration yet, and the built-in clients issue user sessions |
+| `client` | With `document`, the scheme and host of the client ID; with `builtin`, its fixed name; otherwise absent. The client ID itself is not put in the record: it is a string the client chose |
+| `surface` | `http` or `mcp` |
+| `operation` | The operation's name in the contract |
+| `route` | The route name for `http`; the tool name for `mcp` |
+| `outcome` | `ok`, or the contract's error code |
+| `reason` | When the error has a reason and that reason is among those the contract lists for the error code, that reason; otherwise absent |
+| `incident` | With `outcome` `internal`, the incident reference in the answer |
+| `effect` | On success of an operation that appends events (`write`, `resolve`, `schema_draft`, `connections.issue` / `update` / `revoke`, `slots.remove`): `appended` when the call appended a head event to the tenant's log; `replayed` when it was sent again and the original result was given back; `none` when nothing was appended |
+| `status` | For `write` and a write `resolve` triggered: `saved` / `pending` |
+| `seq` | With `effect` `appended`, the operation number appended; with `replayed`, the original one's |
+| `restores` | With `seq`, the tenant's restore count at that operation's time: the current one for `appended`, the one in force when the original was appended for `replayed` (so a request from before a restore sent again after it keeps the same dedupe key) |
+| `complete` | Only on a streamed operation (export): `true` when the stream ended normally, `false` when it was cut off |
+
+A record holds no credential, nothing of the request or response bodies, no slot, table or field names or IDs, no connection instance names, account names or external login identifiers, no task identifier or idempotency key (nor anything computed from them), no item of an error such as `param` that points at a name a user gave, no query condition and no source address. `User-Agent` is not read.
+
+- **The call ID back to the caller**: on `/v1`, every answer that has a record (whether the setting is on or not) carries the response header `Saveslot-Call`, whose value is the record's `call` ([`05-surfaces.md`](05-surfaces.md) "HTTP"). Not on `/mcp`.
+- **Deduplicating and counting**: a record collected twice has the same `call`. A write sent several times gives as many records: one `appended`, the others `replayed`, with the same `tenant`, `restores` and `seq`; operation numbers are used again after a restore, so those three are the key. "Writes that took effect" is the number of records with `effect` `appended` or `replayed` and `status` `saved`, deduplicated by those three.
+- **A problem with records does not affect the call**: a record is made after the result is settled and does not change the answer. Records waiting to be written are bounded (by count); past the bound, or when the output reports an error, a new record is dropped and counted, and the call does not wait for it; at most once a minute a `call_record_failed` warning, with the number dropped in that minute, is written on the standard error. So the records are **an observation, not a ledger**: for an exact count, the tenant's own log is the authority.
+- **What kind of data this is**: a record holds no content, but a tenant is a user, so a series of records is one person's activity under a stable identifier. The deployer holds it and decides how long to keep it; it is outside the tenant's storage, privacy deletion does not reach it and exports do not include it (for deleting a whole tenant, see [`08-open-questions.md`](08-open-questions.md)).
+- **Versions**: adding a field does not change `v`, and collectors ignore fields they do not know; removing a field or changing a meaning or values raises `v` by 1. A field in a record that the table above does not list is a defect.
+
 ## 10. Trust boundaries
 
 | Usage | Trusted | Untrusted | How far it is guaranteed |
@@ -812,7 +852,7 @@ These numbers decide: the values of the two limits; whether log snapshots (repla
 - The collected fields are listed item by item in the documentation, consistent with the code.
 - A crash or error report sent from the machine also counts as usage data, and likewise must be enabled explicitly and contain no user content; application logs written on the local machine are not telemetry.
 
-The monitoring of its own running state by the cloud service we operate is the operator observing its own service and is not telemetry; it likewise does not write user content into monitoring data.
+The monitoring of its own running state by the cloud service we operate is the operator observing its own service and is not telemetry; it likewise does not write user content into monitoring data. The server mode's call records (§9 "Call records") are a log written on the local machine's standard output, turned on explicitly by the deployer and collected by the deployer; they are not telemetry.
 
 **Prompt injection surfaces** (all must be wrapped in the untrusted data boundary): the original text and excerpts of source data, text values in query results, the proposed text and `note` of pending items,
 the descriptions and aliases written by the agent in a schema, the existing keys and similar keys listed in write receipts, the `instructions` of extraction jobs, user input echoed in error messages, community schemas and SKILLs.
