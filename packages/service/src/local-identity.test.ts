@@ -336,8 +336,15 @@ describe("the local accounts' login", () => {
       const flipped = `${until}.${kid}.${mac.slice(0, -1)}${mac.endsWith("A") ? "B" : "A"}`;
       const later = `${Number(until) + 1000}.${kid}.${mac}`;
       const unknown = `${until}.k${"0".repeat(16)}.${mac}`;
+      // A key ID the file does not hold, its MAC made right with the current key: not taken, so
+      // a token is never checked against a key other than the one it names.
+      const stray = `k${"0".repeat(16)}`;
+      const strayMac = createHmac("sha256", FORM_KEYS.byId.get(FORM_KEYS.current) as Buffer)
+        .update(`${stray}.${browsers.get(fresh) as string}.${until}`)
+        .digest("base64url");
+      const misnamed = `${until}.${stray}.${strayMac}`;
       const earlier = `${until}.${mac}`;
-      for (const t of [flipped, later, unknown, earlier]) {
+      for (const t of [flipped, later, unknown, misnamed, earlier]) {
         browsers.set(t, browsers.get(fresh) as string);
         expect(status(await post(p, { ...wrong, form_token: t, password: PASSWORD }))).toBe(400);
       }
