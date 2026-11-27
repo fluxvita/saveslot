@@ -494,6 +494,32 @@ const EXAMPLE_CLEARED = [
   true,
 ];
 
+/**
+ * The state tables read at a point a row a page, entities written between pages: later pages read
+ * pushed down at a point, in every run. `marks` with a second entity, so that the point has two.
+ */
+const EXAMPLE_BUDGETS_AT = [
+  EXAMPLE_DATA,
+  [{ table: "budgets", valid_at: "2026-11-05" }, 1],
+  [
+    { kind: "update", i: 0, row: EXAMPLE_DATA.rows[0] },
+    { kind: "update", i: 1, row: EXAMPLE_DATA.rows[1] },
+  ],
+  true,
+];
+const EXAMPLE_MARKS_AT = [
+  {
+    ...EXAMPLE_DATA,
+    marks: [...EXAMPLE_DATA.marks, [{ x: "q", y: null, clear: false, from: 0, len: undefined }]],
+  },
+  [{ table: "marks", valid_at: "2026-11-01" }, 1],
+  [
+    { kind: "update", i: 1, row: EXAMPLE_DATA.rows[0] },
+    { kind: "update", i: 0, row: EXAMPLE_DATA.rows[1] },
+  ],
+  true,
+];
+
 let s: ReusableStore;
 beforeAll(async () => {
   s = await openReusable("saveslot-query-pages-");
@@ -773,6 +799,23 @@ async function pushedAndFull(params: Record<string, unknown>, limit: number) {
   return pages;
 }
 
+/** A later page both ways, pushed down where it can be and as the whole read: result and read. */
+async function laterBothWays(params: Record<string, unknown>, limit: number, position: string) {
+  const run = (full: boolean) =>
+    s.store.read((tx) =>
+      queryInTx(tx, {
+        actor: USER as never,
+        task: null,
+        now: NOW as never,
+        visibility: { kind: "all" },
+        params: { ...params, limit, position },
+        read: "rd_0000000000000000" as never,
+        ...(full ? { full: true } : {}),
+      }),
+    );
+  return { pushed: await run(false), full: await run(true) };
+}
+
 /** A row with every field empty: on `marks`, a stretch whose only contribution is a clear. */
 const onlyEmpty = (r: { values?: Record<string, unknown> }) =>
   r.values !== undefined && Object.values(r.values).every((v) => v === null);
@@ -947,6 +990,8 @@ describe("query's two paths and its pages", () => {
   it("pages put together are the whole result as the first page saw it, with writes between them", async () => {
     let paged = 0;
     let pagedEmpty = 0;
+    /** Later pages read pushed down, by table (state tables over an interval apart). */
+    const laterPushed: Record<string, number> = {};
     const done: Record<string, number> = {};
     const refusedWrites: Record<string, number> = {};
     await fc.assert(
@@ -1036,7 +1081,23 @@ describe("query's two paths and its pages", () => {
                 refusedWrites[k] = (refusedWrites[k] ?? 0) + 1;
               }
             }
-            pages.push(await queryOf({ ...params, limit, position: pages.at(-1)?.next_position }));
+            const position = pages.at(-1)?.next_position as string;
+            // The later page pushed down is the whole read's: result and read recorded.
+            const later = await laterBothWays(params, limit, position);
+            expect({ params, page: pages.length, ...later.pushed }).toEqual({
+              params,
+              page: pages.length,
+              ...later.full,
+            });
+            const table = params["table"] as string;
+            const during = params["valid_during"] !== undefined;
+            // Pushed down: not timeless tables (`notes`), not state tables over an interval with
+            // an order asked for; never here a schema switch, nor more rows changed than the limit.
+            if (table !== "notes" && !(during && params["order"] !== undefined)) {
+              const k = table === "spend" || !during ? table : `${table} during`;
+              laterPushed[k] = (laterPushed[k] ?? 0) + 1;
+            }
+            pages.push(await queryOf({ ...params, limit, position }));
           }
           if (pages.length > 1) paged++;
           if (pages.length > 1 && pages.slice(1).some((p) => p.rows.some(onlyEmpty))) pagedEmpty++;
@@ -1051,14 +1112,25 @@ describe("query's two paths and its pages", () => {
       {
         numRuns: RUNS,
         ...seeded,
-        examples: [EXAMPLE_PAGES as never, EXAMPLE_GAP as never, EXAMPLE_CLEARED as never],
+        examples: [
+          EXAMPLE_PAGES as never,
+          EXAMPLE_GAP as never,
+          EXAMPLE_CLEARED as never,
+          EXAMPLE_BUDGETS_AT as never,
+          EXAMPLE_MARKS_AT as never,
+        ],
       },
     );
     // The example pages; the random samples mostly do (half have no condition).
     expect(paged).toBeGreaterThanOrEqual(1 + Math.floor(RUNS / 10));
     // A stretch only cleared, read on a later page (EXAMPLE_CLEARED).
     expect(pagedEmpty).toBeGreaterThanOrEqual(1);
-    if (process.env["JUDGE_STATS"]) console.log(JSON.stringify({ done, refusedWrites }));
+    if (process.env["JUDGE_STATS"])
+      console.log(JSON.stringify({ done, refusedWrites, laterPushed }));
+    // Later pages pushed down, on each table and on a state table over an interval: each in
+    // every run (EXAMPLE_PAGES, EXAMPLE_GAP, EXAMPLE_CLEARED, EXAMPLE_BUDGETS_AT, EXAMPLE_MARKS_AT).
+    for (const k of ["spend", "budgets", "marks", "budgets during", "marks during"])
+      expect({ k, reached: (laterPushed[k] ?? 0) >= 1 }).toEqual({ k, reached: true });
     // Each kind of write between pages took effect in some samples.
     // An undo needs an earlier write on the same target in the same sample: rarer.
     for (const k of ["update", "insert", "revoke", "undo", "correct"])

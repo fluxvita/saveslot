@@ -18,7 +18,7 @@ import { decodeColumns as decode } from "../request/index.ts";
 import { column, INSTANT_TEXT, physical, selectOf } from "../store/layout.ts";
 import type { ReadTx } from "../store/ports.ts";
 import { containsPoint, pointWithin } from "../time/index.ts";
-import { type KeyValue, orderBySql, rowAfterSql, type SqlKey } from "./order-sql.ts";
+import { afterKeysSql, type KeyValue, orderBySql, rowAfterSql, type SqlKey } from "./order-sql.ts";
 import type { Condition, Literal, QueryPlan } from "./params.ts";
 import { type Actor, ReadError } from "./types.ts";
 
@@ -181,6 +181,27 @@ export class Params {
   }
 }
 
+/** Where a later page narrows the rows the plan selects (./query.ts). */
+export interface Narrowing {
+  /** Rows (entities on state tables) left out: those changed after the first page's operation. */
+  readonly exclude?: readonly string[];
+  /** State tables: entities from this one on, by code point. */
+  readonly entityFrom?: string;
+}
+
+/** The conditions of a narrowing, on the row or entity ID. */
+function narrowingSql(plan: QueryPlan, n: Narrowing | undefined, p: Params): string[] {
+  const id = plan.kind === "state" ? "entity_id" : "row_id";
+  return [
+    ...(n?.exclude !== undefined && n.exclude.length > 0
+      ? [`NOT (${id} = ANY(${p.add([...n.exclude] as never, "::text[]")}))`]
+      : []),
+    ...(n?.entityFrom !== undefined
+      ? [`${id} COLLATE "C" >= ${p.add(n.entityFrom)} COLLATE "C"`]
+      : []),
+  ];
+}
+
 /** The SQL type a point of the table's business time is cast to. */
 const pointCast = (plan: QueryPlan): string =>
   plan.table.time.type === "state"
@@ -301,17 +322,19 @@ export async function selectRows(tx: ReadTx, plan: QueryPlan): Promise<SelectedR
 }
 
 /** How `selectFirst` reads a batch of a state table's segments over an interval. */
-export interface Batch {
+export interface Batch extends Narrowing {
   /** The primary key (entity, `valid_from`) of the last segment read: the batch starts after it. */
   readonly after?: readonly KeyValue[];
+  /** A later page's last keys, of any of the query's keys: the batch starts strictly after them. */
+  readonly afterKeys?: readonly KeyValue[];
   /** The fields whose values are read; the others are left out of the row. All when not given. */
   readonly fields?: readonly CompiledBaseField[];
 }
 
 /**
- * The first `limit` rows the plan selects in the order of `keys` (./order-sql.ts): a first page
- * pushed down to SQL where each selected row is a row shown, or a batch of a state table's
- * segments read in the order of its primary key over an interval (`batch`).
+ * The first `limit` rows the plan selects in the order of `keys` (./order-sql.ts): a page pushed
+ * down to SQL where each selected row is a row shown, or a batch of a state table's segments read
+ * in the order of its primary key over an interval; after the keys and narrowed as `batch` says.
  */
 export async function selectFirst(
   tx: ReadTx,
@@ -325,6 +348,8 @@ export async function selectFirst(
   const all = [
     ...(where !== "" ? [where] : []),
     ...(batch?.after !== undefined ? [rowAfterSql(keys, batch.after, p)] : []),
+    ...(batch?.afterKeys !== undefined ? [afterKeysSql(keys, batch.afterKeys, p)] : []),
+    ...narrowingSql(plan, batch, p),
   ];
   const fields = batch?.fields;
   // The columns of the fields read only: each field's are `… AS c_<field>_<i>` (`selection`).
@@ -344,11 +369,16 @@ export async function selectFirst(
 }
 
 /** How many rows the plan selects (rows shown, under the same condition as `selectFirst`). */
-export async function countRows(tx: ReadTx, plan: QueryPlan): Promise<number> {
+export async function countRows(
+  tx: ReadTx,
+  plan: QueryPlan,
+  narrowing?: Narrowing,
+): Promise<number> {
   const p = new Params();
   const { from, where } = selection(plan, p);
+  const all = [...(where !== "" ? [where] : []), ...narrowingSql(plan, narrowing, p)];
   const r = await tx.query<{ n: string }>(
-    `SELECT count(*)::text AS n FROM ${from}${where !== "" ? ` WHERE ${where}` : ""}`,
+    `SELECT count(*)::text AS n FROM ${from}${all.length > 0 ? ` WHERE ${all.join(" AND ")}` : ""}`,
     p.list,
   );
   return Number(r.rows[0]?.n ?? 0);

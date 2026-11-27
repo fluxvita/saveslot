@@ -654,13 +654,13 @@ export function keySpecs(plan: QueryPlan): KeySpec[] {
 /** A row's key values, in `keySpecs` order. */
 export function rowKeys(
   plan: QueryPlan,
-  s: Omit<ShownRow, "keys">,
+  s: Pick<ShownRow, "id" | "values" | "validFrom" | "ver">,
 ): (string | boolean | number | null)[] {
   // Each row's (each segment's) own values: never another segment's of the same entity.
   const selected = s.values;
   const asked = plan.order.map((o) => keyValue(selected[o.field.id]));
   const t = plan.table;
-  if (plan.kind === "state") return [...asked, s.id, (s.row.valid_from as string) ?? null];
+  if (plan.kind === "state") return [...asked, s.id, s.validFrom ?? null];
   if (plan.kind === "event" && t.time.type === "event") {
     const id = t.time.field;
     return [...asked, keyValue(selected[id]), s.id];
@@ -775,6 +775,12 @@ export interface Position {
    * Later pages take it from here: `"my_last_read"` would otherwise move with the reads made since.
    */
   readonly since?: number;
+  /**
+   * `query`: the first page's `total`, carried to the later pages. They read the state after the
+   * same operation at the same evaluation time, so the total is the same; absent from a position
+   * made before it was carried, when a later page counts it again.
+   */
+  readonly total?: number;
 }
 
 export function encodePosition(identity: string, p: Position): string {
@@ -788,6 +794,7 @@ export function encodePosition(identity: string, p: Position): string {
       k: p.keys,
       ...(p.condition !== undefined ? { c: p.condition } : {}),
       ...(p.since !== undefined ? { f: p.since } : {}),
+      ...(p.total !== undefined ? { n: p.total } : {}),
     }),
     "utf8",
   ).toString("base64url");
@@ -806,6 +813,8 @@ export function decodePosition(
     readonly condition?: true;
     /** Whether the call carries a resolved `since` (`changes` only). */
     readonly since?: true;
+    /** Whether the call may carry the first page's total (`query` only). */
+    readonly total?: true;
   },
 ): Position {
   const bad = () => invalid("malformed", param);
@@ -816,7 +825,13 @@ export function decodePosition(
   } catch {
     throw bad();
   }
-  const shape = isObj(o) ? [...keysOf(o)].sort().join(",") : "";
+  // `n` (the total) only where the call carries one, beside any of the shapes below.
+  const shape = isObj(o)
+    ? [...keysOf(o)]
+        .filter((x) => !(x === "n" && check.total === true))
+        .sort()
+        .join(",")
+    : "";
   if (
     !isObj(o) ||
     (shape !== "k,q,r,s,t,v" && shape !== "c,k,q,r,s,t,v" && shape !== "f,k,q,r,s,t,v") ||
@@ -837,6 +852,12 @@ export function decodePosition(
       reason: "restored",
       param,
     });
+  }
+  let total: number | undefined;
+  if (has(o, "n")) {
+    const n = get(o, "n");
+    if (typeof n !== "number" || !Number.isSafeInteger(n) || n < 0) throw bad();
+    total = n;
   }
   let since: number | undefined;
   if (has(o, "f")) {
@@ -899,5 +920,6 @@ export function decodePosition(
     keys,
     ...(condition !== undefined ? { condition } : {}),
     ...(since !== undefined ? { since } : {}),
+    ...(total !== undefined ? { total } : {}),
   };
 }

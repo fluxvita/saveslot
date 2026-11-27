@@ -48,8 +48,13 @@ export type RowCell = {
 
 type Cell = RowCell & { row_id: string };
 
-/** Every cell of the table in effect after operation `s`. */
-async function cellsAsOf(tx: ReadTx, t: CompiledBaseTable, s: number): Promise<Cell[]> {
+/** Every cell of the table in effect after operation `s`; of the rows `ids` only, when given. */
+async function cellsAsOf(
+  tx: ReadTx,
+  t: CompiledBaseTable,
+  s: number,
+  ids?: readonly string[],
+): Promise<Cell[]> {
   const { versions } = physical(t);
   const state = t.time.type === "state";
   const interval = state
@@ -60,10 +65,52 @@ async function cellsAsOf(tx: ReadTx, t: CompiledBaseTable, s: number): Promise<C
   const cols = t.fields.flatMap((f) => selectOf(f).map((x, i) => `${x} AS c_${f.id}_${i}`));
   const r = await tx.query<Cell>(
     `SELECT row_id, field_id, ${interval}, rec_from, revoked, no_value, ${cols.join(", ")} FROM ${versions}
-     WHERE rec_from <= $1 AND (rec_to IS NULL OR rec_to > $1)`,
-    [s],
+     WHERE rec_from <= $1 AND (rec_to IS NULL OR rec_to > $1)${ids !== undefined ? " AND row_id = ANY($2)" : ""}`,
+    (ids !== undefined ? [s, [...ids]] : [s]) as never,
   );
   return [...r.rows];
+}
+
+/**
+ * The rows (entities on state tables) of table `t` changed after operation `x`: those with a cell
+ * opened or closed since (`rec_from > x` or `rec_to > x`). Every other row has the same cells now
+ * as then, so the business table holds it as it was after `x`. Undefined when more than `max`.
+ * A write that closes a cell opens one in the same operation, so `rec_to > x` adds no row today:
+ * only a deletion closes cells without opening others, and after one a later page is the whole
+ * read (`switchedOrDeletedSince`). It is kept so that C stays right without that.
+ */
+export async function changedSince(
+  tx: ReadTx,
+  t: CompiledBaseTable,
+  x: number,
+  max: number,
+): Promise<string[] | undefined> {
+  const { versions } = physical(t);
+  const r = await tx.query<{ row_id: string }>(
+    `SELECT row_id FROM ${versions} WHERE rec_from > $1 OR rec_to > $1 GROUP BY row_id LIMIT $2`,
+    [x, max + 1],
+  );
+  return r.rows.length > max ? undefined : r.rows.map((y) => y.row_id);
+}
+
+/**
+ * Whether, after operation `x`, a schema switch or any step of a deletion (confirmed, cancelled,
+ * carried out; 09-event-format §4) happened, in any slot: what a reader can read may then differ
+ * from what the cells after `x` alone say. A confirmed deletion already hides the blocks it lists
+ * from every reader, a cancelled one gives them back. Wider than the slot read, on purpose: one
+ * statement, no slot to resolve; a later page it sends to the whole read is the same page.
+ *
+ * Not here: a restore or an import. Either changes the restore count, and a position from before
+ * it is refused when decoded (`handle_expired`, `restored`), before any page is read.
+ */
+export async function switchedOrDeletedSince(tx: ReadTx, x: number): Promise<boolean> {
+  const r = await tx.query<{ one: unknown }>(
+    `SELECT 1 AS one FROM events WHERE op > $1
+       AND type IN ('schema.switched', 'deletion.confirmed', 'deletion.cancelled',
+                    'deletion.executed') LIMIT 1`,
+    [x],
+  );
+  return r.rows.length > 0;
 }
 
 const cellValue = (f: CompiledBaseField, c: RowCell): FieldValue =>
@@ -162,15 +209,20 @@ export function meetsCondition(c: Condition, r: SelectedRow): boolean {
 
 const within = (p: string, from: string, to: string | null) => from <= p && (to === null || p < to);
 
-/** The rows the plan selects as of operation `s`, as `selectRows` would have then. */
+/**
+ * The rows the plan selects as of operation `s`, as `selectRows` would have then; among the rows
+ * (entities) `ids` only, when given.
+ */
 export async function selectRowsAsOf(
   tx: ReadTx,
   plan: QueryPlan,
   s: number,
+  ids?: readonly string[],
 ): Promise<SelectedRow[]> {
   const t = plan.table;
   const byRow = new Map<string, Cell[]>();
-  for (const c of await cellsAsOf(tx, t, s))
+  if (ids !== undefined && ids.length === 0) return [];
+  for (const c of await cellsAsOf(tx, t, s, ids))
     byRow.set(c.row_id, [...(byRow.get(c.row_id) ?? []), c]);
   const rows: SelectedRow[] = [];
   for (const [id, cells] of byRow) {
