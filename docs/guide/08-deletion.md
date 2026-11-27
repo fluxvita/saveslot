@@ -8,7 +8,7 @@ Write numbers follow chapter 2 (write #21 records the lunch, #25 corrects the lu
 
 > This chapter describes the complete design and marks on the spot what the first version does not do.
 >
-> **0.1.0 does not provide privacy deletion yet**: the preview, confirmation, grace period and cancellation, physical erasure at expiry, and re-applying deletions after a backup restore described in this chapter all come in later versions ([`../spec/07-scope-v1.md`](../spec/07-scope-v1.md) section 7). What 0.1.0 can do is revoke a row: the history is kept, and the revocation can be undone.
+> **0.2.0 does not provide privacy deletion yet**: the preview, confirmation, grace period and cancellation, physical erasure at expiry, and re-applying deletions after a backup restore described in this chapter all come in later versions ([`../spec/07-scope-v1.md`](../spec/07-scope-v1.md) section 7). What 0.2.0 can do is revoke a row: the history is kept, and the revocation can be undone.
 
 ## 1. First, tell them apart: three kinds of "deletion", and deletion is not correction
 

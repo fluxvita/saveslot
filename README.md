@@ -73,7 +73,7 @@ Agents reach saveslot over MCP: locally through `saveslot mcp`, and in server mo
 
 ## Status
 
-**0.1** is the first release, with a local mode and a server mode (hosted or self-hosted). saveslot is before 1.0: interfaces may change between minor versions. Some parts of the design are not in 0.1 yet; see [what 0.1.0 provides](docs/spec/07-scope-v1.md#7-what-010-provides).
+The current version is **0.2**, with a local mode and a server mode (hosted or self-hosted). saveslot is before 1.0: interfaces may change between minor versions. Some parts of the design are not in 0.2 yet; see [what 0.2.0 provides](docs/spec/07-scope-v1.md#7-what-020-provides).
 
 ## Documentation
 

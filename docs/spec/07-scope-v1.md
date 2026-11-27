@@ -14,7 +14,7 @@ The surfaces are opened only as far as eval 1–4, 6–10 and the first half of 
 - The reference evaluator is built in the first version (covering the kinds of deletion in the first version), so "the recorded result = the reference recomputation" has a comparison implementation.
 - **Extraction jobs are not part of the first version**; they are the first increment after the first version (section 4, P4b).
 - For effort see section 6: the numbers for each phase are rough estimates from before the phases were adjusted and have not been re-estimated.
-- **The first version is not 0.1.0.** This document fixes how far the first version goes; 0.1.0, the first version released publicly, provides some of it, and which parts are provided by later versions is in section 7.
+- **The first version is not a released version.** This document fixes how far the first version goes; 0.2.0, the current version released publicly, provides some of it, and which parts are provided by later versions is in section 7.
 
 ## 2. Principles of trade-offs
 
@@ -275,11 +275,11 @@ To be counted in the re-estimate, and not counted in the table above:
 
 The biggest uncertainty: if experiment 1 fails, the local backend has to be replaced by the bundled native PostgreSQL, and P1 and P6 each gain 1–3 person-weeks; how hard it is to implement `delete` by replaying the affected rows with the reference semantics is probed first by the small prototype in the middle of P1.
 
-## 7. What 0.1.0 provides
+## 7. What 0.2.0 provides
 
-0.1.0 is the first version released publicly. It provides local mode (PGlite, where the Agents on one computer share one saveslot service) and server mode (PostgreSQL, where the cloud service and self-hosting are the same code). It is a part of the first version, not all of it: the two blocks below are judged "Yes" in section 3, but 0.1.0 does not provide them yet.
+0.2.0 is the current version released publicly (the first was 0.1.0). It provides local mode (PGlite, where the Agents on one computer share one saveslot service) and server mode (PostgreSQL, where the cloud service and self-hosting are the same code). It is a part of the first version, not all of it: the two blocks below are judged "Yes" in section 3, but 0.2.0 does not provide them yet, as 0.1.0 did not.
 
-**What 0.1.0 provides**
+**What 0.2.0 provides**
 
 | Aspect | What is provided |
 |---|---|
@@ -290,14 +290,17 @@ The biggest uncertainty: if experiment 1 fails, the local backend has to be repl
 | Log | Validation of the event header chain and checksums (`saveslot verify`); export and passphrase encryption of exports; import into an empty tenant |
 | Surfaces | Nine MCP tools (`saveslot_catalog`, `saveslot_query`, `saveslot_sql`, `saveslot_history`, `saveslot_sources`, `saveslot_pending`, `saveslot_write`, `saveslot_resolve`, `saveslot_schema_draft`), HTTP, the CLI |
 | Server mode | Accounts and login, OAuth authorization, remote MCP, import, the operations commands of `saveslot server` |
+| Deployment and operations | Server mode: a limit on the tenants a process has open at once, and closing idle ones (`SAVESLOT_TENANT_CONNECTIONS`, `SAVESLOT_TENANT_IDLE`); the readiness probe `/ready` and the three-step shutdown; call records (`SAVESLOT_CALL_RECORDS`). Both modes: upgrading a storage format in place when a store is opened (no upgrade step exists yet), local mode backing up first. `query` reads only the page it returns in most cases (paging pushed down to the store) |
 
-**What 0.1.0 does not provide yet and later versions provide**
+Compared with 0.1.0, what 0.2.0 adds is the "Deployment and operations" row above; the boundary of what it can do has not changed. What to know when upgrading from 0.1.0 is in section 7 of the guide's [`../guide/13-self-hosting.md`](../guide/13-self-hosting.md).
 
-| Which block | What it includes | How it behaves in 0.1.0 |
+**What 0.2.0 does not provide yet and later versions provide**
+
+| Which block | What it includes | How it behaves in 0.2.0 |
 |---|---|---|
-| Privacy deletion | The preview (`deletion_preview` and the `dc_` handle); confirmation (`delete`, `saveslot_delete`, `saveslot delete`); cancelling within the grace period; physical erasure on expiry, tombstones and residue cleanup; re-applying deletions per the deletion register after a backup is restored | These endpoints report `not_in_this_version` on HTTP; MCP has no `saveslot_delete` tool; the CLI has no `saveslot delete`. When data is wrong it can still be **revoked** (an ordinary write, history kept, can be undone); making content disappear completely cannot be done in 0.1.0 |
+| Privacy deletion | The preview (`deletion_preview` and the `dc_` handle); confirmation (`delete`, `saveslot_delete`, `saveslot delete`); cancelling within the grace period; physical erasure on expiry, tombstones and residue cleanup; re-applying deletions per the deletion register after a backup is restored | These endpoints report `not_in_this_version` on HTTP; MCP has no `saveslot_delete` tool; the CLI has no `saveslot delete`. When data is wrong it can still be **revoked** (an ordinary write, history kept, can be undone); making content disappear completely cannot be done in 0.2.0 |
 | Migrations that need to rebuild physical tables | Adding a field, dropping a field, tightening constraints, changing precision, changing units within the same dimension on a **table that has been written** | Such a draft can be submitted and previewed; one that would take effect automatically reports `not_in_this_version` at submission; one that needs confirmation reports `not_in_this_version` at confirmation, and the draft stays. When the table has never been written these changes take effect as usual (the new table is empty, so no migration is needed) |
 
-The two blocks that are not provided yet are the same in both modes: server mode likewise has no privacy deletion and no rebuilding migrations. A few other items are also not connected yet: the replay comparison (`saveslot verify --replay`, that is, `log.reconcile`; `POST /v1/log/reconcile` reports `not_in_this_version`), changing the slot policy, retention cleanup of read_log (0.1.0 does not clean read records, which only grow), periodic advancing of the high-water mark (0.1.0 advances it only when a tenant is closed). The items judged "Later" in section 3 (extraction jobs, evidence deletion, privacy deletion by row and so on) are not in the first version, and so naturally not in 0.1.0 either.
+The two blocks that are not provided yet are the same in both modes: server mode likewise has no privacy deletion and no rebuilding migrations. A few other items are also not connected yet: the replay comparison (`saveslot verify --replay`, that is, `log.reconcile`; `POST /v1/log/reconcile` reports `not_in_this_version`), changing the slot policy, retention cleanup of read_log (0.2.0 does not clean read records, which only grow), periodic advancing of the high-water mark (0.2.0 advances it only when a tenant is closed). The items judged "Later" in section 3 (extraction jobs, evidence deletion, privacy deletion by row and so on) are not in the first version, and so naturally not in 0.2.0 either.
 
-**Effect on existing promises**: wherever the specification and the guide speak of privacy deletion ("a deletion is previewed first and confirmed after", "it can be cancelled within 24 hours", "physical erasure on expiry", "restoring a backup does not bring deletions back"), what they say is the design and cannot be used in 0.1.0; in 0.1.0 K11 has no operation that can trigger it. Where they speak of "the schema switch is atomic and reads never stop" (K6), in 0.1.0 this holds only for switches that do not rebuild tables, because a switch that rebuilds a table does not happen yet.
+**Effect on existing promises**: wherever the specification and the guide speak of privacy deletion ("a deletion is previewed first and confirmed after", "it can be cancelled within 24 hours", "physical erasure on expiry", "restoring a backup does not bring deletions back"), what they say is the design and cannot be used in 0.2.0; in 0.2.0 K11 has no operation that can trigger it. Where they speak of "the schema switch is atomic and reads never stop" (K6), in 0.2.0 this holds only for switches that do not rebuild tables, because a switch that rebuilds a table does not happen yet.

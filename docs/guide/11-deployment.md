@@ -63,7 +63,7 @@ An agent connects to saveslot through **MCP** (introduced in chapter 1: a genera
 | `saveslot_write`        | Write | Write: add, change, correct, revoke |
 | `saveslot_resolve`      | Write | Resolve one pending item |
 | `saveslot_schema_draft` | Write | Submit a schema draft (create a slot, change a table structure; the first version opens slot creation first) |
-| `saveslot_delete`       | Write | Execute a deletion that has been previewed (not provided yet in 0.1.0) |
+| `saveslot_delete`       | Write | Execute a deletion that has been previewed (not provided yet in 0.2.0) |
 
 The complete design has two more tools related to "re-extraction"; they come later, together with that feature.
 
@@ -150,7 +150,7 @@ What people do with the command line:
 | Issue, view and revoke credentials for agents | `saveslot connect`, `saveslot connections list / revoke` |
 | Print the text suggested for the host's custom instructions | `saveslot snippet` |
 | Handle pending items | `saveslot pending`, `saveslot pending show`, `saveslot pending resolve` |
-| Delete and cancel (not provided yet in 0.1.0) | `saveslot delete`, `saveslot delete cancel` |
+| Delete and cancel (not provided yet in 0.2.0) | `saveslot delete`, `saveslot delete cancel` |
 | Query data, see history | `saveslot query`, `saveslot history`, `saveslot sql`, `saveslot sources` |
 | See who read what | `saveslot reads` |
 | Verify, replay comparison | `saveslot verify`, `saveslot verify --replay` |
@@ -186,7 +186,7 @@ Permissions are chosen when a connection is issued, and come in four kinds by ac
 | `saveslot.read` | All read operations, including the deletion preview | Every connection must have it |
 | `saveslot.write` | Writing; handling items related to writing | Given |
 | `saveslot.schema` | Submitting schema drafts; handling schema-change items | Not given, must be ticked explicitly |
-| `saveslot.delete` | Executing deletions; cancelling a deletion (not provided yet in 0.1.0) | Not given, must be ticked explicitly |
+| `saveslot.delete` | Executing deletions; cancelling a deletion (not provided yet in 0.2.0) | Not given, must be ticked explicitly |
 
 When issuing on the command line, adjust with `--scope`. There are two forms, which cannot be mixed:
 
@@ -452,7 +452,7 @@ Chapter 10 lists these together with the other "things not guaranteed".
 
 **From 0.1.0 on, upgrading saveslot does not make existing data unopenable**: a new version can open data written by any earlier release, with no need for you to export and then import first; configuration files and credentials already issued keep working too. This is about data, not interfaces: before 1.0, commands and interfaces may change incompatibly between minor versions, and the release notes will say so.
 
-The first time data is opened after installing a new version, saveslot checks the storage format version: if it is lower than the program knows, it upgrades it to the current format automatically; if it is higher than the program knows (written with a newer version and then switched back to an older program), it refuses to open and prompts to upgrade, and does not risk writing. (0.1.0 has only one format version, so only the latter half is implemented: meeting a higher version, it refuses to open; automatic upgrade is delivered together in the version that first changes the format. Development-period data from before 0.1.0 is not covered by the commitment and needs to be initialized again.) The log itself needs no conversion: the new version's kernel must be able to replay events of all older formats, which is what "only add, never change" means for the event format.
+The first time data is opened after installing a new version, saveslot checks the storage format version: if it is lower than the program knows, it upgrades it to the current format automatically; if it is higher than the program knows (written with a newer version and then switched back to an older program), it refuses to open and prompts to upgrade, and does not risk writing. (There is only one format version so far. The in-place upgrade mechanism is there from 0.2.0, but it has no step yet: the version that first changes the format ships with that step. Development-period data from before 0.1.0 is not covered by the commitment and needs to be initialized again.) The log itself needs no conversion: the new version's kernel must be able to replay events of all older formats, which is what "only add, never change" means for the event format.
 
 Specification: [`../spec/02-architecture.md`](../spec/02-architecture.md) §8 "Format versions, export, import and restore"; [`../spec/03-data-model/03-deletion.md`](../spec/03-data-model/03-deletion.md) "After deletion"; for the commands of export encryption and import see [`../spec/06-cli.md`](../spec/06-cli.md) 4.8; for the rules of import see [`../spec/04-contract.md`](../spec/04-contract.md) section 17.
 

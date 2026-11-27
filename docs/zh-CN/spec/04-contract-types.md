@@ -26,7 +26,7 @@
 
 ### 0.2 第一版不实现
 
-本文写完整设计。第一版不实现的参数、取值、操作统一标 `@later`。**调用第一版不实现的东西一律报 `not_in_this_version`**（第 9 节），第一版生成的 schema 里不出现它们。下表写的是第一版不实现的；0.1.0 另有尚未提供的部分，见表后的清单。
+本文写完整设计。第一版不实现的参数、取值、操作统一标 `@later`。**调用第一版不实现的东西一律报 `not_in_this_version`**（第 9 节），第一版生成的 schema 里不出现它们。下表写的是第一版不实现的；0.2.0 另有尚未提供的部分，见表后的清单。
 
 | 位置 | 第一版不实现的 |
 |---|---|
@@ -46,7 +46,7 @@
 | slot 策略 | 冲突期间按来源级别裁定（第一版只有 `keep_current`）；额外的高影响表 / 字段；"某类处理只接受用户会话的确认"开关 |
 | 概况 | `catalog` 的表概况第一版只有行数与业务时间范围、规模提示 `scale`、每个字段最近 K 个不同取值；没有"最近一次写入时间"。`table` 档带 `profile`（行数、业务时间范围、规模提示）；每个字段的 `examples` 与 `described_by` 第一版不给 |
 
-**0.1.0 尚未提供（第一版里有）**：0.1.0 是第一个对外发布的版本，只提供第一版的一部分（[`07-scope-v1.md`](07-scope-v1.md) 第 7 节）。下面这些在第一版的设计范围内，本文照写，0.1.0 里调用它们报 `not_in_this_version`。与上表分开：上表是第一版不做的，下表是第一版做、0.1.0 暂未提供的。
+**0.2.0 尚未提供（第一版里有）**：0.2.0 是目前对外发布的版本，只提供第一版的一部分（[`07-scope-v1.md`](07-scope-v1.md) 第 7 节）。下面这些在第一版的设计范围内，本文照写，0.2.0 里调用它们报 `not_in_this_version`。与上表分开：上表是第一版不做的，下表是第一版做、0.2.0 暂未提供的。
 
 | 哪一块 | 包括什么 | 类型在哪里 |
 |---|---|---|
@@ -1684,7 +1684,7 @@ interface SchemaImpact {
   rows_affected: number;
   derived_changed: Array<{ table: TableName; rows: number }>;
   /** 最近按旧名字读写过被改名 / 被删字段的调用方（从读写记录推断）。 */
-  consumers?: Array<{ actor: Actor; field: string; last_used: Instant; used_for: "read" | "write" }>;  // 0.1.0 改已有 slot 时不计算使用方，不给（新建 slot 给空列表：没有谁用过一个刚建的 slot）
+  consumers?: Array<{ actor: Actor; field: string; last_used: Instant; used_for: "read" | "write" }>;  // 0.2.0 改已有 slot 时不计算使用方，不给（新建 slot 给空列表：没有谁用过一个刚建的 slot）
   /** migrate / backfill 的试跑。 */
   trial?: { rows: number; failed: number; samples: Array<{ target: TargetRef; error: ValidationDetailCode }> };
   /** 分组键来自自由文本字段的派生规则。 */
@@ -2215,7 +2215,7 @@ type ValidationDetailCode =
 | `insufficient_scope` | — | `required_scope: Scope \| "user_session" \| "all_slots"`（`all_slots`：这项操作需要范围为全部 slot 的凭证——限定了 slot 范围的凭证新建 slot。只对可见的目标报，不泄露范围外的东西） |
 | `rate_limited` | `quota` / `busy`（同一租户已有一次对拍或导入在跑） | `retry_after` |
 | `handle_expired` | `expired` / `restored` / `executed` / `derived_changed`（翻页期间派生表被刷新过，从首页重读）/ `deletion_changed`（首页之后有删除被确认或撤回，从首页重读） | `deletion?: ItemId`（已执行过的 `dc_`） |
-| `not_in_this_version` | `parameter` / `value` / `operation` / `table_written`（只对从未被写入的表放开的改动用在写入过的表上）/ `not_implemented`（0.1.0 的实现还走不到的情形：参数本身合法，不是留给后续版本的参数） | `param?`、`value?`（`reason` 为 `value` 且那个取值是契约里该参数的固定取值之一时带；调用方随手写的字符串不带）、`operation?` |
+| `not_in_this_version` | `parameter` / `value` / `operation` / `table_written`（只对从未被写入的表放开的改动用在写入过的表上）/ `not_implemented`（0.2.0 的实现还走不到的情形：参数本身合法，不是留给后续版本的参数） | `param?`、`value?`（`reason` 为 `value` 且那个取值是契约里该参数的固定取值之一时带；调用方随手写的字符串不带）、`operation?` |
 | `unavailable` | `busy` / `restoring` / `importing` / `reconciling` / `starting` / `stopping` | `retry_after?` |
 | `internal` | — | `incident: string`（供排查的编号，不含内容） |
 | `import_rejected` | `unsupported_format` / `not_from_start` / `segment_order` / `chain_broken` / `checksum_mismatch` / `incomplete` / `replay_failed` | `seq?`、`path?`（只给位置，不回显内容） |

@@ -10,7 +10,7 @@
 
 ## 现在能运行什么
 
-第一个发布版本 0.1 已经实现：本机模式与服务器模式的服务、它的 HTTP 与 MCP 接口、`saveslot` 命令。0.1 还没做的，列在 README 的[状态](../../README.zh-CN.md#状态)一节。
+目前的版本 0.2 已经实现：本机模式与服务器模式的服务、它的 HTTP 与 MCP 接口、`saveslot` 命令。0.2 还没做的，列在 README 的[状态](../../README.zh-CN.md#状态)一节。
 
 除了构建、测试和仓库检查，还能运行自己构建出来的服务：`pnpm build` 之后，`node packages/saveslot/dist/bin.js setup` 会把它装好并启动，和 README [上手](../../README.zh-CN.md#上手)里的 `saveslot setup` 一样。
 

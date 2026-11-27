@@ -288,7 +288,7 @@ The "disputed" mark is removed, and the amount stays 35. The other two decisions
 
 ## Step 4: deleting a sentence
 
-> The privacy deletion covered in this step (preview, confirm, a 24-hour grace period with the option to cancel, and physical erasure at expiry) is not provided yet in 0.1.0; a later version provides it (section 7 of [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md)). The first three steps can all be followed along in 0.1.0.
+> The privacy deletion covered in this step (preview, confirm, a 24-hour grace period with the option to cancel, and physical erasure at expiry) is not provided yet in 0.2.0; a later version provides it (section 7 of [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md)). The first three steps can all be followed along in 0.2.0.
 
 saveslot has three kinds of "deletion", with different meanings:
 

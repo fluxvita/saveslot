@@ -63,7 +63,7 @@ Agent 经 **MCP** 连 saveslot（第 1 章介绍过：Agent 调用外部工具�
 | `saveslot_write`        | 写     | 写入：新增、变更、纠错、撤销                                     |
 | `saveslot_resolve`      | 写     | 处理一个待处理事项                                          |
 | `saveslot_schema_draft` | 写     | 提交 schema 草稿（建 slot、改表结构；第一版先开建 slot）                 |
-| `saveslot_delete`       | 写     | 执行一次已预览的删除（0.1.0 尚未提供）                              |
+| `saveslot_delete`       | 写     | 执行一次已预览的删除（0.2.0 尚未提供）                              |
 
 完整设计里还有两个与"重新抽取"有关的工具，随那部分功能后做。
 
@@ -150,7 +150,7 @@ $ saveslot connect http --name "手环 · 连接器" --slots health
 | 给 Agent 签发、查看、吊销凭证 | `saveslot connect`、`saveslot connections list / revoke` |
 | 打印建议放进宿主自定义指令的文案 | `saveslot snippet` |
 | 处理待处理事项 | `saveslot pending`、`saveslot pending show`、`saveslot pending resolve` |
-| 删除与撤回（0.1.0 尚未提供） | `saveslot delete`、`saveslot delete cancel` |
+| 删除与撤回（0.2.0 尚未提供） | `saveslot delete`、`saveslot delete cancel` |
 | 查数据、看历史 | `saveslot query`、`saveslot history`、`saveslot sql`、`saveslot sources` |
 | 看谁读过什么 | `saveslot reads` |
 | 校验、对拍 | `saveslot verify`、`saveslot verify --replay` |
@@ -186,7 +186,7 @@ $ saveslot connect http --name "手环 · 连接器" --slots health
 | `saveslot.read` | 全部读操作，含删除预览 | 每个连接实例都必须有 |
 | `saveslot.write` | 写入；处理与写入有关的事项 | 给 |
 | `saveslot.schema` | 提交 schema 草稿；处理 schema 变更事项 | 不给，要显式勾选 |
-| `saveslot.delete` | 执行删除；撤回删除（0.1.0 尚未提供） | 不给，要显式勾选 |
+| `saveslot.delete` | 执行删除；撤回删除（0.2.0 尚未提供） | 不给，要显式勾选 |
 
 命令行签发时用 `--scope` 调整。两种写法，不能混用：
 
@@ -452,7 +452,7 @@ $ saveslot export --encrypt -o saveslot-2026-11.ndjson.age
 
 **从 0.1.0 起，升级 saveslot 不会让已有数据打不开**：新版本能打开此前任何一个发布的版本写下的数据，不用你先导出、再导入；配置文件和已经发出去的凭证也照常可用。这说的是数据，不是接口：1.0 之前小版本之间命令和接口可能有不兼容的变化，发布说明里会写明。
 
-装了新版之后第一次打开数据时，saveslot 检查存储的格式版本：比程序认识的低，就自动把它升级到当前格式；比程序认识的高（用新版写过、又换回了旧版程序），拒绝打开并提示升级，不冒险去写。（0.1.0 只有一个格式版本，所以只实现了后一半：遇到更高的版本拒绝打开；自动升级在第一次改格式的那个版本里一起交付。0.1.0 之前开发期的数据不在承诺之内，需要重新初始化。）日志本身不用转换：新版内核必须能重放所有旧格式的事件，这是事件格式"只增不改"的含义。
+装了新版之后第一次打开数据时，saveslot 检查存储的格式版本：比程序认识的低，就自动把它升级到当前格式；比程序认识的高（用新版写过、又换回了旧版程序），拒绝打开并提示升级，不冒险去写。（目前只有一个格式版本。原地升级的机制 0.2.0 起已经有了，升级的步骤还没有：第一次改格式的版本连同那一步一起发。0.1.0 之前开发期的数据不在承诺之内，需要重新初始化。）日志本身不用转换：新版内核必须能重放所有旧格式的事件，这是事件格式"只增不改"的含义。
 
 规格：[`../spec/02-architecture.md`](../spec/02-architecture.md) §8「格式版本、导出、导入与恢复」；[`../spec/03-data-model/03-deletion.md`](../spec/03-data-model/03-deletion.md)「删除之后」；导出加密与导入的命令见 [`../spec/06-cli.md`](../spec/06-cli.md) 4.8；导入的规则见 [`../spec/04-contract.md`](../spec/04-contract.md) 第 17 节。
 

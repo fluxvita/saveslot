@@ -8,7 +8,7 @@ The main line is one sentence:
 
 > **saveslot guarantees that the data is self-consistent, and this does not depend on the agent. saveslot does not guarantee that the data is true, and this depends on the agent.**
 
-> The guarantees in this chapter that concern privacy deletion (deletion can be regretted, deleted data does not come back, what remains after deletion) describe the design: 0.1.0 does not provide privacy deletion yet, and these guarantees apply only once it does ([`../spec/07-scope-v1.md`](../spec/07-scope-v1.md), section 7).
+> The guarantees in this chapter that concern privacy deletion (deletion can be regretted, deleted data does not come back, what remains after deletion) describe the design: 0.2.0 does not provide privacy deletion yet, and these guarantees apply only once it does ([`../spec/07-scope-v1.md`](../spec/07-scope-v1.md), section 7).
 
 "Self-consistent" means: the log and the tables match, every value can be traced to its source and to who handled it, every change leaves a history, and the rules are applied consistently. "True" means: whether the value written in is itself right. The former is saveslot's responsibility; the latter is the responsibility of the agent that calls it.
 
@@ -32,7 +32,7 @@ The following are guaranteed by deterministic checks in the kernel, with no mode
 | History is not lost | Corrections, changes and revocations are all appended as new events; the old value stays in history, can be read back as of a given moment, and can also be reverted | The log is append-only |
 | A resend does not duplicate | If the same request is resent because of a network problem, it is applied only once | Request key |
 | What is confirmed is what is executed | When handling a pending item or executing a deletion, if the version or handle passed back does not match the current content, it is rejected | `item_ver`, the `dc_` handle |
-| Deletion can be regretted (not provided yet in 0.1.0) | Privacy deletion is previewed first, then confirmed, and within 24 hours after confirmation it can be cancelled | Grace period |
+| Deletion can be regretted (not provided yet in 0.2.0) | Privacy deletion is previewed first, then confirmed, and within 24 hours after confirmation it can be cancelled | Grace period |
 | Deleted data does not come back | The deletion itself is a log event; replaying an export or restoring an old backup does not bring the deleted data back (restoring a backup has a boundary, see section 5) | Tombstone, deletion register |
 | Queries cannot step outside | Read-only SQL accepts only syntax on the allowlist, cannot write data, and cannot touch internal tables | Syntax tree allowlist (the specification, "Restricted SQL") |
 | Slots outside the range cannot be seen | When a credential is limited to certain slots, slots outside the range are for it exactly as if they did not exist: their names appear nowhere in the catalog, results, errors, candidates or hints | The service layer gives the visible range according to the credential, and the kernel resolves names only within that range |
@@ -246,7 +246,7 @@ Specification: [`../spec/02-architecture.md`](../spec/02-architecture.md) §10; 
 | The content of the data | Recording as it is, keeping the evidence and the handler complete; pointing out it if a declared premise changes | Whether the value, the intent, the row and the provenance declaration are right; whether the premises that should be declared were declared |
 | Concurrency | No silent overwrite; conflicts are durable and visible, and are not closed by a write that has not seen them | Reading the receipt correctly and telling the user about the conflict |
 | Confirmation | What is confirmed is what is executed, and every confirmation leaves a trace | Really asking the user |
-| Deletion (not provided yet in 0.1.0) | Computing the result by definition, previewable, cancellable, does not come back | Telling the user the preview and obtaining consent |
+| Deletion (not provided yet in 0.2.0) | Computing the result by definition, previewable, cancellable, does not come back | Telling the user the preview and obtaining consent |
 | Security | Everything through the interfaces keeps the kernel invariants; text that is read out is marked with its boundary | Not treating data as instructions; keeping its own credentials safe |
 
 Specification: [`../spec/02-architecture.md`](../spec/02-architecture.md) §3, "Confirmation and the authenticity of data are delegated to the caller", and §10; [`../spec/03-data-model/02-integrity-and-records.md`](../spec/03-data-model/02-integrity-and-records.md), "Integrity and provenance" and "Integrity of provenance"; [`../spec/03-data-model/03-deletion.md`](../spec/03-data-model/03-deletion.md), "After deletion"; for premises see [`../spec/03-data-model/02-integrity-and-records.md`](../spec/03-data-model/02-integrity-and-records.md), "The premises of a write".
