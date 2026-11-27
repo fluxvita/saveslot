@@ -88,9 +88,13 @@ between them are `workspace:*` in the repository and the exact version when publ
    from the released one. The same pull request moves the default image version in
    `deploy/compose.yaml` (`SAVESLOT_VERSION`) to the released one. A release is not finished until
    this pull request is merged.
-6. `npm publish` moves only the dist-tag it publishes under, so after a release `next` still names
-   the last prerelease. The maintainer points `next` at the release too, for the eleven packages, and
-   checks it with `npm dist-tag ls`:
+6. Once the versions are published (the same condition as for the container image), the release
+   workflow points `next` at the release for every published package (`changeset publish` moves
+   only `latest`, so `next` would stay on the last prerelease and `@next` would be older than
+   `@latest`), and creates the GitHub Release for `v<version>`, its notes gathered from the
+   version's section of the packages' changelogs.
+7. The maintainer checks both: `npm dist-tag ls @fluxvita/saveslot` shows `next` and `latest` on
+   the version, and the Release is there. What the workflow did not do, the maintainer does by hand:
 
    ```sh
    v=<version>
@@ -99,12 +103,8 @@ between them are `workspace:*` in the repository and the exact version when publ
             saveslot-store-pglite saveslot-store-postgres; do
      npm dist-tag add "@fluxvita/$p@$v" next
    done
-   npm dist-tag ls @fluxvita/saveslot
+   gh release create "v$v" --verify-tag --title "v$v" --notes-file <notes> --latest
    ```
-
-7. The maintainer creates the GitHub Release for the tag `v<version>`, titled `v<version>`, whose
-   notes gather the version's section of each package's `CHANGELOG.md`:
-   `gh release create v<version> --title v<version> --notes-file <notes>`.
 
 Nothing is published from a laptop, except the prerelease below. npm provenance needs a public
 repository and a GitHub-hosted runner, so it starts with the first release from the public repository.
