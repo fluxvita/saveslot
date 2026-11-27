@@ -44,7 +44,7 @@ import {
   fold,
   internalDetailOf,
 } from "../apply/index.ts";
-import { appendOperation, type NewEvent, readTail } from "../log/index.ts";
+import { appendOperation, type NewEvent, noteEffect, readTail } from "../log/index.ts";
 import { itemVer } from "../pending/index.ts";
 import { type VisibleSlot, visibleSlots, wholeSlot } from "../read/index.ts";
 import { restoreCount } from "../read/select.ts";
@@ -301,7 +301,8 @@ async function readSchemaResolution(
     if (x?.compiled != null && changes.some((c) => c.change === "rename_slot"))
       renamed = (JSON.parse(x.compiled) as CompiledSchema).name;
   }
-  return {
+  // Its effect for the call records (log/effect.ts): this decision's own operation.
+  const receipt: ResolveReceipt = {
     id: t.item,
     type: "schema_change",
     decision: t.decision,
@@ -317,6 +318,11 @@ async function readSchemaResolution(
         : { switched: false },
     ...(replayed ? { replayed: true as const } : {}),
   };
+  return noteEffect(receipt, {
+    effect: replayed ? "replayed" : "appended",
+    seq: op,
+    restores: restore,
+  });
 }
 
 /** The item, if the caller sees it: a slot's schema items only with every table of it in range. */

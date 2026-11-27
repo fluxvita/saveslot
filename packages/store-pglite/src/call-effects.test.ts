@@ -201,3 +201,89 @@ describe("an operation's effect, beside its result", () => {
     T,
   );
 });
+
+// Writes by external key (03-data-model «按来源键写入»): a value the user changed and then the source
+// changed again is a candidate (a pending write, a conflict item); the same values sent again
+// change nothing and append nothing. The item resolved by taking the candidate triggers a write.
+describe("by external key: a pending write, a write that appends nothing, a resolution and its repeat", () => {
+  const MEALS = {
+    name: "meals",
+    kind: "base",
+    description: "a meal",
+    time: { type: "none" },
+    fields: [
+      { name: "origin", type: "text", description: "the source system" },
+      { name: "external_id", type: "text", description: "its ID there" },
+      { name: "energy", type: "integer", description: "kcal" },
+    ],
+    external_key: ["origin", "external_id"],
+  };
+  const FOOD = { slot: "food", base_version: null, timezone: "Asia/Shanghai", tables: [MEALS] };
+  /** A context of its own task: a request sent again under another task is not a replay of it. */
+  const tasked = (task: string) => ({ ...ctx(), task });
+  const byKey = (energy: number) => ({
+    sv: 1,
+    ops: [
+      {
+        intent: "update",
+        table: "meals",
+        external_key: { origin: "band_app", external_id: "m-1" },
+        set: { energy },
+      },
+    ],
+  });
+
+  it(
+    "sent again under another task with the same values: none, no operation",
+    async () => {
+      await schemaDraft(s.store, ctx(), { document: FOOD });
+      const first = await write(s.store, tasked("first"), byKey(600));
+      expect(effectOf(first)).toMatchObject({ effect: "appended", status: "saved" });
+      const same = await write(s.store, tasked("second"), byKey(600));
+      expect(same.seq).toBeUndefined();
+      expect(effectOf(same)).toEqual({ effect: "none" });
+    },
+    T,
+  );
+
+  it(
+    "a candidate: appended and pending; the item resolved by taking it, appended with its write's status; resolved again, replayed with the first resolution's operation",
+    async () => {
+      await schemaDraft(s.store, ctx(), { document: FOOD });
+      const first = (await write(s.store, ctx(), byKey(600))) as Any;
+      await write(s.store, ctx(), {
+        sv: 1,
+        ops: [
+          {
+            intent: "update",
+            table: "meals",
+            row: first.ops[0].target.row,
+            ver: first.ops[0].ver,
+            set: { energy: 500 },
+          },
+        ],
+      });
+      const candidate = (await write(s.store, ctx(), byKey(650))) as Any;
+      expect(candidate.status).toBe("pending");
+      expect(effectOf(candidate)).toEqual({
+        effect: "appended",
+        seq: await lastOp(),
+        restores: 0,
+        status: "pending",
+      });
+      const item = candidate.pending[0];
+      const decide = { id: item.id, decision: "take_candidate", item_ver: item.item_ver };
+      const taken = (await resolve(s.store, ctx(), decide)) as Any;
+      expect(taken.write).toBeDefined();
+      expect(effectOf(taken)).toEqual({
+        effect: "appended",
+        seq: await lastOp(),
+        restores: 0,
+        status: "saved",
+      });
+      const again = await resolve(s.store, ctx(), decide);
+      expect(effectOf(again)).toEqual({ ...effectOf(taken), effect: "replayed" });
+    },
+    T,
+  );
+});
