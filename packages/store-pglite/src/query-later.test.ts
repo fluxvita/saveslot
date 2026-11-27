@@ -1,9 +1,9 @@
-// `query`'s later pages pushed down (kernel read/query.ts `queryRowsLater`; 04-contract §10 `query`,
-// §15; process/decisions/table-indexes-format-6.md, "第 2 页起怎么下推"): the cases query-pages.prop
-// must not leave to chance. Writes fall between the pages; each page is held to the whole read
-// (`full`), result and read recorded, and the path taken is shown by the statements sent: the
-// business table read with LIMIT and without the rows changed since the first page, or, where a
-// later page cannot be pushed down, the version table read whole.
+// `query`'s later pages pushed down (kernel read/query.ts `queryRowsLater`; 04-contract §10
+// `query`, §15; process/decisions/table-indexes-format-6.md, "How pages 2 on are pushed down"): the
+// cases query-pages.prop must not leave to chance. Writes fall between the pages; each page is held
+// to the whole read (`full`), result and read recorded, and the path taken is shown by the
+// statements sent: the business table read with LIMIT and without the rows changed since the first
+// page, or, where a later page cannot be pushed down, the version table read whole.
 //
 // A deletion between pages cannot be made through the operations in 0.1.0 (no privacy deletion):
 // its events are appended here as stand-ins, only for the checks they meet: one confirmed or

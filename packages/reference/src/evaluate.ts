@@ -483,7 +483,7 @@ class Replay {
     if (this.isState && !this.hasValue(seg, limit)) return NO_VALUE;
     const st = this.fieldState(f, seg, limit);
     // Where the entity has a value, a field the filling writes did not give is empty, not a hole
-    // (05-time «无值区间»: 可选字段不带就是空).
+    // (05-time «无值区间»: "An optional field that is not carried is empty.").
     if (this.isState && st.kind === "hole") return "none";
     return stateTok(st);
   }
@@ -854,8 +854,8 @@ class Replay {
         ? tok(input.value)
         : undefined;
     };
-    // W's group value at a point (09-references «冲突判据», 组值): a field W wrote whose own seen
-    // interval holds the point gives W's value; the others, those W did not write and those it
+    // W's group value at a point (09-references «冲突判据», group value): a field W wrote whose own
+    // seen interval holds the point gives W's value; the others, those W did not write and those it
     // wrote whose seen interval does not hold the point, the value in V. Each field's seen interval
     // is resolved on its own (a default end stops at that field's next change in V).
     const seenOf = new Map<FieldId, IvSet>();
@@ -1185,8 +1185,9 @@ class Replay {
           () => this.items.push(...applied),
           () => this.items.splice(this.items.length - applied.length, applied.length),
         );
-      // A rejection is of the whole write (01-objects, the `reject` row: "提议不生效"): a target of a write a
-      // person rejected takes effect in no replay, whatever made it a candidate or awaiting then.
+      // A rejection is of the whole write (01-objects, the `reject` row: "The proposal does not
+      // take effect"): a target of a write a person rejected takes effect in no replay, whatever
+      // made it a candidate or awaiting then.
       const rejected = this.ops.some((x) => x.kind === "reject" && x.target === o.event);
       for (const it of applied) {
         const r = this.recordedStatus(it.event, it.target, it.valid);
@@ -2774,7 +2775,7 @@ function inUnit(unit: ResolveOp["unit"], target: Target): boolean {
   return unit === "existence" || unitTargets(unit).includes(target);
 }
 
-/** Step 3, "x 取代 r". */
+/** Step 3, "x supersedes r". */
 function supersedes(x: Item, r: Item): boolean {
   const xIsFieldValue = x.target !== "existence" && x.content.kind === "value";
   if (r.content.kind === "revoke") return x.content.kind === "restore" || xIsFieldValue;
@@ -3092,7 +3093,7 @@ export function evaluateLog(
    */
   const removedAt = (key: string, at: OpNumber): boolean => {
     // Out of every item and not in effect either: one a deletion put in effect at that point is
-    // the cancellation's "保持生效" case (`kept_effective`), not this one.
+    // the cancellation's "kept in effect" case (`kept_effective`), not this one.
     const before = [...steps].reverse().find((x) => !x.refused && x.entry.op < at)?.state;
     if (
       before?.items.some(

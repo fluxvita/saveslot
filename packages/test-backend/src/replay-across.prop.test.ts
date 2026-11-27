@@ -1,8 +1,8 @@
-// Replay across the two backends (02-architecture §11 «测试矩阵», «重放对拍»; §8 the "对拍" column;
-// K12). A random history is written through the write pipeline into a store on one backend; its
-// log is then given, from the first event, to `apply` on an empty store of the other backend; and
-// the tables §8 marks as compared must be the same row by row, with the same columns. Both ways:
-// written on PGlite and replayed on PostgreSQL, written on PostgreSQL and replayed on PGlite.
+// Replay across the two backends (02-architecture §11 «测试矩阵», «重放对拍»; §8 the "Replay comparison"
+// column; K12). A random history is written through the write pipeline into a store on one backend;
+// its log is then given, from the first event, to `apply` on an empty store of the other backend;
+// and the tables §8 marks as compared must be the same row by row, with the same columns. Both
+// ways: written on PGlite and replayed on PostgreSQL, written on PostgreSQL and replayed on PGlite.
 //
 // The history is a slot with tables of every time type and derived tables over one of them, and
 // then requests that insert, change, revoke and restore rows and entities, and corroborate a value

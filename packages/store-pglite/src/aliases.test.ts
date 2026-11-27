@@ -1,5 +1,5 @@
 // Aliases on a slot compiled from a real document and stored (docs/zh-CN/spec/03-data-model/
-// 07-schema-evolution.md «schema 文档格式» 别名; 04-contract §11 `nearest`): they are not names, so a
+// 07-schema-evolution.md «schema 文档格式 · 别名»; 04-contract §11 `nearest`): they are not names, so a
 // request that uses one is refused as an unknown table or field, and `nearest` puts the objects
 // whose alias folds to the request's word first, as names, in `C` order.
 

@@ -1,4 +1,5 @@
-// apply of write premises on a real store (09-event-format §5.7 前提块, §5.10 `premise.changed`;
+// apply of write premises on a real store (09-event-format §5.7, the premise block; §5.10
+// `premise.changed`;
 // 02-architecture §8 `premise_decls`, `premise_edges`). The write path does not take `premises` yet
 // (they open with the detection), so the declarations here are put into a head by hand; the rest of
 // each operation is what judge and the encoder give.

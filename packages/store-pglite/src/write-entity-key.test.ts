@@ -1263,7 +1263,7 @@ describe("similar_keys (10-types-and-units «相近的键», keymatch@1)", () =>
   it.each([false, true])(
     "changing an optional field on a no-value stretch gives no version (together=%s)",
     async (together) => {
-      // 02-architecture §8 版本表: on a stretch where a state entity has no value, only the fields
+      // 02-architecture §8 «版本表»: on a stretch where a state entity has no value, only the fields
       // defining "has a value" (here category and amount) have cells; changing an optional field
       // (note) there leaves the version table unchanged, so the ranking agrees whether sent alone
       // or in the same request as a new key.

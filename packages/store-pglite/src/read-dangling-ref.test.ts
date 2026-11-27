@@ -1,7 +1,8 @@
-// `dangling_ref` on reads (04-contract §7; 03-data-model/04-write-and-read «引用字段»: 目标被撤销,
-// 引用方不动、保留原 ID，读取时带标记): a row whose ref field names a row or entity revoked since
-// keeps the ID and is read with the mark, the field and `revoked`; the revoke undone, the mark goes.
-// `query` (with `fields`: only a ref field read) and `history` `as_of` (as the target was then).
+// `dangling_ref` on reads (04-contract §7; 03-data-model/04-write-and-read «引用字段 · 目标被撤销»: "the
+// referencing row is not touched and keeps the original ID; when read, this row carries the
+// `dangling_ref` flag"): a row whose ref field names a row or entity revoked since keeps the ID and
+// is read with the mark, the field and `revoked`; the revoke undone, the mark goes. `query` (with
+// `fields`: only a ref field read) and `history` `as_of` (as the target was then).
 
 import {
   createOpsContext,
@@ -80,7 +81,7 @@ const ctx = () =>
 const w = (params: unknown): Promise<Any> => write(s.store, ctx(), params);
 /**
  * A revoke carried out, and the write that carried it out: a revoke of a row still referred to
- * awaits confirmation (high impact ②, 04-write-and-read «引用字段»: 目标被撤销), and the write the
+ * awaits confirmation (high impact ②, 04-write-and-read «引用字段 · 目标被撤销»), and the write the
  * confirmation triggers is the one that takes effect, the one an `undo` takes back; otherwise the
  * revoke's own.
  */
