@@ -36,6 +36,10 @@ import {
 import { secondConnection } from "../../test-backend/src/second-connection.fixture.ts";
 import type { ServerControl, TenantId, UserId } from "./control-plane.ts";
 import { controlImportHolders } from "./import-holders.ts";
+import type { OAuthClient } from "./oauth-client.ts";
+import { ClientFetchLimits } from "./oauth-client-limits.ts";
+import { connectionNameTaken, issueCode, type OAuthDeps, redeemCode } from "./oauth-server.ts";
+import { initOAuthTables, openOAuthStore } from "./oauth-store.ts";
 import {
   initControlPlane,
   openControlPlane,
@@ -1663,6 +1667,18 @@ describe("killed after each step, the tenant opened again (§11)", () => {
   );
 });
 
+/** The OAuth client and PKCE pair of the cross-process redemption (RFC 7636's example pair). */
+const EXT = "https://saveslot.example";
+const OAUTH_CLIENT: OAuthClient = {
+  id: "https://client.example/oauth/client.json",
+  name: "Example Agent",
+  host: "client.example",
+  redirectUris: ["https://client.example/callback"],
+  builtIn: false,
+};
+const VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+const CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+
 // Across processes (02-architecture §8 «格式版本、导出、导入与恢复», the import's hold): each process
 // a pool of its own over a connection of its own to the control database, with its import holders
 // (./import-holders.ts). On PostgreSQL only: PGlite has one connection to a database, one session.
@@ -1779,6 +1795,113 @@ describe.runIf(TEST_BACKEND === "postgres")("an import across processes", () => 
       await (await running).dropped;
       expect((await entryOf(tenant))?.importHolder).toBeUndefined();
       expect((await tailOf(b.pool, tenant))?.seq).toBe(sourceEnd + 1);
+    },
+    T,
+  );
+
+  it(
+    "OAuth's code redemption in another process while one imports: refused (importing), nothing written to the old database or the staging one; after it, a redemption issues",
+    async () => {
+      await initOAuthTables(controlStore);
+      const a = await processOf();
+      const b = await processOf();
+      const { tenant, owner } = await newTenant();
+      const conn = await secondConnection(controlDir);
+      open.push(conn);
+      const deps: OAuthDeps = {
+        store: await openOAuthStore(conn),
+        control: b.control,
+        identity: {
+          issueUserSession: async () => {
+            throw new Error("no user session here");
+          },
+        },
+        pool: { use: (t, fn) => b.pool.use(t, fn) },
+        fetchClient: async () => {
+          throw new Error("no client document fetched here");
+        },
+        external: EXT,
+        windows: { requestKey: 600_000, idempotencyKey: 86_400_000 },
+        clientFetches: new ClientFetchLimits(),
+      };
+      const NAME = "Laptop · Example Agent";
+      const code = () =>
+        issueCode(deps, {
+          client: OAUTH_CLIENT,
+          redirectUri: OAUTH_CLIENT.redirectUris[0] as string,
+          codeChallenge: CHALLENGE,
+          resource: EXT,
+          user: owner,
+          login: "login-1",
+          tenant,
+          scopes: ["saveslot.read"],
+          name: NAME,
+          now: NOW,
+        });
+      const redeem = async (c: string) =>
+        redeemCode(
+          deps,
+          new URLSearchParams({
+            grant_type: "authorization_code",
+            code: c,
+            code_verifier: VERIFIER,
+            client_id: OAUTH_CLIENT.id,
+            redirect_uri: OAUTH_CLIENT.redirectUris[0] as string,
+          }),
+          NOW,
+        );
+      const old = await entryOf(tenant);
+      let go!: () => void;
+      const hold = new Promise<void>((r) => {
+        go = r;
+      });
+      const running = importServerTenant({
+        control: a.control,
+        backend,
+        pool: a.pool,
+        discardDatabase,
+        tenant,
+        user: owner,
+        body: bodyOf(file, hold),
+        now: "2026-11-21T10:30:00.000Z" as never,
+        holders: a.holders,
+      });
+      let staging: string | undefined;
+      try {
+        for (let i = 0; (await entryOf(tenant))?.staging === undefined; i++) {
+          if (i > 500) throw new Error("the import never made its staging database");
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        staging = (await entryOf(tenant))?.staging;
+        await expect(redeem(await code())).rejects.toMatchObject(importing);
+        // Nothing of it in either database: the old one holds its genesis only, the staging one
+        // no connection of that name.
+        const oldStore = await backend.open((old as NonNullable<typeof old>).ref, {});
+        // Named in the directory before it is made: opened once it is there.
+        let stagingStore: TenantStore | undefined;
+        for (let i = 0; stagingStore === undefined; i++) {
+          stagingStore = await backend
+            .open({ kind: "postgres", cell: CELL, database: staging as string }, {})
+            .catch((e: unknown) => {
+              if (i > 500) throw e;
+              return new Promise<undefined>((r) => setTimeout(() => r(undefined), 10));
+            });
+        }
+        try {
+          expect((await oldStore.read((tx) => readTail(tx)))?.seq).toBe(1);
+          expect(await connectionNameTaken(oldStore, NAME)).toBe(false);
+          expect(await connectionNameTaken(stagingStore, NAME)).toBe(false);
+        } finally {
+          await oldStore.close();
+          await stagingStore.close();
+        }
+      } finally {
+        go();
+      }
+      await (await running).dropped;
+      const issued = await redeem(await code());
+      expect(issued.access_token).toMatch(/^slt_/);
+      expect(await b.pool.use(tenant, (t) => connectionNameTaken(t.store, NAME))).toBe(true);
     },
     T,
   );
