@@ -15,7 +15,7 @@
 ## 约定
 
 - **提交信息**用 conventional commits（`feat(kernel): …`、`fix(cli): …`、`docs(spec): …`）。
-- **语言**：提交信息、代码注释、标识符、日志与报错文案一律用英文。规格与讲解有中文、英文两个版本，语义对齐：中文版在 `docs/zh-CN/`，英文版在 `docs/` 下不带语言标记的同名路径（清单见 [`docs/README.md`](docs/README.md)）；`docs/zh-CN/process/` 与 `docs/zh-CN/research/` 的英文版待补。两个版本在同一个拉取请求里一起改；两者不一致算缺陷，请提 Issue。每份文件在开头有一行链到另一个版本：英文文件是 `English · [简体中文](<路径>)`，中文文件是 `[English](<路径>) · 简体中文`，由 `pnpm docs:translations` 检查。一个版本改了、另一个没能在同一个拉取请求里跟上时，在另一个版本的这一行下面加一行说明：英文文件写 `The Chinese edition has changed since: …`，中文文件写 `英文版此后有改动：…`。英文文档里链接有英文版的页面时链英文版；链到它的中文版，同一个检查会失败。
+- **语言**：提交信息、代码注释、标识符、日志与报错文案一律用英文。规格与讲解有中文、英文两个版本，语义对齐：中文版在 `docs/zh-CN/`，英文版在 `docs/` 下不带语言标记的同名路径（清单见 [`docs/README.md`](docs/README.md)）；`docs/zh-CN/process/` 与 `docs/zh-CN/research/` 只有中文版，英文版不排期。两个版本在同一个拉取请求里一起改；两者不一致算缺陷，请提 Issue。每份文件在开头有一行链到另一个版本：英文文件是 `English · [简体中文](<路径>)`，中文文件是 `[English](<路径>) · 简体中文`，由 `pnpm docs:translations` 检查。一个版本改了、另一个没能在同一个拉取请求里跟上时，在另一个版本的这一行下面加一行说明：英文文件写 `The Chinese edition has changed since: …`，中文文件写 `英文版此后有改动：…`。英文文档里链接有英文版的页面时链英文版；链到它的中文版，同一个检查会失败。
 - **每个提交带 `Signed-off-by`**（`git commit -s`）。这是 DCO（Developer Certificate of Origin）：表示你有权按本项目的许可证提交这段内容。本项目不设 CLA。签名用真实姓名，邮箱与提交作者的邮箱相同；CI 会检查签名与作者是否一致。
 - **借助 AI 完成的贡献**：可以用 AI 工具。签名永远由人来加，不由工具加；签名的人对改动负责，如同亲手写的一样：读过、理解，并且有权按本项目的许可证提交。不要在提交信息里加把改动归于 AI 工具的署名行，签名已经说明谁负责。
 - **规格先行**。改变行为的改动，在同一个拉取请求里改规格（`docs/zh-CN/spec/` 与 `docs/spec/`）；影响读者理解的，同步改讲解（`docs/zh-CN/guide/` 与 `docs/guide/`）。改事件格式、内核不变量、契约的不兼容改动，先在 `docs/zh-CN/process/decisions/` 提一份决定稿并通过评审，再改规格与代码。
