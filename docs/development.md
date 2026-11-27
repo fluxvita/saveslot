@@ -2,7 +2,7 @@
 
 English · [简体中文](zh-CN/development.md)
 
-This page takes you from a fresh clone to a validated change: set up, run the checks, find where a change belongs, rehearse one small fix, debug a failure. It is for people who change this repository. To use saveslot with an agent instead, start from [Try it](../README.md#try-it-local-mode) in the README.
+This page takes you from a fresh clone to a validated change: set up, run the checks, find where a change belongs, rehearse one small fix, debug a failure. It is for people who change this repository. To use saveslot with an agent instead, start from [Get started](../README.md#get-started) in the README.
 
 The rules for submitting a change (branches, pull requests, sign-off, AI-assisted work) are in [`CONTRIBUTING.md`](../CONTRIBUTING.md). This page does not repeat them.
 
@@ -12,7 +12,7 @@ The rules for submitting a change (branches, pull requests, sign-off, AI-assiste
 
 The first release, 0.1, is implemented: the service in local and server mode, its HTTP and MCP interfaces, and the `saveslot` command. What 0.1 does not do yet is listed under [Status](../README.md#status) in the README.
 
-Besides the build, the tests and the repository checks, you can run the service you built: after `pnpm build`, `node packages/saveslot/dist/bin.js setup` sets it up and starts it, as [Try it](../README.md#try-it-local-mode) in the README describes.
+Besides the build, the tests and the repository checks, you can run the service you built: after `pnpm build`, `node packages/saveslot/dist/bin.js setup` sets it up and starts it, as `saveslot setup` does in [Get started](../README.md#get-started) in the README.
 
 | Package | What is in it |
 |---|---|

@@ -7,7 +7,7 @@ English · [简体中文](README.zh-CN.md)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![node](https://img.shields.io/node/v/@fluxvita/saveslot)](https://www.npmjs.com/package/@fluxvita/saveslot)
 
-**saveslot is the database all your AI agents share.** Tell one agent you ran 5 km; ask another how far you ran this week. Every value keeps its sources and its history, and the data stays yours.
+**saveslot is the open-source database all your AI tools share.** Tell one agent you ran 5 km; ask another how far you ran this week. Every value keeps its sources and its history, and the data stays yours.
 
 ## See it
 
@@ -89,7 +89,7 @@ Where the guide and the specification differ, the specification holds.
 
 - Questions: [Discussions](https://github.com/fluxvita/saveslot/discussions); bugs and tasks: [Issues](https://github.com/fluxvita/saveslot/issues). See [`SUPPORT.md`](SUPPORT.md).
 - Security issues: privately, as [`SECURITY.md`](SECURITY.md) says.
-- Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md), with how to run the tests; how the code is laid out and the toolchain: [`docs/guide/12-contributing.md`](docs/guide/12-contributing.md). Who decides what: [`GOVERNANCE.md`](GOVERNANCE.md). Everyone follows the [Code of Conduct](CODE_OF_CONDUCT.md).
+- Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md). Who decides what: [`GOVERNANCE.md`](GOVERNANCE.md). Everyone follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Development
 

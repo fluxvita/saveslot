@@ -7,7 +7,7 @@
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![node](https://img.shields.io/node/v/@fluxvita/saveslot)](https://www.npmjs.com/package/@fluxvita/saveslot)
 
-**saveslot 是你所有 AI Agent 共用的数据库。** 跟一个 Agent 说你跑了 5 公里，再问另一个这周跑了多少。每个值都带着出处和历史，数据归你。
+**saveslot 是所有 AI 共用的开源数据库。** 跟一个 Agent 说你跑了 5 公里，再问另一个这周跑了多少。每个值都带着出处和历史，数据归你。
 
 ## 演示
 
@@ -89,7 +89,13 @@ Agent 经 MCP 连 saveslot：本机经 `saveslot mcp`，服务器模式走远程
 
 - 提问去 [Discussions](https://github.com/fluxvita/saveslot/discussions)，缺陷与任务提 [Issues](https://github.com/fluxvita/saveslot/issues)，见 [`SUPPORT.md`](SUPPORT.md)。
 - 安全问题按 [`SECURITY.zh-CN.md`](SECURITY.zh-CN.md) 私下报告。
-- 参与贡献：[`CONTRIBUTING.zh-CN.md`](CONTRIBUTING.zh-CN.md)，含怎么跑测试；代码怎么分包、工具链：[`docs/zh-CN/guide/12-contributing.md`](docs/zh-CN/guide/12-contributing.md)。谁决定什么见 [`GOVERNANCE.md`](GOVERNANCE.md)，参与者遵守[行为准则](CODE_OF_CONDUCT.md)。
+- 参与贡献：[`CONTRIBUTING.zh-CN.md`](CONTRIBUTING.zh-CN.md)。谁决定什么见 [`GOVERNANCE.md`](GOVERNANCE.md)，参与者遵守[行为准则](CODE_OF_CONDUCT.md)。
+
+## 开发
+
+先读[开发上手](docs/zh-CN/development.md)：搭环境、跑检查、只跑一个测试、找到改动该落在哪、演练一次小修复。代码怎么组织、为什么这样组织，见[讲解第 12 章](docs/zh-CN/guide/12-contributing.md)与[规格 `02-architecture.md`](docs/zh-CN/spec/02-architecture.md)。
+
+给 Agent：遵循 [`AGENTS.md`](AGENTS.md)。
 
 ## 许可证
 
