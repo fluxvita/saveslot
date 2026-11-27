@@ -533,6 +533,17 @@ export async function readFlagsOf(
 /** The current restore count: taken where every path takes it (store/restore-point.ts). */
 export { restoreCount } from "../store/restore-point.ts";
 
+/**
+ * The latest operation that confirmed or cancelled a deletion, in any slot (0 when none has): a
+ * paging position from before it is expired (04-contract §15).
+ */
+export async function deletionChangedAt(tx: ReadTx): Promise<number> {
+  const r = await tx.query<{ op: unknown }>(
+    `SELECT max(op) AS op FROM events WHERE type IN ('deletion.confirmed', 'deletion.cancelled')`,
+  );
+  return Number(r.rows[0]?.op ?? 0);
+}
+
 /** The log position: the latest operation number (0 for an empty log). */
 export async function logPosition(tx: ReadTx): Promise<number> {
   const r = await tx.query<{ op: unknown }>("SELECT max(op) AS op FROM events");

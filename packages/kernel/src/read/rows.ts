@@ -833,6 +833,16 @@ export function decodePosition(
     readonly since?: true;
     /** Whether the call may carry the first page's total (`query` only). */
     readonly total?: true;
+    /**
+     * The latest operation that confirmed or cancelled a deletion, in any slot (`deletionChangedAt`
+     * in ./select.ts); 0 when none has. A position from before it is expired.
+     */
+    readonly deletionChangedAt: number;
+    /**
+     * The operation the position's point stands for, where the point is not one (`reads.list`:
+     * a read record's number, its read's `pos`); undefined: the point is an operation already.
+     */
+    readonly opOf?: (seq: number) => number | undefined;
   },
 ): Position {
   const bad = () => invalid("malformed", param);
@@ -870,6 +880,17 @@ export function decodePosition(
       reason: "restored",
       param,
     });
+  }
+  // A deletion confirmed or cancelled since the first page, in any slot (04-contract §15): what a
+  // read leaves out changed between the pages, so a later one could give a stretch twice or miss
+  // one. Wider than needed on purpose: one rule for every position, and a deletion is rare.
+  const seen = check.opOf === undefined ? seq : check.opOf(seq);
+  if (seen === undefined || check.deletionChangedAt > seen) {
+    throw new ReadError(
+      "handle_expired",
+      "a deletion was confirmed or cancelled since the first page",
+      { reason: "deletion_changed", param },
+    );
   }
   let total: number | undefined;
   if (has(o, "n")) {

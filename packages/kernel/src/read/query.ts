@@ -33,6 +33,7 @@ import {
 import {
   type Batch,
   countRows,
+  deletionChangedAt,
   logPosition,
   type Narrowing,
   premiseFacts,
@@ -44,7 +45,7 @@ import {
 } from "./select.ts";
 import { resolveTable, visibleSlots } from "./slots.ts";
 import { invalid, type QueryReadResult } from "./types.ts";
-import { changedSince, rowFactsAsOf, selectRowsAsOf, switchedOrDeletedSince } from "./versions.ts";
+import { changedSince, rowFactsAsOf, selectRowsAsOf, switchedOrExecutedSince } from "./versions.ts";
 
 export type { QueryInput, QueryOutput };
 
@@ -294,8 +295,9 @@ export const changedLimit = (limit: number): number => Math.max(1000, 20 * limit
  * The total is the first page's, from the position; a position without one counts A and B.
  *
  * Undefined, for the whole read: timeless tables; state tables over an interval with an order
- * asked for; a schema switch or a step of a deletion since X (`switchedOrDeletedSince`); more
- * than `changedLimit` rows in C.
+ * asked for; a schema switch or a deletion carried out since X (`switchedOrExecutedSince`);
+ * more than `changedLimit` rows in C. A deletion confirmed or cancelled since X expired the position
+ * already (`handle_expired`, `deletion_changed`).
  */
 async function queryRowsLater(
   tx: ReadTx,
@@ -309,7 +311,7 @@ async function queryRowsLater(
   const during = plan.kind === "state" && plan.time.kind === "during";
   if (during && plan.order.length > 0) return undefined;
   const x = position.seq;
-  if (await switchedOrDeletedSince(tx, x)) return undefined;
+  if (await switchedOrExecutedSince(tx, x)) return undefined;
   const c = await changedSince(tx, plan.table, x, changedLimit(plan.limit));
   if (c === undefined) return undefined;
   const k = position.keys;
@@ -392,6 +394,7 @@ export async function queryInTx(tx: ReadTx, input: QueryInput): Promise<QueryOut
           restoreCount: restore,
           latest,
           total: true,
+          deletionChangedAt: await deletionChangedAt(tx),
         });
   const plan =
     position === undefined || has(params, "at")

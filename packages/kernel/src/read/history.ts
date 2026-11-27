@@ -648,7 +648,7 @@ export async function asOfInTx(
     valid_at: has(params, "valid_at") ? (get(params, "valid_at") as JsonValue) : null,
   });
   const specs: KeySpec[] = [{ type: target.kind === "state" ? "plain" : "text", dir: "asc" }];
-  const position = positionOf(params, {
+  const position = await positionOf(tx, params, {
     identity,
     specs,
     restoreCount: restore,

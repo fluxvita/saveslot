@@ -367,7 +367,7 @@ export async function listConnections(
     const identity = digest({ op: "connections.list", include_revoked: all });
     const restore = await restoreCount(tx);
     const latest = await logPosition(tx);
-    const position = positionOf(p as never, {
+    const position = await positionOf(tx, p as never, {
       identity,
       specs: specs as never,
       restoreCount: restore,

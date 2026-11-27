@@ -6,8 +6,9 @@
 // later page cannot be pushed down, the version table read whole.
 //
 // A deletion between pages cannot be made through the operations in 0.1.0 (no privacy deletion):
-// its events are appended here as stand-ins, only for the check that sends a later page to the
-// whole read after one.
+// its events are appended here as stand-ins, only for the checks they meet: one confirmed or
+// cancelled expires the position (positions-expire.test holds that for every read with one); one
+// carried out sends a later page to the whole read.
 
 import {
   createOpsContext,
@@ -513,23 +514,57 @@ describe("a later page pushed down", () => {
     T,
   );
 
-  it.each(["deletion.confirmed", "deletion.cancelled", "deletion.executed"])(
-    "is the whole read after a %s since the first page",
-    async (type) => {
+  /** A stand-in event of the type, the latest operation: nothing reads it but the checks. */
+  const standIn = (type: string) =>
+    s.store.write((tx) =>
+      tx.query(
+        `INSERT INTO events (seq, header, header_hash, type, actor, at, op)
+         SELECT max(seq) + 1, '{}', 'h', $1, 'system', '2026-11-15T03:59:00.000Z', max(op) + 1
+         FROM events`,
+        [type],
+      ),
+    );
+
+  it(
+    "is the whole read after a deletion carried out since the first page",
+    async () => {
       const { out, paths } = await pages({ table: "spend", limit: 3 }, async (i) => {
-        if (i !== 0) return;
-        // A stand-in event of the type, the latest operation: nothing reads it but that check.
-        await s.store.write((tx) =>
-          tx.query(
-            `INSERT INTO events (seq, header, header_hash, type, actor, at, op)
-             SELECT max(seq) + 1, '{}', 'h', $1, 'system', '2026-11-15T03:59:00.000Z', max(op) + 1
-             FROM events`,
-            [type],
-          ),
-        );
+        if (i === 0) await standIn("deletion.executed");
       });
       expect(paths).toEqual(["whole", "whole"]);
       expect(out.flatMap(ids)).toHaveLength(8);
+    },
+    T,
+  );
+
+  it.each(["deletion.confirmed", "deletion.cancelled"])(
+    "expires the position after a %s since the first page, both ways",
+    async (type) => {
+      const params = { table: "spend", limit: 3 };
+      const position = (await both(params)).pushed.result.next_position as string;
+      await standIn(type);
+      for (const full of [false, true]) {
+        const refused = await s.store
+          .read((tx) =>
+            queryInTx(tx, {
+              actor: USER as never,
+              task: null,
+              now: NOW as never,
+              visibility: { kind: "all" },
+              params: { ...params, position },
+              read: "rd_0000000000000000" as never,
+              ...(full ? { full: true as const } : {}),
+            }),
+          )
+          .then(
+            () => undefined,
+            (e: { code?: string; detail?: { reason?: string } }) => [e.code, e.detail?.reason],
+          );
+        expect({ full, refused }).toEqual({
+          full,
+          refused: ["handle_expired", "deletion_changed"],
+        });
+      }
     },
     T,
   );

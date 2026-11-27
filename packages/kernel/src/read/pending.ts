@@ -283,7 +283,7 @@ async function listOf(
     { type: "text", dir: "asc" },
     { type: "text", dir: "asc" },
   ];
-  const position = positionOf(params, { identity, specs, restoreCount: restore, latest });
+  const position = await positionOf(tx, params, { identity, specs, restoreCount: restore, latest });
   const upTo = position?.seq ?? latest;
   const r = await tx.query<ItemRow>(`${ITEMS} WHERE e.op <= $1 ORDER BY h.at, p.id`, [upTo]);
   const kept = r.rows.flatMap((x) => {

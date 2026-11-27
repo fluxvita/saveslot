@@ -207,7 +207,7 @@ export async function changesInTx(
     { type: "count", dir: "desc" },
     { type: "text", dir: "asc" },
   ];
-  const position = positionOf(params, {
+  const position = await positionOf(tx, params, {
     identity,
     specs,
     restoreCount: restore,
