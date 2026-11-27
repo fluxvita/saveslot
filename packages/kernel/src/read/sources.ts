@@ -373,7 +373,7 @@ export async function sourcesInTx(
     // The search text stays out of the position: only that it is the same text.
     q: needle === undefined ? null : digest(needle),
   });
-  const position = positionOf(params, { identity, specs, restoreCount: restore, latest });
+  const position = await positionOf(tx, params, { identity, specs, restoreCount: restore, latest });
   const upTo = position?.seq ?? latest;
   const at = position?.at ?? input.now;
   const after = position?.keys[0] as number | undefined;

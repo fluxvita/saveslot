@@ -232,7 +232,15 @@ export async function readsListInTx(
   });
   const specs: KeySpec[] = [{ type: "count", dir: "desc" }];
   const restore = await restoreCount(tx);
-  const position = positionOf(params, { identity, specs, restoreCount: restore, latest });
+  const position = await positionOf(tx, params, {
+    identity,
+    specs,
+    restoreCount: restore,
+    latest,
+    // The state the first page's last read record read: no later than the first page, so a
+    // deletion changed since then only ever expires the position once too often, never misses.
+    opOf: (n) => all.find((x) => x.n === n)?.entry.pos as number | undefined,
+  });
   const upTo = position?.seq ?? latest;
   const listed = kept.filter((x) => x.n <= upTo);
   const { page: pageItems, next } = pageAfter(

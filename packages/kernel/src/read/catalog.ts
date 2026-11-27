@@ -344,7 +344,12 @@ export async function catalogInTx(
       level,
       slot: has(params, "slot") ? (only[0] as VisibleSlot).slot : null,
     });
-    const position = positionOf(params, { identity, specs, restoreCount: restore, latest });
+    const position = await positionOf(tx, params, {
+      identity,
+      specs,
+      restoreCount: restore,
+      latest,
+    });
     const { page, next } = pageAfter(items, {
       specs,
       identity,

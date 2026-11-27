@@ -178,7 +178,7 @@ export async function timelineInTx(
     { type: "count", dir: "desc" },
     { type: "count", dir: "desc" },
   ];
-  const position = positionOf(params, { identity, specs, restoreCount: restore, latest });
+  const position = await positionOf(tx, params, { identity, specs, restoreCount: restore, latest });
   const upTo = position?.seq ?? latest;
   const events = (await baseEvents(tx, t.id, target.id)).filter((e) => e.op <= upTo);
   // The premises declared on the row, by op; a restatement or clearing has no base write.

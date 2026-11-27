@@ -31,7 +31,7 @@ export const OUTER_ERROR_REASONS = {
   unauthenticated: ["missing", "invalid", "revoked", "expired", "account_disabled"],
   insufficient_scope: [],
   rate_limited: ["quota", "busy"],
-  handle_expired: ["expired", "restored", "executed", "derived_changed"],
+  handle_expired: ["expired", "restored", "executed", "derived_changed", "deletion_changed"],
   not_in_this_version: ["parameter", "value", "operation", "table_written", "not_implemented"],
   unavailable: ["busy", "restoring", "importing", "reconciling", "starting", "stopping"],
   internal: [],

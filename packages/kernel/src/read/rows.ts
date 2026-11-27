@@ -776,7 +776,12 @@ export function queryIdentity(plan: QueryPlan, given: { at: boolean }): string {
 }
 
 export interface Position {
-  /** The first page's operation number: later pages read the state after it. */
+  /**
+   * The first page's operation number: later pages read the state after it. For a read whose point
+   * can be earlier than its first page (a record point: `history` `as_of`, and `changes` with an
+   * `until`), the position also carries `logAt`, the log position at the first page, which a
+   * deletion changed since is compared with; a read with such a point carries it.
+   */
   readonly seq: number;
   /** The first page's evaluation time. */
   readonly at: string;
@@ -793,6 +798,14 @@ export interface Position {
    * Later pages take it from here: `"my_last_read"` would otherwise move with the reads made since.
    */
   readonly since?: number;
+  /**
+   * `history` `as_of` and `changes`: the log position when the first page was read, where `seq`
+   * is the record point read (an earlier operation). A deletion confirmed or cancelled is compared with this, so
+   * that one between the record point and the first page does not expire the position. Absent from
+   * a position made before it was carried, when `seq` is compared instead (expiring it more often,
+   * never less).
+   */
+  readonly logAt?: number;
   /**
    * `query`: the first page's `total`, carried to the later pages. They read the state after the
    * same operation at the same evaluation time, so the total is the same; absent from a position
@@ -813,6 +826,7 @@ export function encodePosition(identity: string, p: Position): string {
       ...(p.condition !== undefined ? { c: p.condition } : {}),
       ...(p.since !== undefined ? { f: p.since } : {}),
       ...(p.total !== undefined ? { n: p.total } : {}),
+      ...(p.logAt !== undefined ? { l: p.logAt } : {}),
     }),
     "utf8",
   ).toString("base64url");
@@ -833,6 +847,16 @@ export function decodePosition(
     readonly since?: true;
     /** Whether the call may carry the first page's total (`query` only). */
     readonly total?: true;
+    /**
+     * The latest operation that confirmed or cancelled a deletion, in any slot (`deletionChangedAt`
+     * in ./select.ts); 0 when none has. A position from before it is expired.
+     */
+    readonly deletionChangedAt: number;
+    /**
+     * The operation the position's point stands for, where the point is not one (`reads.list`:
+     * a read record's number, its read's `pos`); undefined: the point is an operation already.
+     */
+    readonly opOf?: (seq: number) => number | undefined;
   },
 ): Position {
   const bad = () => invalid("malformed", param);
@@ -847,6 +871,7 @@ export function decodePosition(
   const shape = isObj(o)
     ? [...keysOf(o)]
         .filter((x) => !(x === "n" && check.total === true))
+        .filter((x) => !(x === "l" && (check.condition === true || check.since === true)))
         .sort()
         .join(",")
     : "";
@@ -870,6 +895,24 @@ export function decodePosition(
       reason: "restored",
       param,
     });
+  }
+  // A deletion confirmed or cancelled since the first page, in any slot (04-contract §15): what a
+  // read leaves out changed between the pages, so a later one could give a stretch twice or miss
+  // one. Wider than needed on purpose: one rule for every position, and a deletion is rare.
+  let logAt: number | undefined;
+  if (has(o, "l")) {
+    const l = get(o, "l");
+    if (typeof l !== "number" || !Number.isSafeInteger(l) || l < seq || l > check.latest)
+      throw bad();
+    logAt = l;
+  }
+  const seen = check.opOf !== undefined ? check.opOf(seq) : (logAt ?? seq);
+  if (seen === undefined || check.deletionChangedAt > seen) {
+    throw new ReadError(
+      "handle_expired",
+      "a deletion was confirmed or cancelled since the first page",
+      { reason: "deletion_changed", param },
+    );
   }
   let total: number | undefined;
   if (has(o, "n")) {
@@ -939,5 +982,6 @@ export function decodePosition(
     ...(condition !== undefined ? { condition } : {}),
     ...(since !== undefined ? { since } : {}),
     ...(total !== undefined ? { total } : {}),
+    ...(logAt !== undefined ? { logAt } : {}),
   };
 }

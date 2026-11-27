@@ -3035,6 +3035,9 @@ function ownNext(error: R): Part[] | undefined {
   if (c === "not_found" && reason === "slot") {
     return t`No slot of that name in this connection's range; saveslot_catalog lists the slots.`;
   }
+  if (c === "handle_expired" && reason === "deletion_changed") {
+    return t`A deletion was confirmed or cancelled since the first page: read again from the first page, without cursor.`;
+  }
   if (c === "handle_expired" && reason === "derived_changed") {
     return t`The derived table was refreshed since the first page: read again from the first page, without cursor.`;
   }

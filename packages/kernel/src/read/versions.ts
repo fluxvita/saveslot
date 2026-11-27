@@ -95,7 +95,7 @@ async function cellsAsOf(
  * as then, so the business table holds it as it was after `x`. Undefined when more than `max`.
  * A write that closes a cell opens one in the same operation, so `rec_to > x` adds no row today:
  * only a deletion closes cells without opening others, and after one a later page is the whole
- * read (`switchedOrDeletedSince`). It is kept so that C stays right without that.
+ * read (`switchedOrExecutedSince`). It is kept so that C stays right without that.
  */
 export async function changedSince(
   tx: ReadTx,
@@ -112,25 +112,28 @@ export async function changedSince(
 }
 
 /**
- * Whether, after operation `x`, a schema switch or any step of a deletion (confirmed, cancelled,
- * carried out; 09-event-format §4) happened, in any slot: what a reader can read may then differ
- * from what the cells after `x` alone say. A confirmed deletion already hides the blocks it lists
- * from every reader, a cancelled one gives them back. Wider than the slot read, on purpose: one
- * statement, no slot to resolve; a later page it sends to the whole read is the same page.
+ * Whether, after operation `x`, a schema switch or the carrying out of a deletion happened, in any
+ * slot: the business and version tables may then hold what the cells after `x` alone do not say,
+ * and a later page is the whole read. Wider than the slot read, on purpose: one statement, no slot
+ * to resolve; a page it sends to the whole read is the same page.
  *
- * Not here: a restore or an import. Either changes the restore count, and a position from before
- * it is refused when decoded (`handle_expired`, `restored`), before any page is read. Nor the
- * other events (items, a changed premise, a migration started or failed, a slot removed, a policy
- * set): none of them changes a business table without opening or closing a cell of it in the same
- * operation, which C then holds, and the marks, facts and premises of a page are read the same way
- * on both paths. A change that lets one of them change a business table otherwise has to add it
- * here.
+ * A deletion carried out closes cells without opening others, which C cannot see; it does not
+ * change what a reader can read (the content was not given from the confirmation on), so it does
+ * not expire a position. This version never logs a deletion carried out: this branch is held by
+ * the case that appends one as a stand-in.
+ *
+ * Not here: a deletion confirmed or cancelled, and a restore or an import. Each of them expires
+ * the position, which is refused when decoded (`handle_expired`: `deletion_changed`, `restored`),
+ * before any page is read. Nor the other events (items, a changed premise, a migration started or
+ * failed, a slot removed, a policy set): none of them changes a business table without opening or
+ * closing a cell of it in the same operation, which C then holds, and the marks, facts and
+ * premises of a page are read the same way on both paths. A change that lets one of them change a
+ * business table otherwise has to add it here.
  */
-export async function switchedOrDeletedSince(tx: ReadTx, x: number): Promise<boolean> {
+export async function switchedOrExecutedSince(tx: ReadTx, x: number): Promise<boolean> {
   const r = await tx.query<{ one: unknown }>(
     `SELECT 1 AS one FROM events WHERE op > $1
-       AND type IN ('schema.switched', 'deletion.confirmed', 'deletion.cancelled',
-                    'deletion.executed') LIMIT 1`,
+       AND type IN ('schema.switched', 'deletion.executed') LIMIT 1`,
     [x],
   );
   return r.rows.length > 0;
