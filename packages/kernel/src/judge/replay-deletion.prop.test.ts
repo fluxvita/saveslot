@@ -493,7 +493,9 @@ function compare(
         );
         // The second deletion cancelled instead (the one confirmed after): the state is the
         // first's alone, as the reference evaluator gives it; then the first cancelled too: the
-        // records' state and items, as the reference gives both cancellations.
+        // records' state and items, as the reference gives both cancellations. Without indices, as
+        // above: after a cancellation the two may number the items left otherwise
+        // (`index-given-only-by-cancelled-deletion.md` §1, §7).
         const sameAsRef = (state: RowState, ref: ReturnType<typeof evaluateLog>["final"]): void => {
           const proposals = new Set(
             state.records
@@ -504,10 +506,13 @@ function compare(
             ...new Set([...Object.keys(ref.fields), ...Object.keys(view(state).fields)]),
           ];
           expect({
-            items: itemKeys(state.items.filter((x) => !proposals.has(x.event))),
+            items: itemKeys(
+              state.items.filter((x) => !proposals.has(x.event)),
+              () => false,
+            ),
             fields: timelines(view(state).fields as never, names),
           }).toEqual({
-            items: itemKeys(ref.items),
+            items: itemKeys(ref.items, () => false),
             fields: timelines(ref.fields as never, names),
           });
         };
