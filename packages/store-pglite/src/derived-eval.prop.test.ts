@@ -143,6 +143,26 @@ async function attempt(
   }
 }
 
+/**
+ * Decoding the rows refused for a value its field cannot hold (11-restricted-sql «处理步骤» 6: a
+ * decimal with more than 18 integer digits, which the database computes and saveslot cannot hold):
+ * a data error of the rule on these rows, as the database's are (`rule_eval_failed`,
+ * `number_out_of_range`). Anything else is thrown on.
+ */
+function decodeRefusal(
+  e: RuleEvaluation,
+  rows: readonly Record<string, unknown>[],
+): string | undefined {
+  try {
+    for (const r of rows) e.decode(r);
+    return undefined;
+  } catch (x) {
+    const err = x as { code?: unknown; reason?: unknown };
+    if (err.code === "rule_eval_failed" && err.reason === "number_out_of_range") return err.reason;
+    throw x;
+  }
+}
+
 /** The evaluation's rows decoded, by the JCS of their key. */
 function byKey(
   e: RuleEvaluation,
@@ -572,6 +592,26 @@ async function partitionsAgree(
   return n;
 }
 
+/**
+ * The bound text as stored, run over the logical table: for rules without quotients (whose digits
+ * the guard changes) and not computed when read (its text calls saveslot_today(), which the
+ * database does not have); undefined for the others.
+ */
+async function boundRows(
+  derived: {
+    readonly rule: { readonly sql: string };
+    readonly fields: readonly { id: string; type: string }[];
+  },
+  atRead: boolean,
+): Promise<Outcome | undefined> {
+  const bound = derived.rule.sql;
+  if (/ \/ |avg\(/.test(bound) || atRead) return undefined;
+  const cols = derived.fields.map((f) =>
+    f.type === "boolean" ? `"r"."${f.id}"` : `CAST("r"."${f.id}" AS text) AS "${f.id}"`,
+  );
+  return attempt("s_log", `SELECT ${cols.join(", ")} FROM (${bound}) AS "r"`);
+}
+
 describe("A: rewriting keeps the meaning (generated rules)", () => {
   it("over the physical table = the body over the logical table = the bound text, decoded", async () => {
     const counts = {
@@ -615,6 +655,16 @@ describe("A: rewriting keeps the meaning (generated rules)", () => {
           counts.dataErrors++;
           return;
         }
+        // A value the field cannot hold, which only decoding finds: a data error as well. The
+        // bound text, where it is run, meets the same value and is refused alike.
+        const refused = decodeRefusal(e, phys.rows);
+        if (refused !== undefined) {
+          counts.dataErrors++;
+          const asStored = await boundRows(derived, atRead);
+          if (asStored !== undefined && !("error" in asStored))
+            expect(decodeRefusal(e, asStored.rows), where).toBe(refused);
+          return;
+        }
         if (
           derived.fields.some(
             (f) =>
@@ -631,14 +681,8 @@ describe("A: rewriting keeps the meaning (generated rules)", () => {
         const memberKeys = new Set(members.rows.map((r) => keyText(e.decodeMember(r).key)));
         for (const k of byKey(e, phys.rows).keys())
           expect(memberKeys.has(k), `${where}\nno members of ${k}`).toBe(true);
-        // The bound text as stored, for rules without quotients (whose digits the guard changes) and
-        // not computed when read (its text calls saveslot_today(), which the database does not have).
-        const bound = derived.rule.sql;
-        if (/ \/ |avg\(/.test(bound) || atRead) return;
-        const cols = derived.fields.map((f) =>
-          f.type === "boolean" ? `"r"."${f.id}"` : `CAST("r"."${f.id}" AS text) AS "${f.id}"`,
-        );
-        const asStored = await attempt("s_log", `SELECT ${cols.join(", ")} FROM (${bound}) AS "r"`);
+        const asStored = await boundRows(derived, atRead);
+        if (asStored === undefined) return;
         if ("error" in asStored) {
           // Only division by zero in % or mod(), which evaluation turns into NULL.
           expect(asStored.error, where).toBe("22012");
@@ -666,6 +710,41 @@ describe("A: rewriting keeps the meaning (generated rules)", () => {
     expect(counts.atRead).toBeGreaterThan(0);
     expect(counts.decimalKeys).toBeGreaterThan(0);
     expect(counts.partitions).toBeGreaterThan(0);
+  });
+});
+
+describe("A, a fixed case: a value the field cannot hold", () => {
+  it("both tables give the database's value alike; decoding refuses it, number_out_of_range", async () => {
+    // Found by A (seed -441649002): a sum of products past 18 integer digits on one row.
+    const g = {
+      sql: "SELECT min(DATE '2026-03-01' - DATE '2026-01-01') AS a0, sum((GREATEST(distance, 2000000000)) * 2000000000) AS a1, bool_or((date >= '2026-01-01') AND (race)) AS a2, count(*) FILTER (WHERE date <= saveslot_today()) AS a3 FROM runs;",
+      fields: ["a0", "a1", "a2", "a3"],
+      timeDependency: "now",
+    } as const;
+    expect(compileDerivedRule(rule(g.sql, [...g.fields], g.timeDependency)).ok).toBe(true);
+    const schema = fromLog(derivedSchema(rule(g.sql, [...g.fields], g.timeDependency)));
+    const derived = schema.tables.find((t) => t.id === "t9");
+    if (derived === undefined || derived.kind !== "derived") throw new Error("no t9");
+    const cells = {
+      f1: "2025-12-29",
+      f2: "0.00",
+      f3: null,
+      f4: null,
+      f5: null,
+      f6: null,
+      f7: null,
+      f8: null,
+      f9: null,
+      f10: null,
+      f11: null,
+    };
+    await load(tableOf("t1"), [{ revoked: false, cells }] as never);
+    const e = evaluateRule(schema, "t9", computedAtRead(derived) ? AT_READ : undefined);
+    const phys = await attempt("s_phys", e.all.sql, e.all.params);
+    const logical = await attempt("s_log", withoutCte(e.all.sql), e.all.params);
+    if ("error" in phys || "error" in logical) throw new Error("a database error");
+    expect(phys.rows).toEqual(logical.rows);
+    expect(decodeRefusal(e, phys.rows)).toBe("number_out_of_range");
   });
 });
 
