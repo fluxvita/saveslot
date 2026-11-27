@@ -31,6 +31,7 @@ import {
   revokeToken,
   SCOPES,
   startDeviceAuthorization,
+  storageRefusal,
   TokenError,
   type TokenErrorCode,
   type TokenResponse,
@@ -249,9 +250,26 @@ function failed(res: ServerResponse, ctx: OAuthRoutesContext, event: string, e: 
     send(res, 503, { error: "temporarily_unavailable" }, { ...NO_STORE, "retry-after": "1" });
     return 503;
   }
+  // The user's tenant refused this process (02-architecture §7 «进程、单写者、串行写»): its storage
+  // upgraded by a newer version, or sealed by an import. A retry in a moment, as above.
+  const refused = refusedBy(ctx, e);
+  if (refused !== undefined) {
+    send(res, 503, { error: "temporarily_unavailable" }, { ...NO_STORE, "retry-after": refused });
+    return 503;
+  }
   ctx.warn(event, { error: e instanceof Error ? e.name : "unknown" });
   send(res, 500, { error: "server_error" }, NO_STORE);
   return 500;
+}
+
+/**
+ * The `Retry-After` of an error that is the tenant's storage refusing this process, logged as a
+ * call's is (`tenant_format_too_new`); undefined for any other error.
+ */
+function refusedBy(ctx: OAuthRoutesContext, e: unknown): string | undefined {
+  const refused = storageRefusal(e);
+  if (refused === "format_too_new") ctx.warn("tenant_format_too_new", {});
+  return refused === undefined ? undefined : "1";
 }
 
 /** A page's answer; an internal error is a plain 500, without anything of it. */
@@ -264,6 +282,18 @@ async function pageOrError(
   try {
     return await answer();
   } catch (e) {
+    const refused = refusedBy(ctx, e);
+    if (refused !== undefined) {
+      if (!res.headersSent) {
+        res.writeHead(503, {
+          "content-type": "text/plain; charset=utf-8",
+          "cache-control": "no-store",
+          "retry-after": refused,
+        });
+        res.end("Temporarily unavailable; try again in a moment");
+      } else res.end();
+      return 503;
+    }
     ctx.warn(event, { error: e instanceof Error ? e.name : "unknown" });
     if (!res.headersSent) {
       res.writeHead(500, {
