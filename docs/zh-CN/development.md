@@ -2,7 +2,7 @@
 
 [English](../development.md) · 简体中文
 
-这一页带你从一份新克隆的仓库走到一个验证过的改动：搭环境、跑检查、找到改动该落在哪、演练一次小修复、调试一次失败。它写给要改这个仓库的人。只想让 Agent 用上 saveslot 的，从 README 的[上手](../../README.zh-CN.md#上手本机模式)开始。
+这一页带你从一份新克隆的仓库走到一个验证过的改动：搭环境、跑检查、找到改动该落在哪、演练一次小修复、调试一次失败。它写给要改这个仓库的人。只想让 Agent 用上 saveslot 的，从 README 的[上手](../../README.zh-CN.md#上手)开始。
 
 提交改动的规矩（分支、拉取请求、签名、借助 AI 完成的改动）在 [`CONTRIBUTING.zh-CN.md`](../../CONTRIBUTING.zh-CN.md)，这里不重复。
 
@@ -10,9 +10,9 @@
 
 ## 现在能运行什么
 
-第一个发布版本 0.1 已经实现：本机模式与服务器模式的服务、它的 HTTP 与 MCP 接口、`saveslot` 命令。0.1 还没做的，列在 README 的[上手](../../README.zh-CN.md#上手本机模式)一节末尾。
+第一个发布版本 0.1 已经实现：本机模式与服务器模式的服务、它的 HTTP 与 MCP 接口、`saveslot` 命令。0.1 还没做的，列在 README 的[状态](../../README.zh-CN.md#状态)一节。
 
-除了构建、测试和仓库检查，还能运行自己构建出来的服务：`pnpm build` 之后，`node packages/saveslot/dist/bin.js setup` 会把它装好并启动，做法见 README 的[上手](../../README.zh-CN.md#上手本机模式)。
+除了构建、测试和仓库检查，还能运行自己构建出来的服务：`pnpm build` 之后，`node packages/saveslot/dist/bin.js setup` 会把它装好并启动，和 README [上手](../../README.zh-CN.md#上手)里的 `saveslot setup` 一样。
 
 | 包 | 里面有什么 |
 |---|---|
