@@ -367,6 +367,45 @@ describe("an index only a cancelled deletion gave (fixed cases)", () => {
     expect(refItemsOf(ref.items, 74).filter((x) => !x.includes(" dropped "))).toEqual(live);
   });
 
+  it("3b. another deletion still pending removes the (event, target) whole: the dropped waits for its cancellation", () => {
+    // 09 §5.9 «哪些项要重述» item 4, second exception. D1 deletes S1 and numbers #51/f2/1; D2 deletes
+    // S4, which takes #51/f2 away whole. Cancelling D1 while D2 is pending: the pair is not a
+    // contribution, no item is numbered there, so no dropped. Cancelling D2 too: the pair is a
+    // contribution again and every block that gave #1 came from a cancelled deletion, so this
+    // cancellation writes the dropped. A third deletion then numbers the piece #2, and the
+    // reference evaluator, replaying the whole log from nothing, agrees: compared with indices.
+    const { table, records, taken, last, reference } = setup(STATE_SCHEMA, SPLIT_OPS, []);
+    const s = new DeletionSessionForTests(table);
+    const first = s.confirm(records, "pi_a", taken("S1"));
+    expect(show(first.replay.restated)).toContain(
+      `51/f2/1 candidate ${JSON.stringify(iv("11-03", "11-05"))}`,
+    );
+    expect(taken("S4")).toContain("51/f2");
+    s.confirm(records, "pi_b", taken("S4"));
+    const cancelA = s.cancel(records, "pi_a");
+    expect(cancelA.replay.restated.filter((r) => r.item.event === 51)).toEqual([]);
+    const cancelB = s.cancel(records, "pi_b");
+    expect(cancelB.replay.restated.filter((r) => r.item.event === 51)).toContainEqual({
+      item: { event: 51, target: "f2", k: 1 },
+      status: "dropped",
+      deps: [],
+    });
+    const again = s.confirm(records, "pi_c", taken("S1"));
+    const live = [
+      `f2/0 corroborated ${JSON.stringify(iv("11-01", "11-03"))}`,
+      `f2/2 candidate ${JSON.stringify(iv("11-03", "11-05"))}`,
+    ];
+    expect(itemsOf(again.replay.records, 51)).toEqual(live);
+    const ref = reference([
+      del("pi_a", last + 1, "S1"),
+      del("pi_b", last + 2, "S4"),
+      { kind: "cancel", op: last + 3, id: "pi_a" },
+      { kind: "cancel", op: last + 4, id: "pi_b" },
+      del("pi_c", last + 5, "S1"),
+    ]);
+    expect(refItemsOf(ref.items, 51).filter((x) => !x.includes(" dropped "))).toEqual(live);
+  });
+
   describe("4. a block resting on such an index, listed by a later deletion (kernel only)", () => {
     // 09 §3.5 rule 1, the example of the decision record: m (#20) writes a stretch of f2; C covers
     // it; W (#40) undoes m, all covered, no write-back. D1 (#50) takes C's source away: W has a
