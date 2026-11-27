@@ -1,6 +1,7 @@
 // PostgresBackend / PostgresTenantStore: what is checked when a store is opened, transactions,
-// the tenant's advisory lock, the ownership epoch, a read's snapshot, and a connection that goes
-// away before, during and at the commit (02-architecture §7, §8).
+// the tenant's advisory lock, the storage format and the seal each transaction reads (the ownership
+// epoch row left as made), a read's snapshot, and a connection that goes away before, during and at
+// the commit (02-architecture §7, §8).
 
 import { META_KEYS, SESSION_SETTINGS, STORAGE_FORMAT_VERSION } from "@fluxvita/saveslot-kernel";
 import { describe, expect, it } from "vitest";
@@ -964,7 +965,7 @@ describe.skipIf(cell === undefined)("against a server", () => {
     );
 
     it(
-      "the storage of a newer format: each read and write refused with format_too_new; the store stays to be closed",
+      "the storage of a newer format: each read, write and read's record refused with format_too_new; the store stays to be closed",
       async () => {
         const db = pg.name();
         const s = await backend.open(pg.ref(db), { create: true });
@@ -979,6 +980,10 @@ describe.skipIf(cell === undefined)("against a server", () => {
             "format_too_new",
           );
           expect(await codeOf(s.read((tx) => tx.query("SELECT 1")))).toBe("format_too_new");
+          // A read's record too: written by this version's code into the newer format otherwise.
+          expect(await codeOf(s.recordReads((tx) => tx.query("INSERT INTO t VALUES (2)")))).toBe(
+            "format_too_new",
+          );
           // Nothing written.
           await pg.sql(db, "UPDATE meta SET value = $1 WHERE key = $2", [
             String(STORAGE_FORMAT_VERSION),
@@ -993,7 +998,7 @@ describe.skipIf(cell === undefined)("against a server", () => {
     );
 
     it(
-      "a sealed tenant: a write refused with tenant_sealed, nothing written; a read as before",
+      "a sealed tenant: a write refused with tenant_sealed, nothing written; a read and its record as before",
       async () => {
         const db = pg.name();
         await withStore(db, async (s) => {
@@ -1006,9 +1011,12 @@ describe.skipIf(cell === undefined)("against a server", () => {
             "tenant_sealed",
           );
           expect(await count(s, "t")).toBe(0);
+          // A read's record is part of the read: the seal does not refuse it.
+          await s.recordReads((tx) => tx.query("INSERT INTO t VALUES (2)"));
+          expect(await count(s, "t")).toBe(1);
           await pg.sql(db, "DELETE FROM meta WHERE key = $1", [META_KEYS.sealed]);
           await s.write((tx) => tx.query("INSERT INTO t VALUES (1)"));
-          expect(await count(s, "t")).toBe(1);
+          expect(await count(s, "t")).toBe(2);
         });
       },
       T,

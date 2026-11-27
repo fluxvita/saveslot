@@ -376,6 +376,16 @@ describe("contractError", () => {
     expect([sealed.code, sealed.detail]).toEqual(["unavailable", { reason: "importing" }]);
   });
 
+  it("a read whose record was refused for a newer format: answered as the read would be (stopping), not busy", () => {
+    warnings.length = 0;
+    const newer = Object.assign(new Error("storage format 6 is newer than this version's 5"), {
+      code: "format_too_new",
+    });
+    const e = contractError(new ReadNotRecorded(newer), warn, { tenant: "tn_x" });
+    expect([e.code, e.detail]).toEqual(["unavailable", { reason: "stopping", retry_after: 1 }]);
+    expect(warnings).toEqual([["tenant_format_too_new", { tenant: "tn_x" }]]);
+  });
+
   it("a path not implemented yet: not_in_this_version, reason kept, reported by structure", () => {
     const e = contractError(
       new WriteError("internal", "writing a table a derived rule reads is not implemented", {

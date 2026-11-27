@@ -6,10 +6,10 @@
 // it throws the store sends ROLLBACK and rethrows.
 //
 // Single writer. No opener takes a tenant from another: several may have it open at once
-// (02-architecture §7). Writes are serialized by the tenant's advisory lock; every read and write
-// first reads, in one statement, the storage format and the seal from `meta` (`#begin`): a format
+// (02-architecture §7). Writes are serialized by the tenant's advisory lock; every read, write and
+// read's record first reads, in one statement, the storage format and the seal from `meta` (`#begin`): a format
 // newer than this store's is refused (format_too_new: another version upgraded it), and a seal
-// refuses a write (tenant_sealed: an import is swapping the tenant in). The ownership epoch row a
+// refuses a write only (tenant_sealed: an import is swapping the tenant in). The ownership epoch row a
 // store was created with is kept, neither read nor written (it is the local mode's).
 //
 // What is checked when a store is opened, in this order, and the code each gives when it fails:
@@ -631,7 +631,7 @@ export class PostgresTenantStore implements TenantStore {
     return this.#enqueue(() => this.#transaction("read", fn));
   }
 
-  /** The read records only: no tenant lock, no format check (the port's `recordReads`). */
+  /** The read records only: no tenant lock, no seal; the format checked (the port's `recordReads`). */
   recordReads<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
     return this.#enqueue(() => this.#transaction("reads", fn));
   }
@@ -644,7 +644,7 @@ export class PostgresTenantStore implements TenantStore {
     throw new Error("snapshot is not implemented: physical snapshots are not in v1");
   }
 
-  /** False once the connection is gone or the storage was taken over: final (TenantStore). */
+  /** False once the connection is gone or the store closed: final (TenantStore). */
   get usable(): boolean {
     return this.#state === "open" && !this.#conn.gone;
   }
@@ -689,15 +689,16 @@ export class PostgresTenantStore implements TenantStore {
    * (format_too_new: this process is older than the storage, and is to be replaced), one older is
    * a defect (a store put back from an older backup goes through the restore flow, stopped); a seal
    * refuses a write (tenant_sealed: an import is in progress), not a read. The read records'
-   * transaction checks neither: it writes only those records (the port's `recordReads`).
+   * transaction (the port's `recordReads`) takes no lock and checks the format as a read does: a
+   * read's record is part of the read, so a seal does not refuse it either.
    */
   async #begin(mode: "read" | "write" | "reads"): Promise<void> {
-    if (mode === "reads") {
-      await this._run("BEGIN ISOLATION LEVEL READ COMMITTED", undefined);
-      return;
-    }
     await this._run(
-      mode === "read" ? "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY" : "BEGIN",
+      mode === "read"
+        ? "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY"
+        : mode === "reads"
+          ? "BEGIN ISOLATION LEVEL READ COMMITTED"
+          : "BEGIN",
       undefined,
     );
     let rows: readonly { key: string; value: string }[];
