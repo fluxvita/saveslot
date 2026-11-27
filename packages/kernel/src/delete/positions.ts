@@ -482,6 +482,13 @@ async function readOnlyCancelled(
   tx: ReadTx,
   slot: string,
 ): Promise<Map<string, { givers: string[]; restating: string[] }>> {
+  // Only a cancelled deletion gives such an index: with none in the slot, nothing to read.
+  const anyCancelled = await tx.query(
+    `SELECT 1 FROM deletions d JOIN events e ON e.seq = d.confirmed_seq
+     WHERE e.slot = $1 AND d.state = 'cancelled' LIMIT 1`,
+    [slot],
+  );
+  if (anyCancelled.rows.length === 0) return new Map();
   const rows = (
     await tx.query<{ seq: unknown; path: string; body: string; cancelled: unknown }>(
       `SELECT c.seq, c.path, c.body, (d.state = 'cancelled') AS cancelled

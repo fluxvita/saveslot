@@ -340,6 +340,33 @@ describe("an index only a cancelled deletion gave (fixed cases)", () => {
     ).toEqual(["f2/0 dropped []", "f2/1 dropped []"]);
   });
 
+  it("2b. the cancellation leaves the (event, target) with no item, then a deletion: new numbers", () => {
+    // One deletion pending at a time: no list of positions approximated. The write-back exists
+    // only while S1 is deleted; cancelling the first deletion leaves #74/f2 with no item and
+    // restates #0 and #1 as dropped. The later deletion numbers the write-back #2 and #3, on
+    // both sides: compared with indices.
+    const { table, records, taken, last, reference } = setup(UNDO_SCHEMA, UNDO_OPS, UNDO_DECISIONS);
+    const s = new DeletionSessionForTests(table);
+    s.confirm(records, "pi_a", taken("S1"));
+    const cancel = s.cancel(records, "pi_a");
+    expect(show(cancel.replay.restated.filter((r) => r.item.event === 74))).toEqual([
+      "74/f2/0 dropped",
+      "74/f2/1 dropped",
+    ]);
+    const again = s.confirm(records, "pi_c", taken("S1"));
+    const live = [
+      `f2/2 applied ${JSON.stringify(iv("11-01", "11-03"))}`,
+      `f2/3 applied ${JSON.stringify(iv("11-07", "11-09"))}`,
+    ];
+    expect(itemsOf(again.replay.records, 74)).toEqual(live);
+    const ref = reference([
+      del("pi_a", last + 1, "S1"),
+      { kind: "cancel", op: last + 2, id: "pi_a" },
+      del("pi_c", last + 3, "S1"),
+    ]);
+    expect(refItemsOf(ref.items, 74).filter((x) => !x.includes(" dropped "))).toEqual(live);
+  });
+
   describe("4. a block resting on such an index, listed by a later deletion (kernel only)", () => {
     // 09 §3.5 rule 1, the example of the decision record: m (#20) writes a stretch of f2; C covers
     // it; W (#40) undoes m, all covered, no write-back. D1 (#50) takes C's source away: W has a
