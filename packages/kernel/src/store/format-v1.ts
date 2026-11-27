@@ -537,7 +537,13 @@ CREATE INDEX possibly_affected_actor ON possibly_affected (actor);`,
 export const META_KEYS = {
   storageFormat: "storage_format",
   tenantId: "tenant_id",
+  /**
+   * The local mode's (PGlite) ownership epoch. The server mode (PostgreSQL) keeps the row a store
+   * was created with and neither reads nor writes it (02-architecture §7).
+   */
   ownershipEpoch: "ownership_epoch",
+  /** The server mode: the tenant sealed by an import in progress, its writes refused (§8). */
+  sealed: "sealed",
   sessionSettings: "session_settings",
   tzdbVersion: "tzdb_version",
 } as const;

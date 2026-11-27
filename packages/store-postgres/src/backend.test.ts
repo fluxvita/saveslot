@@ -152,7 +152,6 @@ describe.skipIf(cell === undefined)("against a server", () => {
         const db = pg.name();
         await withStore(db, async (s) => {
           expect(s.formatVersion).toBe(STORAGE_FORMAT_VERSION);
-          expect(s.epoch).toBe(1);
           expect([s.database, s.cell]).toEqual([db, CELL]);
         });
         const d = (
@@ -167,7 +166,8 @@ describe.skipIf(cell === undefined)("against a server", () => {
         const meta = await pg.sql(db, "SELECT key, value FROM meta ORDER BY key");
         expect(Object.fromEntries(meta.rows.map((r) => [r["key"], r["value"]]))).toEqual({
           [META_KEYS.storageFormat]: String(STORAGE_FORMAT_VERSION),
-          [META_KEYS.ownershipEpoch]: "1",
+          // The local mode's epoch row, as made: an opening here neither reads nor raises it.
+          [META_KEYS.ownershipEpoch]: "0",
           [META_KEYS.sessionSettings]: JSON.stringify(SESSION_SETTINGS),
         });
         const tables = await pg.sql(
@@ -209,7 +209,7 @@ describe.skipIf(cell === undefined)("against a server", () => {
     );
 
     it(
-      "opening again takes the next epoch and keeps the data; without create too",
+      "opening again keeps the data and leaves the epoch row as made; without create too",
       async () => {
         const db = pg.name();
         await withStore(db, (s) =>
@@ -217,12 +217,12 @@ describe.skipIf(cell === undefined)("against a server", () => {
         );
         const s = await backend.open(pg.ref(db), {});
         try {
-          expect(s.epoch).toBe(2);
+          expect(await epochIn(db)).toBe(0);
           expect(await count(s, "t")).toBe(1);
         } finally {
           await s.close();
         }
-        expect(await epochIn(db)).toBe(2);
+        expect(await epochIn(db)).toBe(0);
       },
       T,
     );
@@ -245,7 +245,7 @@ describe.skipIf(cell === undefined)("against a server", () => {
         );
         expect(await codeOf(backend.open(pg.ref(empty), {}))).toBe("store_not_found");
         // With create, an empty database made by someone else (the control plane) is filled.
-        await withStore(empty, async (s) => expect(s.epoch).toBe(1));
+        await withStore(empty, async (s) => expect(s.formatVersion).toBe(STORAGE_FORMAT_VERSION));
       },
       T,
     );
@@ -359,13 +359,13 @@ describe.skipIf(cell === undefined)("against a server", () => {
             .rows[0],
         ).toEqual({ ok: true });
         // Opened again, it is found where it was made.
-        await withStore(db, async (s) => expect(s.epoch).toBe(2));
+        await withStore(db, async (s) => expect(s.formatVersion).toBe(STORAGE_FORMAT_VERSION));
       },
       T,
     );
 
     it(
-      "the storage format: older, newer, not a number; the epoch is not taken",
+      "the storage format: older, newer, not a number; the epoch row untouched",
       async () => {
         const db = pg.name();
         await withStore(db, async () => {});
@@ -379,13 +379,13 @@ describe.skipIf(cell === undefined)("against a server", () => {
         expect(await codeOf(backend.open(pg.ref(db), {}))).toBe("not_a_store");
         await pg.sql(db, "DELETE FROM meta WHERE key = $1", [META_KEYS.storageFormat]);
         expect(await codeOf(backend.open(pg.ref(db), {}))).toBe("not_a_store");
-        expect(await epochIn(db)).toBe(1);
+        expect(await epochIn(db)).toBe(0);
       },
       T,
     );
 
     it(
-      "created with other fixed session settings: session_settings_mismatch; the epoch is not taken",
+      "created with other fixed session settings: session_settings_mismatch; the epoch row untouched",
       async () => {
         const db = pg.name();
         await withStore(db, async () => {});
@@ -396,23 +396,28 @@ describe.skipIf(cell === undefined)("against a server", () => {
         expect(await codeOf(backend.open(pg.ref(db), {}))).toBe("session_settings_mismatch");
         await pg.sql(db, "DELETE FROM meta WHERE key = $1", [META_KEYS.sessionSettings]);
         expect(await codeOf(backend.open(pg.ref(db), {}))).toBe("session_settings_mismatch");
-        expect(await epochIn(db)).toBe(1);
+        expect(await epochIn(db)).toBe(0);
       },
       T,
     );
 
     it(
-      "two openers creating the same tenant at once: one storage, epochs 1 and 2",
+      "two openers creating the same tenant at once: one storage, both open",
       async () => {
         const db = pg.name();
         const [a, b] = await Promise.all([
           backend.open(pg.ref(db), { create: true }),
           backend.open(pg.ref(db), { create: true }),
         ]);
-        expect([a.epoch, b.epoch].sort()).toEqual([1, 2]);
+        // Both open, neither taking the tenant from the other.
+        expect([a.formatVersion, b.formatVersion]).toEqual([
+          STORAGE_FORMAT_VERSION,
+          STORAGE_FORMAT_VERSION,
+        ]);
+        expect(await epochIn(db)).toBe(0);
         await a.close();
         await b.close();
-        expect(await epochIn(db)).toBe(2);
+        expect(await epochIn(db)).toBe(0);
       },
       T,
     );
@@ -427,7 +432,7 @@ describe.skipIf(cell === undefined)("against a server", () => {
      */
     async function openedWhileAnotherMadeIt(
       prepare: (db: string) => Promise<unknown> = async () => {},
-    ): Promise<{ db: string; epoch: number }> {
+    ): Promise<{ db: string; opened: number }> {
       const db = pg.name();
       await pg.admin(
         `CREATE DATABASE "${db}" TEMPLATE template0 ENCODING 'UTF8'
@@ -468,7 +473,7 @@ describe.skipIf(cell === undefined)("against a server", () => {
           await other.run("INSERT INTO meta (key, value) VALUES ($1, $2)", [k, v]);
         }
         await other.run("COMMIT");
-        return { db, epoch: (await opening).epoch };
+        return { db, opened: (await opening).formatVersion };
       } finally {
         await other.end();
         // Ending the other connection lets an opener still waiting go on: its store is closed too.
@@ -482,9 +487,9 @@ describe.skipIf(cell === undefined)("against a server", () => {
     it(
       "an opener that waited for the lock while another made the storage finds it made, and does not make it again",
       async () => {
-        const { db, epoch } = await openedWhileAnotherMadeIt();
-        expect(epoch).toBe(1);
-        expect(await epochIn(db)).toBe(1);
+        const { db, opened } = await openedWhileAnotherMadeIt();
+        expect(opened).toBe(STORAGE_FORMAT_VERSION);
+        expect(await epochIn(db)).toBe(0);
       },
       T,
     );
@@ -492,11 +497,11 @@ describe.skipIf(cell === undefined)("against a server", () => {
     it(
       "so does one on a database whose default isolation is serializable: the lock's transaction is READ COMMITTED",
       async () => {
-        const { db, epoch } = await openedWhileAnotherMadeIt((db) =>
+        const { db, opened } = await openedWhileAnotherMadeIt((db) =>
           pg.admin(`ALTER DATABASE "${db}" SET default_transaction_isolation = 'serializable'`),
         );
-        expect(epoch).toBe(1);
-        expect(await epochIn(db)).toBe(1);
+        expect(opened).toBe(STORAGE_FORMAT_VERSION);
+        expect(await epochIn(db)).toBe(0);
       },
       T,
     );
@@ -832,19 +837,38 @@ describe.skipIf(cell === undefined)("against a server", () => {
     );
 
     it(
-      "taken over while it waited, it gives the tenant up with ownership_lost",
+      "the epoch row changed while it waited (as the local mode's opening would) changes nothing: it writes",
       async () => {
         const { result, s, db } = await waited(
           async () => "written",
-          // What another opener's takeover does under the same lock: the epoch + 1.
           (other) =>
             other.run("UPDATE meta SET value = (value::bigint + 1)::text WHERE key = $1", [
               META_KEYS.ownershipEpoch,
             ]),
         );
         try {
-          expect(await codeOf(result)).toBe("ownership_lost");
-          expect(await epochIn(db)).toBe(s.epoch + 1);
+          expect(await result).toBe("written");
+          expect(await epochIn(db)).toBe(1);
+        } finally {
+          await s.close();
+        }
+      },
+      T,
+    );
+
+    it(
+      "a newer format written while it waited (another version upgraded it): format_too_new, nothing written",
+      async () => {
+        const { result, s } = await waited(
+          async () => "written",
+          (other) =>
+            other.run("UPDATE meta SET value = $1 WHERE key = $2", [
+              String(STORAGE_FORMAT_VERSION + 1),
+              META_KEYS.storageFormat,
+            ]),
+        );
+        try {
+          expect(await codeOf(result)).toBe("format_too_new");
         } finally {
           await s.close();
         }
@@ -853,29 +877,28 @@ describe.skipIf(cell === undefined)("against a server", () => {
     );
   });
 
-  describe("the ownership epoch", () => {
+  // Two openers of one database (02-architecture §7): neither takes the tenant from the other.
+  // The writes are serialized by the tenant's lock; each read and write checks the storage format,
+  // and each write the seal.
+  describe("two openers of one database", () => {
     it(
-      "an opener taken over gives the tenant up at its next write, and stays given up; reads too",
+      "both write, by turns, and each reads the other's; neither is refused, both keep their connection",
       async () => {
         const db = pg.name();
         const first = await backend.open(pg.ref(db), { create: true });
         await first.write((tx) => tx.exec("CREATE TABLE t (x INT)"));
         const second = await backend.open(pg.ref(db), {});
         try {
-          expect([first.epoch, second.epoch]).toEqual([1, 2]);
-          expect(await codeOf(first.write((tx) => tx.query("INSERT INTO t VALUES (1)")))).toBe(
-            "ownership_lost",
-          );
-          expect(await codeOf(first.write(async () => {}))).toBe("ownership_lost");
-          expect(await codeOf(first.read(async () => {}))).toBe("ownership_lost");
+          await first.write((tx) => tx.query("INSERT INTO t VALUES (1)"));
           await second.write((tx) => tx.query("INSERT INTO t VALUES (2)"));
-          expect(await count(second, "t")).toBe(1);
-          // The one that gave up holds no connection any more.
+          await first.write((tx) => tx.query("INSERT INTO t VALUES (3)"));
+          expect([await count(first, "t"), await count(second, "t")]).toEqual([3, 3]);
           const conns = await pg.admin(
             "SELECT count(*)::int4 AS n FROM pg_stat_activity WHERE datname = $1",
             [db],
           );
-          expect(conns.rows[0]?.["n"]).toBe(1);
+          expect(conns.rows[0]?.["n"]).toBe(2);
+          expect(await epochIn(db)).toBe(0);
         } finally {
           await first.close();
           await second.close();
@@ -885,7 +908,7 @@ describe.skipIf(cell === undefined)("against a server", () => {
     );
 
     it(
-      "a takeover waits for the write in progress: that write commits, the next is refused",
+      "a second opener waits for the write in progress; then both go on writing",
       async () => {
         const db = pg.name();
         const first = await backend.open(pg.ref(db), { create: true });
@@ -905,7 +928,7 @@ describe.skipIf(cell === undefined)("against a server", () => {
         });
         await started;
         let opened = false;
-        const taking = backend.open(pg.ref(db), {}).then((s) => {
+        const opening = backend.open(pg.ref(db), {}).then((s) => {
           opened = true;
           return s;
         });
@@ -926,15 +949,67 @@ describe.skipIf(cell === undefined)("against a server", () => {
         expect(opened).toBe(false);
         release();
         await writing;
-        const second = await taking;
+        const second = await opening;
         try {
-          expect(second.epoch).toBe(2);
           expect(await count(second, "t")).toBe(1);
-          expect(await codeOf(first.write(async () => {}))).toBe("ownership_lost");
+          await first.write((tx) => tx.query("INSERT INTO t VALUES (2)"));
+          await second.write((tx) => tx.query("INSERT INTO t VALUES (3)"));
+          expect(await count(first, "t")).toBe(3);
         } finally {
           await first.close();
           await second.close();
         }
+      },
+      T,
+    );
+
+    it(
+      "the storage of a newer format: each read and write refused with format_too_new; the store stays to be closed",
+      async () => {
+        const db = pg.name();
+        const s = await backend.open(pg.ref(db), { create: true });
+        try {
+          await s.write((tx) => tx.exec("CREATE TABLE t (x INT)"));
+          // What a newer version's upgrade leaves: the format raised under the lock.
+          await pg.sql(db, "UPDATE meta SET value = $1 WHERE key = $2", [
+            String(STORAGE_FORMAT_VERSION + 1),
+            META_KEYS.storageFormat,
+          ]);
+          expect(await codeOf(s.write((tx) => tx.query("INSERT INTO t VALUES (1)")))).toBe(
+            "format_too_new",
+          );
+          expect(await codeOf(s.read((tx) => tx.query("SELECT 1")))).toBe("format_too_new");
+          // Nothing written.
+          await pg.sql(db, "UPDATE meta SET value = $1 WHERE key = $2", [
+            String(STORAGE_FORMAT_VERSION),
+            META_KEYS.storageFormat,
+          ]);
+          expect(await count(s, "t")).toBe(0);
+        } finally {
+          await s.close();
+        }
+      },
+      T,
+    );
+
+    it(
+      "a sealed tenant: a write refused with tenant_sealed, nothing written; a read as before",
+      async () => {
+        const db = pg.name();
+        await withStore(db, async (s) => {
+          await s.write((tx) => tx.exec("CREATE TABLE t (x INT)"));
+          await pg.sql(db, "INSERT INTO meta (key, value) VALUES ($1, $2)", [
+            META_KEYS.sealed,
+            "im_example",
+          ]);
+          expect(await codeOf(s.write((tx) => tx.query("INSERT INTO t VALUES (1)")))).toBe(
+            "tenant_sealed",
+          );
+          expect(await count(s, "t")).toBe(0);
+          await pg.sql(db, "DELETE FROM meta WHERE key = $1", [META_KEYS.sealed]);
+          await s.write((tx) => tx.query("INSERT INTO t VALUES (1)"));
+          expect(await count(s, "t")).toBe(1);
+        });
       },
       T,
     );
@@ -957,7 +1032,9 @@ describe.skipIf(cell === undefined)("against a server", () => {
           await s.close();
         }
         // Closed and opened again, the tenant is as it was.
-        await withStore(db, async (again) => expect(again.epoch).toBe(2));
+        await withStore(db, async (again) =>
+          expect(again.formatVersion).toBe(STORAGE_FORMAT_VERSION),
+        );
       },
       T,
     );

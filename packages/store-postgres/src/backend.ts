@@ -5,11 +5,12 @@
 // as on PGlite. A transaction's callback runs here; when it returns the store sends COMMIT, when
 // it throws the store sends ROLLBACK and rethrows.
 //
-// Single writer. Routing gives a tenant to one process; what holds when routing is wrong is the
-// ownership epoch in `meta`: opening adds 1 to it, and every write transaction, under the
-// tenant's advisory lock, reads it and gives the tenant up when it is no longer the one this
-// store opened with. The database's value is the one that counts here: another connection's
-// commit is seen, so there is no owner file and no lock file as PGlite has.
+// Single writer. No opener takes a tenant from another: several may have it open at once
+// (02-architecture §7). Writes are serialized by the tenant's advisory lock; every read and write
+// first reads, in one statement, the storage format and the seal from `meta` (`#begin`): a format
+// newer than this store's is refused (format_too_new: another version upgraded it), and a seal
+// refuses a write (tenant_sealed: an import is swapping the tenant in). The ownership epoch row a
+// store was created with is kept, neither read nor written (it is the local mode's).
 //
 // What is checked when a store is opened, in this order, and the code each gives when it fails:
 //
@@ -32,7 +33,7 @@
 //   the storage format is the kernel's                         not_a_store, format_too_old,
 //                                                              format_too_new
 //   the session settings it was created with are the kernel's  session_settings_mismatch
-//   the ownership epoch is taken (+ 1)
+//   the format, read again under the tenant's lock             format_too_new
 
 import {
   formatV1Ddl,
@@ -99,6 +100,8 @@ export const SERVER_DATABASES: readonly string[] = ["postgres", "template0", "te
  */
 export const WRITE_LOCK = [0x53534c54, 1] as const;
 const LOCK_SQL = `SELECT pg_advisory_xact_lock(${WRITE_LOCK[0]}, ${WRITE_LOCK[1]})`;
+/** What each read and write checks first: the storage format and the seal, in one statement. */
+const GUARD_SQL = "SELECT key, value FROM meta WHERE key = $1 OR key = $2";
 
 /** The locale a tenant's database is created with and must have (02-architecture §8). */
 export const BUILTIN_LOCALE = "C.UTF-8";
@@ -224,13 +227,11 @@ export class PostgresBackend implements StorageBackend {
       }
       await checkFormat(conn, this.#format);
       await checkSessionSettings(conn);
-      const owned = await takeOwnership(conn, this.#format);
-      const epoch = owned.epoch;
-      let formatVersion = owned.formatVersion;
+      let formatVersion = await checkFormatLocked(conn, this.#format);
       if (formatVersion < this.#format) {
-        // An older format, upgraded now, after the epoch is taken: an older process still holding
-        // the tenant finds another epoch at its next write and gives the tenant up, rather than
-        // write with its format's code into tables of this one.
+        // An older format, upgraded now, each step under the tenant's lock: an older process still
+        // holding the tenant finds the newer format at its next read or write and refuses it
+        // (format_too_new), rather than read or write with its format's code tables of this one.
         const db = tenant.database;
         this.#onEvent?.("upgrading", { database: db, from: formatVersion, to: this.#format });
         const begun = performance.now();
@@ -238,7 +239,6 @@ export class PostgresBackend implements StorageBackend {
         try {
           formatVersion = await upgrade(
             conn,
-            epoch,
             formatVersion,
             this.#format,
             this.#upgradeSteps,
@@ -262,7 +262,11 @@ export class PostgresBackend implements StorageBackend {
           ms: Math.round(performance.now() - begun),
         });
       }
-      return new PostgresTenantStore({ conn, formatVersion, epoch, ...tenant });
+      return new PostgresTenantStore({
+        conn,
+        formatVersion,
+        ...tenant,
+      });
     } catch (e) {
       await conn.end();
       throw storeError(e, "connection_failed");
@@ -457,7 +461,7 @@ async function checkFormat(conn: Connection, format: number): Promise<number> {
     throw new PostgresStoreError("not_a_store", "the storage has no valid storage format version");
   }
   // Older than any released version wrote: a store from development, not upgraded, refused with
-  // what to do. From there to the kernel's format: upgraded once the epoch is taken.
+  // what to do. From there to the kernel's format: upgraded under the tenant's lock.
   if (formatVersion < OLDEST_UPGRADABLE_FORMAT) {
     throw new PostgresStoreError(
       "format_too_old",
@@ -475,14 +479,12 @@ async function checkFormat(conn: Connection, format: number): Promise<number> {
 
 /**
  * The upgrade of a store of format `from` to `to` (02-architecture §8 «格式版本、导出、导入与恢复»):
- * each step a write transaction, as every write is here: the tenant's lock, the epoch this opener
- * took still the database's (another opener since: ownership_lost), the format read again under
- * the lock (a step another opener did already is skipped), the step's statements, the format set
- * last. A store stopped half way is of the format of its last step done. Returns the format.
+ * each step a write transaction under the tenant's lock: the format read again under the lock (a
+ * step another opener did already is skipped), the step's statements, the format set last. A
+ * store stopped half way is of the format of its last step done. Returns the format.
  */
 async function upgrade(
   conn: Connection,
-  epoch: number,
   from: number,
   to: number,
   steps: readonly UpgradeStep[],
@@ -492,19 +494,6 @@ async function upgrade(
   for (const step of upgradePath(from, to, steps)) {
     onStep(step);
     await locked(conn, async () => {
-      const held = Number(
-        (
-          await one<{ value: string }>(conn, "SELECT value FROM meta WHERE key = $1 FOR UPDATE", [
-            META_KEYS.ownershipEpoch,
-          ])
-        ).value,
-      );
-      if (held !== epoch) {
-        throw new PostgresStoreError(
-          "ownership_lost",
-          `ownership epoch is ${held}, this store opened it as ${epoch}: another opener took over`,
-        );
-      }
       const now = Number(await metaValue(conn, META_KEYS.storageFormat));
       if (now > step.from) return;
       try {
@@ -542,28 +531,17 @@ async function checkSessionSettings(conn: Connection): Promise<void> {
   }
 }
 
-/** Ownership epoch + 1 (02-architecture §7), after any write another opener has in progress; the format checked under the same lock. */
-async function takeOwnership(
-  conn: Connection,
-  format: number,
-): Promise<{ epoch: number; formatVersion: number }> {
-  return await locked(conn, async () => {
-    // The format read again under the lock, before the epoch is raised: a newer version may have
-    // upgraded the store while this opener waited on the lock, and code of an older format must
-    // not own (and then write into) a store of a newer one (format_too_new, the epoch untouched).
-    const formatVersion = await checkFormat(conn, format);
-    const r = await one<{ value: string }>(
-      conn,
-      `INSERT INTO meta (key, value) VALUES ($1, '1')
-       ON CONFLICT (key) DO UPDATE SET value = (meta.value::bigint + 1)::text
-       RETURNING value`,
-      [META_KEYS.ownershipEpoch],
-    );
-    return { epoch: Number(r.value), formatVersion };
-  });
+/**
+ * The format read again under the tenant's lock, after any write another opener has in progress
+ * (02-architecture §7): a newer version may have upgraded the store while this opener waited on
+ * the lock, and code of an older format does not open a store of a newer one (format_too_new).
+ * No ownership is taken: every read and write checks the format itself (`#begin`).
+ */
+async function checkFormatLocked(conn: Connection, format: number): Promise<number> {
+  return await locked(conn, () => checkFormat(conn, format));
 }
 
-type State = "open" | "closing" | "closed" | "lost" | "failed";
+type State = "open" | "closing" | "closed" | "failed";
 
 class TxHandle implements Tx {
   readonly #store: PostgresTenantStore;
@@ -612,8 +590,6 @@ export class PostgresTenantStore implements TenantStore {
   readonly formatVersion: number;
   /** PostgreSQL enforces `statement_timeout` (the kernel sets one for a `sql` call). */
   readonly enforcesStatementTimeout = true;
-  /** The ownership epoch this store took at open. */
-  readonly epoch: number;
   readonly database: string;
   readonly cell: string;
   readonly #conn: Connection;
@@ -624,13 +600,11 @@ export class PostgresTenantStore implements TenantStore {
   constructor(init: {
     conn: Connection;
     formatVersion: number;
-    epoch: number;
     database: string;
     cell: string;
   }) {
     this.#conn = init.conn;
     this.formatVersion = init.formatVersion;
-    this.epoch = init.epoch;
     this.database = init.database;
     this.cell = init.cell;
   }
@@ -657,7 +631,7 @@ export class PostgresTenantStore implements TenantStore {
     return this.#enqueue(() => this.#transaction("read", fn));
   }
 
-  /** The read records only: no tenant lock, no epoch (the port's `recordReads`). */
+  /** The read records only: no tenant lock, no format check (the port's `recordReads`). */
   recordReads<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
     return this.#enqueue(() => this.#transaction("reads", fn));
   }
@@ -697,11 +671,6 @@ export class PostgresTenantStore implements TenantStore {
     switch (this.#state) {
       case "open":
         return;
-      case "lost":
-        throw new PostgresStoreError(
-          "ownership_lost",
-          "another opener took over this storage; this store gave it up",
-        );
       case "failed":
         throw new PostgresStoreError(
           "connection_lost",
@@ -712,47 +681,60 @@ export class PostgresTenantStore implements TenantStore {
     }
   }
 
-  /** Gives the tenant up: nothing more is sent to the database by this store (§7). */
-  #abandon(): void {
-    if (this.#state === "lost") return;
-    this.#state = "lost";
-    void this.#conn.end();
-  }
-
   /**
-   * Opens the transaction. A read sees one state throughout: its snapshot is taken once, so what
-   * another process commits meanwhile (a new owner's writes) does not show between two of its
-   * statements. A write takes the tenant's lock, then checks the ownership epoch under it.
+   * Opens the transaction (02-architecture §7 «进程、单写者、串行写»). A read sees one state
+   * throughout: its snapshot is taken once, so what another process commits meanwhile does not show
+   * between two of its statements. A write takes the tenant's lock. Either then reads, in one
+   * statement, the storage format and the seal: a format newer than this store's is refused
+   * (format_too_new: this process is older than the storage, and is to be replaced), one older is
+   * a defect (a store put back from an older backup goes through the restore flow, stopped); a seal
+   * refuses a write (tenant_sealed: an import is in progress), not a read. The read records'
+   * transaction checks neither: it writes only those records (the port's `recordReads`).
    */
   async #begin(mode: "read" | "write" | "reads"): Promise<void> {
-    if (mode === "read") {
-      await this._run("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY", undefined);
-      return;
-    }
-    // The read records: neither the lock nor the epoch, so that a read is recorded while another
-    // connection writes the tenant (02-architecture §7 «read_log 的持久性»).
     if (mode === "reads") {
       await this._run("BEGIN ISOLATION LEVEL READ COMMITTED", undefined);
       return;
     }
-    await this._run("BEGIN", undefined);
-    let stored: number;
+    await this._run(
+      mode === "read" ? "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY" : "BEGIN",
+      undefined,
+    );
+    let rows: readonly { key: string; value: string }[];
     try {
-      await this._run(LOCK_SQL, undefined);
-      const r = await this._run("SELECT value FROM meta WHERE key = $1 FOR UPDATE", [
-        META_KEYS.ownershipEpoch,
-      ]);
-      stored = Number((r.rows[0] as { value: string } | undefined)?.value);
+      if (mode === "write") await this._run(LOCK_SQL, undefined);
+      rows = (await this._run(GUARD_SQL, [META_KEYS.storageFormat, META_KEYS.sealed])).rows as {
+        key: string;
+        value: string;
+      }[];
     } catch (e) {
       if (!this.#conn.gone) await this._run("ROLLBACK", undefined).catch(() => {});
       throw e;
     }
-    if (stored !== this.epoch) {
+    const format = Number(rows.find((r) => r.key === META_KEYS.storageFormat)?.value);
+    const refuse = async (e: PostgresStoreError): Promise<never> => {
       await this._run("ROLLBACK", undefined).catch(() => {});
-      this.#abandon();
-      throw new PostgresStoreError(
-        "ownership_lost",
-        `ownership epoch is ${stored}, this store opened it as ${this.epoch}: another opener took over`,
+      throw e;
+    };
+    if (format > this.formatVersion) {
+      await refuse(
+        new PostgresStoreError(
+          "format_too_new",
+          `storage format ${format} is newer than this version's ${this.formatVersion}`,
+        ),
+      );
+    }
+    // Older than opened: put back from an older backup under a running server, which a restore
+    // forbids (it is done stopped). A defect, not guessed at.
+    if (!(format === this.formatVersion)) {
+      await this._run("ROLLBACK", undefined).catch(() => {});
+      throw new Error(
+        `storage format ${String(format)} is not the one this store opened (${this.formatVersion})`,
+      );
+    }
+    if (mode === "write" && rows.some((r) => r.key === META_KEYS.sealed)) {
+      await refuse(
+        new PostgresStoreError("tenant_sealed", "the tenant is sealed by an import in progress"),
       );
     }
   }

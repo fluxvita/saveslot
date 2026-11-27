@@ -152,6 +152,9 @@ export class RetryOnLostConnection extends Error {
   }
 }
 
+/** Seconds a call refused for a storage newer than this server is tried again after (elsewhere). */
+const FORMAT_RETRY_AFTER = 1;
+
 /** Seconds a call refused for its tenant's connection gone is tried again after. */
 const LOST_RETRY_AFTER = 1;
 
@@ -196,6 +199,23 @@ export function contractError(
     return new ContractError("unavailable", "the read could not be recorded; try again", {
       reason: "busy",
       retry_after: READ_RETRY_AFTER,
+    });
+  }
+  // The tenant's storage refused this process (02-architecture §7 «进程、单写者、串行写»): of a
+  // newer format than this version knows, the process is to be replaced, and a retry goes to
+  // another (the process stops answering ready); sealed by an import in progress, a write waits
+  // for it.
+  const storeCode = (e as { code?: unknown } | null)?.code;
+  if (e instanceof Error && storeCode === "format_too_new") {
+    warn("tenant_format_too_new", o.tenant !== undefined ? { tenant: o.tenant } : {});
+    return new ContractError("unavailable", "this server is older than the tenant's storage", {
+      reason: "stopping",
+      retry_after: FORMAT_RETRY_AFTER,
+    });
+  }
+  if (e instanceof Error && storeCode === "tenant_sealed") {
+    return new ContractError("unavailable", "the tenant is being imported into", {
+      reason: "importing",
     });
   }
   // Logged where it was thrown (the try given up), once: answered as `connection_lost` is.

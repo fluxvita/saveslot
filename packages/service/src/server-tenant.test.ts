@@ -402,10 +402,10 @@ describe("creations of different owners in one process", () => {
 });
 
 describe.runIf(TEST_BACKEND === "postgres")("two processes creating one owner's tenant", () => {
-  // Not in v1 (one process a deployment): both register the same tenant and open its database; the
-  // later opener takes it over (§7), and the one it was taken from fails with `ownership_lost`.
+  // Not in v1 (one process a deployment): both register the same tenant and open its database. No
+  // opener takes the tenant from another (§7): both are given it.
   it(
-    "at the same time give that one tenant or ownership_lost; called again, the one tenant, one database, one genesis",
+    "at the same time both give that one tenant; called again, the one tenant, one database, one genesis",
     async () => {
       const dir = join(root, "control");
       const create = (control: ServerControlPlane, u: `u_${string}`) =>
@@ -419,8 +419,7 @@ describe.runIf(TEST_BACKEND === "postgres")("two processes creating one owner's 
           const e = await create(cp, u);
           expect(e.state, `round ${round}`).toBe("active");
           for (const r of results) {
-            if (r.status === "fulfilled") expect(r.value, `round ${round}`).toEqual(e);
-            else expect(r.reason, `round ${round}`).toMatchObject({ code: "ownership_lost" });
+            expect(r.status === "fulfilled" ? r.value : r.reason, `round ${round}`).toEqual(e);
           }
           const rows = await control.read((tx) =>
             tx.query<{ id: string; database: string }>(

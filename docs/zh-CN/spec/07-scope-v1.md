@@ -46,7 +46,7 @@
 | 状态三分类（a / b / c）与"丢了会怎样"；存储格式 v1 的表清单 | architecture §3、§8 | 做 | — | 写代码时每张表都要归类 | K12 | P0（清单）、P1 |
 | `verify`（事件头链、校验和、已移除、恢复空档） | contract §17 `log.verify` | 做 | — | 成本低，是防误操作的手段 | K1 | P1 |
 | 对账（重放 vs 线上） | architecture §7、§11 | 简化 | 后台定期抽样；第一版只有用户会话手动触发的全量对拍（`log.reconcile`，CLI 的 `saveslot verify --replay`） | 用户量小，全量对拍可承受 | K12：第一版不主动发现绕过 `apply` 的改动 | P2 |
-| 单写者锁、所有权 epoch、PGlite 住在 DB Worker | architecture §7 | 做 | 慢查询"超时杀 Worker"按实验 2 结论决定是否启用；加锁做法按实验 8；`unavailable`（`busy`）随写队列的超时策略一起：这一版同一存储的写请求排队等待、没有超时，不会给出它 | 两个进程写同一目录会写坏数据 | — | P1 |
+| 单写者锁、所有权 epoch（本机模式；服务器模式以每个读写事务的格式核对代替）、PGlite 住在 DB Worker | architecture §7 | 做 | 慢查询"超时杀 Worker"按实验 2 结论决定是否启用；加锁做法按实验 8；`unavailable`（`busy`）随写队列的超时策略一起：这一版同一存储的写请求排队等待、没有超时，不会给出它 | 两个进程写同一目录会写坏数据 | — | P1 |
 | 存储后端：PGlite、PostgreSQL | architecture §8 | 做 | — | 两种部署都要；对拍要两个后端 | K12（对拍） | P1（PGlite）、P2（PostgreSQL） |
 | 存储格式版本升级 | architecture §8「格式版本、导出与恢复」 | 简化 | 第一版只有一个格式版本：只实现"更高版本拒绝打开"，升级流程后续 | 还没有旧格式要升 | — | P1 |
 | 物理快照 `snapshot()` | architecture §8 | 后续 | — | 只用来加速；不做就少一类要补删的备份 | — | — |

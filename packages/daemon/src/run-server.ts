@@ -255,6 +255,8 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
   // Whether requests are served: from ready until step 2 of closing, or the control database lost.
   // Apart from the state, which turns `stopping` at step 1 while requests are still served.
   let serving = false;
+  /** A tenant's storage was found of a newer format than this version's: not ready any more. */
+  let outdated = false;
   let lost = false;
   let fail!: () => void;
   const failed = new Promise<void>((resolve) => {
@@ -331,6 +333,16 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
     // The imports in progress, each with what abandons its body: a stop does not wait on a client
     // that stalled (`import_rejected`, `incomplete`, before ④; an import past its body ends).
     const imports = new Set<AbortController>();
+    // A call refused for a tenant's storage of a newer format than this version knows (another
+    // version upgraded it): this process is to be replaced, and stops answering ready
+    // (02-architecture §7), so that a load balancer sends the calls refused here elsewhere.
+    const callWarn = (event: string, fields: Readonly<Record<string, string>>) => {
+      if (event === "tenant_format_too_new" && !outdated) {
+        outdated = true;
+        warn("server_outdated", {});
+      }
+      warn(event, fields);
+    };
     const ctx: ApiContext = {
       callers: serverCallers({
         control,
@@ -356,7 +368,7 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
       windows,
       now,
       ...(o.onToolResult !== undefined ? { onToolResult: o.onToolResult } : {}),
-      warn,
+      warn: callWarn,
       import: async (r) => {
         // The route lets only the user's session import; its actor is the user.
         if (r.principal.kind !== "user") {
@@ -425,8 +437,9 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
             pid: process.pid,
             since,
             ...(lost ? { reason: "control_database_lost" } : {}),
+            ...(!lost && outdated ? { reason: "storage_format_newer" } : {}),
           });
-          res.writeHead(path === "/health" || state === "ready" ? 200 : 503, {
+          res.writeHead(path === "/health" || (state === "ready" && !outdated) ? 200 : 503, {
             "content-type": "application/json",
             "content-length": Buffer.byteLength(body),
             "cache-control": "no-store",
