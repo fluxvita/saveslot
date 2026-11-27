@@ -32,6 +32,10 @@ export const INTERNAL_NOTE = "**Internal package of saveslot.**";
 /** Where every published package says its source, home page and issues are. */
 export const REPOSITORY = "git+https://github.com/fluxvita/saveslot.git";
 export const HOMEPAGE = "https://github.com/fluxvita/saveslot#readme";
+/** The one exception to HOMEPAGE: the package people install and see on npm links the website. */
+export const ENTRY_HOMEPAGE = "https://saveslot.ai";
+/** The home page a published package must name. */
+export const homepageOf = (name: string): string => (name === ENTRY ? ENTRY_HOMEPAGE : HOMEPAGE);
 export const BUGS = "https://github.com/fluxvita/saveslot/issues";
 /** What every published package leaves out of `dist`: test fixtures and the build cache. */
 export const FILES = ["dist", "!dist/**/*.fixture.*", "!dist/.tsbuildinfo"];
@@ -108,7 +112,8 @@ export function releaseProblems(root: string): string[] {
       problems.push(
         `${m.name}: repository is not {"type": "git", "url": "${REPOSITORY}", "directory": "${dir}"}`,
       );
-    if (m.homepage !== HOMEPAGE) problems.push(`${m.name}: homepage is not ${HOMEPAGE}`);
+    const homepage = homepageOf(m.name);
+    if (m.homepage !== homepage) problems.push(`${m.name}: homepage is not ${homepage}`);
     if (m.bugs !== BUGS) problems.push(`${m.name}: bugs is not ${BUGS}`);
     if (m.engines?.node !== rootEngines)
       problems.push(`${m.name}: engines.node is not the root's ${JSON.stringify(rootEngines)}`);
