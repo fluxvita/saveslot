@@ -2630,5 +2630,82 @@
         "expires_at": "2026-11-19T15:00:00.000Z"
       }
     }
+  },
+  "history-changes-partly-deleted": {
+    "tool": "saveslot_history",
+    "result": {
+      "mode": "changes",
+      "target": {
+        "table": "health.runs"
+      },
+      "timezone": "Asia/Shanghai",
+      "since": 0,
+      "until": 52,
+      "total": 3,
+      "changes": [
+        {
+          "seq": 52,
+          "recorded_at": "2026-11-18T13:10:00.000Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "intent": "update",
+          "target": {
+            "table": "health.runs",
+            "row": "r_MAWAAE0MQ04QGRBPHC97D44AA2"
+          },
+          "fields": {
+            "note": {
+              "before": "easy pace"
+            },
+            "feeling": {
+              "after": "tired"
+            }
+          },
+          "partially_deleted": true
+        },
+        {
+          "seq": 50,
+          "recorded_at": "2026-11-18T13:00:00.000Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "intent": "insert",
+          "target": {
+            "table": "health.runs",
+            "row": "r_B4CBQJB6HDA0CHN1FNYW2FBSDZ"
+          },
+          "fields": {
+            "date": {
+              "after": "2026-11-02"
+            }
+          },
+          "partially_deleted": true
+        },
+        {
+          "seq": 48,
+          "recorded_at": "2026-11-18T12:50:00.000Z",
+          "actor": {
+            "kind": "user",
+            "id": "u_MR82KF91XP1TVCV5WQK6DD983K",
+            "name": "u_MR82KF91XP1TVCV5WQK6DD983K"
+          },
+          "intent": "update",
+          "target": {
+            "table": "health.runs",
+            "row": "r_MAWAAE0MQ04QGRBPHC97D44AA2"
+          },
+          "fields": {
+            "note": {
+              "before": "easy pace"
+            }
+          }
+        }
+      ]
+    }
   }
 }

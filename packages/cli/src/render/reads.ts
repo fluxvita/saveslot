@@ -511,15 +511,20 @@ export function changesResult(r: ChangesResult): Line[] {
   if (list.length === 0 && x0["total"] === 0) out.push(t`no changes`);
   for (const e of list) {
     const x = obj(e);
+    // A side from content deleted since is not given (`partially_deleted`): "not shown", as on MCP.
+    const deleted = x["partially_deleted"] === true;
+    const side = (c: R, k: "before" | "after"): Part[] =>
+      !Object.hasOwn(c, k) && deleted ? t`not shown` : fieldValue(c[k]);
     const fields = Object.entries(obj(x["fields"])).map(([f, v]) =>
       join(
         (Array.isArray(v) ? v : [v]).map((c0) => {
           const c = obj(c0);
           const period = isObj(c["valid"]) ? t` (${periodOf(c["valid"])})` : [];
           if (f === "*") return t`${c["before"] === true ? t`revoked` : t`restored`}${period}`;
-          const change = Object.hasOwn(c, "before")
-            ? t`${fieldValue(c["before"])} -> ${fieldValue(c["after"])}`
-            : fieldValue(c["after"]);
+          const change =
+            Object.hasOwn(c, "before") || (deleted && x["intent"] !== "insert")
+              ? t`${side(c, "before")} -> ${side(c, "after")}`
+              : side(c, "after");
           return t`${fieldOf(f)} ${change}${period}`;
         }),
         t`; `,
@@ -527,7 +532,7 @@ export function changesResult(r: ChangesResult): Line[] {
     );
     const target = obj(x["target"]);
     out.push(
-      t`${op(x["seq"])} ${inZone(x["recorded_at"], x0["timezone"])} ${code(String(x["intent"] ?? ""), INTENTS)}  ${actorOf(x["actor"])}  ${idOf(target["row"] ?? target["entity"])}  ${join(fields, t`; `)}`,
+      t`${op(x["seq"])} ${inZone(x["recorded_at"], x0["timezone"])} ${code(String(x["intent"] ?? ""), INTENTS)}  ${actorOf(x["actor"])}  ${idOf(target["row"] ?? target["entity"])}  ${join(fields, t`; `)}${deleted ? t` · partly deleted: what is not shown came from content deleted since` : []}`,
     );
   }
   return [...out, ...pageOf(x0, list.length, () => t`changes`), ...warningsAndNotices(r)];
