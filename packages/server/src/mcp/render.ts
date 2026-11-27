@@ -1232,15 +1232,22 @@ function changesOf(r: R, now: Date): Line[] {
   if (list.length === 0 && r["total"] === 0) out.push(t`No changes.`);
   for (const e of list) {
     const x = obj(e);
+    // A side that came from content deleted since is not given (`partially_deleted`): in such a
+    // change a missing side is "not shown", never `—` (cleared) nor left out (no value before).
+    // An inserted row has no earlier value either way.
+    const deleted = x["partially_deleted"] === true;
+    const side = (c: R, k: "before" | "after"): Part[] =>
+      !Object.hasOwn(c, k) && deleted ? t`not shown` : fieldValue(c[k]);
     const fields = Object.entries(obj(x["fields"])).map(([f, v]) =>
       join(
         (Array.isArray(v) ? v : [v]).map((p) => {
           const c = obj(p);
           const period = isObj(c["valid"]) ? t` (${periodOf(c["valid"])})` : [];
           if (f === "*") return t`${c["before"] === true ? t`revoked` : t`restored`}${period}`;
-          const change = Object.hasOwn(c, "before")
-            ? t`${fieldValue(c["before"])} → ${fieldValue(c["after"])}`
-            : fieldValue(c["after"]);
+          const change =
+            Object.hasOwn(c, "before") || (deleted && x["intent"] !== "insert")
+              ? t`${side(c, "before")} → ${side(c, "after")}`
+              : side(c, "after");
           return t`${fieldOf(f)} ${change}${period}`;
         }),
         t`; `,
@@ -1248,7 +1255,7 @@ function changesOf(r: R, now: Date): Line[] {
     );
     const target = obj(x["target"]);
     out.push(
-      t`${op(x["seq"])} ${inZone(x["recorded_at"], r["timezone"])} ${codeIn(x["intent"], INTENTS)}  ${actorOf(x["actor"])}  ${idOf(target["row"] ?? target["entity"])}  ${join(fields, t`; `)}`,
+      t`${op(x["seq"])} ${inZone(x["recorded_at"], r["timezone"])} ${codeIn(x["intent"], INTENTS)}  ${actorOf(x["actor"])}  ${idOf(target["row"] ?? target["entity"])}  ${join(fields, t`; `)}${deleted ? t` · partly deleted: what is not shown came from content deleted since` : []}`,
     );
   }
   return [...out, ...pageOf(r, list.length, () => t`changes`), ...remindersOf(r, now)];

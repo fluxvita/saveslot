@@ -393,6 +393,39 @@ describe("history changes (06 §4.7)", () => {
     ]);
   });
 
+  it("a change partly deleted: a side missing in it is not shown, not cleared; an insert still gives only the new value", () => {
+    const deleted = {
+      ...CHANGES,
+      target: { table: "ledger.expenses", row: "r_4KWKRM296X61WJ89DY5XJNVA4P" },
+      total: 2,
+      changes: [
+        {
+          seq: 14,
+          recorded_at: "2026-11-10T06:00:00.000Z",
+          actor,
+          intent: "update",
+          target: { table: "ledger.expenses", row: "r_4KWKRM296X61WJ89DY5XJNVA4P" },
+          fields: { note: { before: "lunch" }, tag: { after: "work" } },
+          partially_deleted: true,
+        },
+        {
+          seq: 13,
+          recorded_at: "2026-11-10T05:00:00.000Z",
+          actor,
+          intent: "insert",
+          target: { table: "ledger.expenses", row: "r_4KWKRM296X61WJ89DY5XJNVA4P" },
+          fields: { note: { after: "lunch" } },
+          partially_deleted: true,
+        },
+      ],
+    };
+    expect(render(changesResult(deleted as never), terminal).split("\n")).toEqual([
+      "ledger.expenses r_4KWKRM296X61WJ89DY5XJNVA4P · after #41 up to #57 · 2 changes",
+      "#14 2026-11-10 14:00 update  「MacBook · Codex」  r_4KWKRM296X61WJ89DY5XJNVA4P  note 「lunch」 -> not shown; tag not shown -> 「work」 · partly deleted: what is not shown came from content deleted since",
+      "#13 2026-11-10 13:00 insert  「MacBook · Codex」  r_4KWKRM296X61WJ89DY5XJNVA4P  note 「lunch」 · partly deleted: what is not shown came from content deleted since",
+    ]);
+  });
+
   it("from the start when `since` is 0; nothing changed says so; a page: the next as an option", () => {
     const none = { ...CHANGES, since: 0, total: 0, changes: [] };
     expect(render(changesResult(none as never), terminal).split("\n")).toEqual([
