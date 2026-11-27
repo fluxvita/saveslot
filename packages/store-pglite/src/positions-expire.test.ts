@@ -184,12 +184,15 @@ beforeEach(async () => {
   await query(s.store, ctx(), { table: "budgets" });
 }, T);
 
-/** A stand-in event of the type in another slot, the latest operation. */
+/**
+ * A stand-in event of the type in another slot, the latest operation: a head event, its `op` its
+ * `seq`, as the format has it (and later than every operation, an operation never above its seq).
+ */
 const standIn = (type: string) =>
   s.store.write((tx) =>
     tx.query(
       `INSERT INTO events (seq, header, header_hash, type, actor, at, op, slot)
-       SELECT max(seq) + 1, '{}', 'h', $1, 'system', '2026-11-15T04:30:00.000Z', max(op) + 1, $2
+       SELECT max(seq) + 1, '{}', 'h', $1, 'system', '2026-11-15T04:30:00.000Z', max(seq) + 1, $2
        FROM events`,
       [type, ELSEWHERE],
     ),

@@ -514,12 +514,12 @@ describe("a later page pushed down", () => {
     T,
   );
 
-  /** A stand-in event of the type, the latest operation: nothing reads it but the checks. */
+  /** A stand-in event of the type, the latest operation (a head event: `op` = `seq`). */
   const standIn = (type: string) =>
     s.store.write((tx) =>
       tx.query(
         `INSERT INTO events (seq, header, header_hash, type, actor, at, op)
-         SELECT max(seq) + 1, '{}', 'h', $1, 'system', '2026-11-15T03:59:00.000Z', max(op) + 1
+         SELECT max(seq) + 1, '{}', 'h', $1, 'system', '2026-11-15T03:59:00.000Z', max(seq) + 1
          FROM events`,
         [type],
       ),
