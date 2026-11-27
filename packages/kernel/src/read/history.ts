@@ -45,6 +45,7 @@ import {
 } from "../request/index.ts";
 import { computedAtRead } from "../rules/index.ts";
 import type { ReadTx } from "../store/ports.ts";
+import { cellWithheld, withholdingIn } from "../store/readable-content.ts";
 import { valueOut } from "../time/index.ts";
 import { changersOf } from "./changed-by.ts";
 import { danglingOf, revokedTargets } from "./dangling.ts";
@@ -73,7 +74,7 @@ import {
   type RowDetail,
   type Values,
 } from "./types.ts";
-import { segmentsOf } from "./versions.ts";
+import { readableCell, segmentsOf } from "./versions.ts";
 
 export interface HistoryInput {
   readonly actor: PrincipalId;
@@ -443,6 +444,8 @@ type Cell = {
   no_value: boolean | null;
   /** The operation of the contribution that gave the cell. */
   src_op: unknown;
+  /** Its value came from a contribution no longer readable: not given (./versions.ts). */
+  withheld: boolean | null;
 } & Record<string, unknown>;
 
 /** The cells of the target in effect after operation `s`. */
@@ -458,12 +461,13 @@ async function cellsAsOf(tx: ReadTx, t: CompiledBaseTable, id: string, s: number
   const cols = t.fields.flatMap((f) => selectOf(f).map((x, i) => `${x} AS c_${f.id}_${i}`));
   const r = await tx.query<Cell>(
     `SELECT field_id, ${interval}, rec_from, intent, revoked, no_value,
-       (SELECT e.op FROM events e WHERE e.seq = v.src_event) AS src_op, ${cols.join(", ")}
+       (SELECT e.op FROM events e WHERE e.seq = v.src_event) AS src_op,
+       ${cellWithheld("v", await withholdingIn(tx))} AS withheld, ${cols.join(", ")}
      FROM ${versions} v
      WHERE row_id = $1 AND rec_from <= $2 AND (rec_to IS NULL OR rec_to > $2)`,
     [id, s],
   );
-  return [...r.rows];
+  return r.rows.map(readableCell);
 }
 
 const cellValue = (f: CompiledBaseField, c: Cell): FieldValue =>
@@ -587,7 +591,8 @@ export const byName = (
   values: Readonly<Record<string, FieldValue>>,
 ): Values => {
   const out: Record<string, Values[string]> = Object.create(null);
-  for (const f of t.fields) out[f.name] = valueOut(values[f.id] ?? null);
+  // A field not there is withheld (a value a removed contribution gave): not given.
+  for (const f of t.fields) if (f.id in values) out[f.name] = valueOut(values[f.id] ?? null);
   return out;
 };
 
@@ -784,6 +789,8 @@ export async function asOfInTx(
                 ? { corrected: true as const }
                 : {}),
               ...(dangling.length > 0 ? { dangling_ref: dangling } : {}),
+              // A value a removed contribution gave then: not given (03-deletion «版本表»).
+              ...(s.withheld.length > 0 ? { partially_deleted: true as const } : {}),
             };
             return Object.keys(m).length > 0 ? { marks: m } : {};
           })(),
@@ -791,15 +798,19 @@ export async function asOfInTx(
       }
     } else if (cells.length > 0) {
       const values: Record<string, FieldValue> = Object.create(null);
+      let withheld = false;
       for (const f of t.fields) {
         const c = cells.find((x) => x.field_id === f.id);
-        values[f.id] = c === undefined ? null : cellValue(f, c);
+        // A value a removed contribution gave then: not given (03-deletion «版本表»).
+        if (c?.withheld === true) withheld = true;
+        else values[f.id] = c === undefined ? null : cellValue(f, c);
       }
       const revoke = cells.find((c) => c.field_id === "existence" && c.revoked === true);
       const dangling = danglingOf(t, values, await gone([values]));
       const marks: Marks = {
         ...(version.corrected ? { corrected: true as const } : {}),
         ...(dangling.length > 0 ? { dangling_ref: dangling } : {}),
+        ...(withheld ? { partially_deleted: true as const } : {}),
         // The revoke's own operation, not when its cell was last cut.
         ...(revoke !== undefined ? { revoked: { seq: Number(revoke.src_op) as never } } : {}),
       };
@@ -832,7 +843,13 @@ export async function asOfInTx(
       zone: target.named.slot.timezone,
       restoreCount: restore,
     });
-    for (const [i, r] of rows.entries()) rows[i] = { ...r, detail: d.details[i] as RowDetail };
+    for (const [i, r] of rows.entries()) {
+      // A ref summary that left out a value a removed contribution gave (03-deletion «版本表»).
+      const marks = d.partialRows.has(i)
+        ? { marks: { ...r.marks, partially_deleted: true as const } }
+        : {};
+      rows[i] = { ...r, ...marks, detail: d.details[i] as RowDetail };
+    }
     detailRead = d.read;
   }
   // Who made this version, when not the caller: every row here is of the one version.

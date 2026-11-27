@@ -754,7 +754,7 @@ interface AsOfResult extends CommonResult, PageResult {
   other_reads?: Array<{ read: ReadId; seq: Seq; at: Instant }>;   // as_of: {task} 时：同一任务对这个目标的其余读取
 }
 
-/** before / after 没有值时不给。"*"：布尔，true 表示存在。 */
+/** before / after 没有值时不给，出自已被删除去掉的贡献时也不给（这一条带 partially_deleted）。"*"：布尔，true 表示存在。 */
 interface ChangedField { before?: Value; after?: Value }
 
 interface ChangesResult extends CommonResult, PageResult {
@@ -769,6 +769,8 @@ interface ChangesResult extends CommonResult, PageResult {
     target: TargetRef;
     /** 只列值实际变了的字段。事件类表、无时间表：每个字段一个对象。状态类表：每个字段是按区间排好的数组，每段各有区间（与 timeline 的 TimelineField[] 同形）。"*" 是这一行 / 这一段是否存在，撤销或撤销的撤回改变它时给。 */
     fields: Record<FieldName | "*", ChangedField | Array<ChangedField & { valid: Interval }>>;
+    /** 某个字段的 before 或 after 出自一项已被删除去掉的贡献（宽限期内或已执行）：那一侧不给（data-model「删除 · 版本表」）。 */
+    partially_deleted?: true;
   }>;
 }
 ```
