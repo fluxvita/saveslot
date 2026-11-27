@@ -1410,6 +1410,113 @@ describe("a group value past a field's seen interval (a property counterexample)
   });
 });
 
+describe("an undo of a confirmation lists every target of the confirmed write (a property counterexample)", () => {
+  // State table, f2 and f3 required; seed 1473863789 of the reference property's tier. #61 (seen
+  // #21) writes (9, b) over [11-01, 11-11): f2 is a candidate against #31 and #51, f3 awaiting (①,
+  // the f3 change at 11-03 erased). #63 confirms it: f3 takes effect, f2 stays a candidate. #65
+  // undoes #63. Its record is #64 on every target #61 wrote, f2 and f3, not only f3, which the
+  // confirmation put into effect then (09 §5.7 «回退记录里列哪些条目»).
+  const schema = { ...STATE, required: ["f2", "f3"] as FieldId[] };
+  const span = (from: string, to: string) => ({
+    from: { mode: "given", value: from },
+    to: { mode: "given", value: to },
+  });
+  const open = (from: string) => ({ from: { mode: "given", value: from }, to: { mode: "open" } });
+  const ops = [
+    {
+      kind: "write",
+      op: 10,
+      event: 11,
+      seen: 0,
+      valid: open("2026-11-01"),
+      fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "a", sources: ["S10"] } },
+      acknowledge: ["overwrite"],
+    },
+    {
+      kind: "write",
+      op: 20,
+      event: 21,
+      seen: 10,
+      valid: open("2026-11-09"),
+      fields: { f2: { value: "7", sources: ["S12"] }, f3: { value: "1", sources: ["S12"] } },
+      acknowledge: ["overwrite"],
+      seenCurrent: true,
+    },
+    {
+      kind: "write",
+      op: 30,
+      event: 31,
+      seen: 20,
+      valid: span("2026-11-03", "2026-11-05"),
+      fields: { f2: { value: "2", sources: ["S20"] } },
+      acknowledge: ["overwrite"],
+      seenCurrent: true,
+    },
+    {
+      kind: "revoke",
+      op: 40,
+      event: 41,
+      seen: 30,
+      valid: open("2026-11-11"),
+      validSources: ["S30"],
+      seenCurrent: true,
+    },
+    {
+      kind: "write",
+      op: 50,
+      event: 51,
+      seen: 20,
+      valid: { from: { mode: "given", value: "2026-11-03" }, to: { mode: "next_change" } },
+      fields: { f2: { value: "5", sources: ["S40"] }, f3: { value: "b", sources: ["S40"] } },
+    },
+    {
+      kind: "resolve",
+      op: 53,
+      event: 53,
+      decision: "keep_effective",
+      candidates: [51],
+      unit: "f2",
+    },
+    {
+      kind: "write",
+      op: 60,
+      event: 61,
+      seen: 20,
+      valid: span("2026-11-01", "2026-11-11"),
+      fields: {
+        f2: { value: "9", sources: ["S6"], explicit: false },
+        f3: { value: "b", sources: ["S6"] },
+      },
+    },
+    { kind: "confirm", op: 63, event: 64, target: 61 },
+    { kind: "undo", op: 65, event: 66, target: 63, includeLater: false },
+  ] as Op[];
+
+  it("the record as the reference evaluator gives it: #64 on f2 and on f3", () => {
+    const { steps, refused } = judged(schema, ops, []);
+    expect(refused).toEqual([]);
+    const confirmed = steps.find((x) => x.judgement.record.event === 64)?.judgement.record;
+    expect(confirmed?.kind === "confirm" ? confirmed.items.map((x) => x.target) : []).toEqual([
+      "f3",
+    ]);
+    const undo = steps.find((x) => x.judgement.record.event === 66)?.judgement.record;
+    const kernel =
+      undo?.kind === "undo" ? undo.revert.entries.map((e) => `${e.event}/${e.target}`) : [];
+    const ref = evaluateLog(schema, ops)
+      .final.reverts.filter((r) => r.event === 66)
+      .flatMap((r) => r.record.map((e) => `${e.event}/${e.target}`));
+    expect(kernel.sort()).toEqual(["64/f2", "64/f3"]);
+    expect(ref.sort()).toEqual(["64/f2", "64/f3"]);
+  });
+
+  // Deleting #31's words (S20) leaves #61's f2 no conflict: in the replay it is awaiting at #61 and
+  // the confirmation #64 puts it into effect. The undo of #63 takes it back with f3: f2 on 11-01 is
+  // #11's 1 again, as the reference evaluator gives it. With f3 alone in the record it stayed 9.
+  it("a deletion putting f2 into effect through the confirmation: the undo takes it back too", () => {
+    compare(schema, true, ops, [], ["S20"]);
+  });
+});
+
 describe("a revert's write-back restated as a restore after a revoke was left (a property counterexample)", () => {
   // The state table with group {f2, f3}, seed -1366647956 of the reverts property. #10 (1, a) from
   // 10-01; #20 revokes [11-03, 11-09); #30 (2, b) over [11-05, 11-07); #40 f2 = 9 over
