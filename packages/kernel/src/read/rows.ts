@@ -225,7 +225,13 @@ function marksOf(plan: QueryPlan, r: SelectedRow, facts: RowFacts): WorkMarks | 
     corrected?: true;
     revoked?: { seq: never };
     dangling_ref?: { field: string; state: "revoked" }[];
+    partially_deleted?: true;
   } = {};
+  // Read by record time: a field read whose value then a removed contribution gave (03-deletion
+  // «版本表»: the place marked).
+  if (r.withheld?.some((f) => !plan.fieldsGiven || read.has(f)) === true) {
+    out.partially_deleted = true;
+  }
   for (const f of facts.flags.get(r.id) ?? ([] as Flag[])) {
     // Only where the value read would change with it (04-contract §7).
     const existence = f.fields.includes("existence");
@@ -321,6 +327,9 @@ function unionMarks(a: WorkMarks | undefined, b: WorkMarks | undefined): WorkMar
     ...(awaiting !== undefined ? { awaiting } : {}),
     ...(flagged !== undefined ? { flagged } : {}),
     ...(a.corrected === true || b.corrected === true ? { corrected: true as const } : {}),
+    ...(a.partially_deleted === true || b.partially_deleted === true
+      ? { partially_deleted: true as const }
+      : {}),
   };
 }
 
@@ -488,7 +497,12 @@ export function overInterval<M>(
         last !== undefined &&
         last.r.id === s.r.id &&
         last.r.validTo === s.r.validFrom &&
-        plan.fields.every((f) => valueKey(last.r.values[f.id]) === valueKey(s.r.values[f.id]))
+        plan.fields.every(
+          (f) =>
+            valueKey(last.r.values[f.id]) === valueKey(s.r.values[f.id]) &&
+            // A withheld value runs together only with another withheld one.
+            (last.r.withheld?.includes(f.id) ?? false) === (s.r.withheld?.includes(f.id) ?? false),
+        )
       ) {
         merged[merged.length - 1] = {
           r: { ...last.r, validTo: s.r.validTo ?? null },
@@ -547,7 +561,11 @@ export function shownRows(
     const ver = facts.ver.get(r.id);
     if (ver === undefined) throw new ReadError("internal", `no version of ${r.id}`);
     const values: Record<string, Values[string]> = Object.create(null);
-    for (const f of plan.fields) values[f.name] = valueOut(r.values[f.id] ?? null);
+    for (const f of plan.fields) {
+      // A value a removed contribution gave is not given (the row marked `partially_deleted`).
+      if (r.withheld?.includes(f.id) === true) continue;
+      values[f.name] = valueOut(r.values[f.id] ?? null);
+    }
     let entityKey: Values | undefined;
     if (t.time.type === "state" && t.entity_key !== undefined) {
       const k: Record<string, Values[string]> = Object.create(null);

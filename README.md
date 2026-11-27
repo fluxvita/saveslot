@@ -69,6 +69,12 @@ Open a new shell, then run `npm install -g` again. The steps in detail: [`docs/s
 - Security issues: privately, as [`SECURITY.md`](SECURITY.md) says.
 - Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md). Who decides what: [`GOVERNANCE.md`](GOVERNANCE.md). Everyone follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 
+## Development
+
+Read the [development guide](docs/development.md) first: set up, run the checks, run one test, find where a change belongs, and rehearse a small fix. How the code is organized and why is in [guide chapter 12](docs/guide/12-contributing.md) and [spec `02-architecture.md`](docs/spec/02-architecture.md).
+
+For agents: follow [`AGENTS.md`](AGENTS.md).
+
 ## License
 
 [Apache-2.0](LICENSE). The name and logo are covered by the [trademark policy](TRADEMARKS.md).

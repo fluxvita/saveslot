@@ -29,8 +29,13 @@ export interface SelectedRow {
   readonly validFrom?: string;
   readonly validTo?: string | null;
   readonly revoked: boolean;
-  /** Every field's value, by field ID. */
+  /** Every field's value, by field ID; a withheld one is not there. */
   readonly values: Readonly<Record<string, FieldValue>>;
+  /**
+   * Read by record time: the fields whose value then a contribution no longer readable gave (not
+   * given; the row marked `partially_deleted`, 03-data-model/03-deletion «版本表»).
+   */
+  readonly withheld?: readonly string[];
 }
 
 export interface RowFacts {

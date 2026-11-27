@@ -23,6 +23,7 @@ import type {
 import { segmentsOf as segmentsFrom } from "../delta/index.ts";
 import { compare, rationalOf } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
+import { cellWithheld, withholdingIn } from "../store/readable-content.ts";
 import type { Condition, Literal, QueryPlan } from "./params.ts";
 import {
   correctSpansOf,
@@ -44,7 +45,23 @@ export type RowCell = {
   revoked: boolean | null;
   /** A field cell saying the entity has no value there (`__ver.no_value`). */
   no_value: boolean | null;
+  /**
+   * Its value came from a contribution no longer readable (`cellWithheld`): the value is not read
+   * (its columns are emptied here), the cell still counts as a value there.
+   */
+  withheld?: boolean | null;
 } & Record<string, unknown>;
+
+/** A cell read as `cellWithheld` says: a withheld one's value columns emptied. */
+export function readableCell<C extends RowCell>(c: C): C {
+  if (c.withheld !== true) return c;
+  const out: Record<string, unknown> = { ...c };
+  for (const k of Object.keys(out)) if (k.startsWith("c_")) out[k] = null;
+  return out as C;
+}
+
+/** The source key of a withheld cell: it never runs together with a value read. */
+const WITHHELD = "\u0000withheld";
 
 type Cell = RowCell & { row_id: string };
 
@@ -64,11 +81,12 @@ async function cellsAsOf(
     : "NULL AS vf, NULL AS vt";
   const cols = t.fields.flatMap((f) => selectOf(f).map((x, i) => `${x} AS c_${f.id}_${i}`));
   const r = await tx.query<Cell>(
-    `SELECT row_id, field_id, ${interval}, rec_from, revoked, no_value, ${cols.join(", ")} FROM ${versions}
+    `SELECT row_id, field_id, ${interval}, rec_from, revoked, no_value, ${cellWithheld("v", await withholdingIn(tx))} AS withheld,
+       ${cols.join(", ")} FROM ${versions} v
      WHERE rec_from <= $1 AND (rec_to IS NULL OR rec_to > $1)${ids !== undefined ? " AND row_id = ANY($2)" : ""}`,
     (ids !== undefined ? [s, [...ids]] : [s]) as never,
   );
-  return [...r.rows];
+  return r.rows.map(readableCell);
 }
 
 /**
@@ -124,17 +142,31 @@ const cellValue = (f: CompiledBaseField, c: RowCell): FieldValue =>
     selectOf(f).map((_, i) => c[`c_${f.id}_${i}`]),
   );
 
-/** A state entity's segments from its cells: where it has a value, equal pieces run together. */
+/**
+ * A state entity's segments from its cells: where it has a value, equal pieces run together.
+ * `withheld`: the fields whose value there a withheld cell gave (not given, the segment marked); a
+ * withheld piece runs together only with another withheld one.
+ */
 export function segmentsOf(
   t: CompiledBaseTable,
   cells: readonly RowCell[],
-): { from: string; to: string | null; values: Record<string, FieldValue> }[] {
-  // The sources `delta` can carry per segment are not read here: every source is empty.
-  return segmentsFrom(t, cells, { decode }).map((s) => ({
-    from: s.from,
-    to: s.to,
-    values: s.values as Record<string, FieldValue>,
-  }));
+): {
+  from: string;
+  to: string | null;
+  values: Record<string, FieldValue>;
+  withheld: readonly string[];
+}[] {
+  // The sources `delta` can carry per segment are not read here: every source is empty but a
+  // withheld cell's.
+  return segmentsFrom(t, cells, {
+    decode,
+    sourceOf: (_, c) => ((c as RowCell).withheld === true ? WITHHELD : ""),
+  }).map((s) => {
+    const withheld = t.fields.filter((f) => s.source[f.id] === WITHHELD).map((f) => f.id);
+    const values = { ...(s.values as Record<string, FieldValue>) };
+    for (const f of withheld) delete values[f];
+    return { from: s.from, to: s.to, values, withheld };
+  });
 }
 
 // --- conditions, evaluated here -------------------------------------------------------------------
@@ -243,14 +275,17 @@ export async function selectRowsAsOf(
             validTo: seg.to,
             revoked: false,
             values: seg.values,
+            ...(seg.withheld.length > 0 ? { withheld: seg.withheld } : {}),
           });
       }
       continue;
     }
     const values: Record<string, FieldValue> = Object.create(null);
+    const withheld: string[] = [];
     for (const f of t.fields) {
       const c = cells.find((x) => x.field_id === f.id);
-      values[f.id] = c === undefined ? null : cellValue(f, c);
+      if (c?.withheld === true) withheld.push(f.id);
+      else values[f.id] = c === undefined ? null : cellValue(f, c);
     }
     const revoked = cells.some((c) => c.field_id === "existence" && c.revoked === true);
     if (revoked && !plan.includeRevoked) continue;
@@ -265,7 +300,7 @@ export async function selectRowsAsOf(
             : null;
       if (point === null || !within(point, plan.time.from, plan.time.to)) continue;
     }
-    rows.push({ id, revoked, values });
+    rows.push({ id, revoked, values, ...(withheld.length > 0 ? { withheld } : {}) });
   }
   // Conditions on the fields here; those on valid_from / valid_to apply after merging (./rows.ts).
   const onFields = plan.where.filter((c) => typeof c.column !== "string");

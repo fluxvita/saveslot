@@ -447,8 +447,11 @@ export async function queryInTx(tx: ReadTx, input: QueryInput): Promise<QueryOut
     rows: page.map((r, i) => {
       const by = changers.get(r.ver);
       const d = detailed?.details[i];
+      // A ref summary that left out a value a removed contribution gave (03-deletion «版本表»).
+      const partial = detailed?.partialRows.has(i) === true;
       return {
         ...r.row,
+        ...(partial ? { marks: { ...r.row.marks, partially_deleted: true as const } } : {}),
         ...(by !== undefined ? { changed_by: by } : {}),
         ...(d !== undefined
           ? { detail: { ...d, ...((r.premises ?? []).length > 0 ? { premises: r.premises } : {}) } }

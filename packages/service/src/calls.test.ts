@@ -312,6 +312,26 @@ describe("contractError", () => {
     });
   });
 
+  it("a tenant's connection gone under a use: certainly not committed is unavailable (busy); maybe committed stays internal", () => {
+    warnings.length = 0;
+    const gone = (code: string) =>
+      Object.assign(new Error("connection to db.example.internal ended"), { code });
+    const lost = contractError(gone("connection_lost"), warn, { tenant: "tn_x" });
+    expect([lost.code, lost.detail]).toEqual(["unavailable", { reason: "busy", retry_after: 1 }]);
+    expect(lost.message).not.toContain("example");
+    // Raised over another (a read whose record could not be written): the same.
+    const over = new Error("over", { cause: gone("connection_lost") });
+    expect(contractError(over, warn).code).toBe("unavailable");
+    const unknown = contractError(gone("commit_unknown"), warn, { tenant: "tn_x" });
+    expect(unknown.code).toBe("internal");
+    expect(warnings).toEqual([
+      ["tenant_connection_lost", { tenant: "tn_x", code: "connection_lost" }],
+      ["tenant_connection_lost", { code: "connection_lost" }],
+      ["tenant_connection_lost", { tenant: "tn_x", code: "commit_unknown" }],
+      ["internal", expect.objectContaining({ incident: unknown.detail["incident"] })],
+    ]);
+  });
+
   it("a path not implemented yet: not_in_this_version, reason kept, reported by structure", () => {
     const e = contractError(
       new WriteError("internal", "writing a table a derived rule reads is not implemented", {

@@ -371,7 +371,7 @@
 | `corrected` | 该行被纠错过。状态类表上按段给：这一段里所读字段的值出自纠错写入（合并的段里任一段是即可） |
 | `revoked` | 该行已撤销；只在 `include_revoked: true` 时出现 |
 | `possibly_affected` | 本连接实例之前读过的版本后来受影响；值后来恢复则撤掉 |
-| `partially_deleted` | 按时刻读、还原时，当时的部分数据已删除 |
+| `partially_deleted` | 按时刻读（`history` 的 `as_of`、`query` 的后续页）、还原时，当时的部分数据已删除：出自被删除去掉的贡献的值不给。`history` 的 `changes` 里同名字段标在一条上，表示那一侧不给 |
 | `pending_deletion` | 这一行受一项可撤回的删除影响（判据见 data-model「删除 · 撤回与宽限期」的"受影响"；这段时间里它上面的事项不能处理、写入不能 `undo`） |
 | `dangling_ref` | 这一行的某个 `ref` 字段指向的行 / 实体已撤销或已被隐私删除；引用方的值不变，只标出来。带字段与状态（`revoked` / `deleted`） |
 | `premise_changed` | 这一行当前的值所用到的前提（5.1）后来变了；值没有动，是否仍然成立由读方判断。**任何读取方**都看得到。带前提所在的行、声明的字段、声明时所见的版本、原因、使它变了的操作号、本行里由这条声明覆盖的字段、哪次写入声明的 |
@@ -464,7 +464,7 @@
 | `composition`（后续） | 派生行由哪些基础行构成 |
 
 - 四种模式都按 `limit` / `cursor` 分页。
-- `timeline` 列出这一行 / 实体上的全部操作，含没有生效的（候选、待确认）与由 `resolve`、删除、撤回触发的；条目的 `via` 说明来由。内容已按删除移除的字段带 `removed: true`。schema 切换时常量 `backfill` 补出的值也是一条：`intent` 是 `schema_switch`，`via` 是 `{schema: {sv}}`，`actor` 是 `system`，没有源数据；它不改行的 `ver`，所以当前 `ver` 里的操作号可以比这一条早。回退写回的字段可能带 `no_value` 或 `uncovered`（含义见 5.4）。声明了前提的写入带 `premises`（目标、字段、所见版本、现在是否已变）；重申与清除也各是一条，清除的 `premises` 是空数组；同一请求里对同一行的几个 op 各是一条，按 op 下标从后往前。已不再作数的声明（被同一目标上更晚的声明取代，或被清除）给 `ended`，不带原因与 `since`。后面的页停在第一页的操作号上，但前提的状态是现在的，`since` 可以大于那个操作号。前提目标所在的表对读方不可见时，那一条只给 `hidden: true`、现在是否已变与 `since`，不给目标、字段、所见版本与原因：这是有意的例外，读方知道这次写入依据的某条记录变了以及从哪次操作起，不知道是什么、怎么变的。
+- `timeline` 列出这一行 / 实体上的全部操作，含没有生效的（候选、待确认）与由 `resolve`、删除、撤回触发的；条目的 `via` 说明来由。内容已按删除移除的字段带 `removed: true`，它的 `result` 是 `removed`（不是 `dropped`：`dropped` 是删除重放后不再是贡献、内容还在的项）。schema 切换时常量 `backfill` 补出的值也是一条：`intent` 是 `schema_switch`，`via` 是 `{schema: {sv}}`，`actor` 是 `system`，没有源数据；它不改行的 `ver`，所以当前 `ver` 里的操作号可以比这一条早。回退写回的字段可能带 `no_value` 或 `uncovered`（含义见 5.4）。声明了前提的写入带 `premises`（目标、字段、所见版本、现在是否已变）；重申与清除也各是一条，清除的 `premises` 是空数组；同一请求里对同一行的几个 op 各是一条，按 op 下标从后往前。已不再作数的声明（被同一目标上更晚的声明取代，或被清除）给 `ended`，不带原因与 `since`。后面的页停在第一页的操作号上，但前提的状态是现在的，`since` 可以大于那个操作号。前提目标所在的表对读方不可见时，那一条只给 `hidden: true`、现在是否已变与 `since`，不给目标、字段、所见版本与原因：这是有意的例外，读方知道这次写入依据的某条记录变了以及从哪次操作起，不知道是什么、怎么变的。
 - `as_of` 接受操作号、时刻、`{read}`（任何连接实例的一次读取）或 `{task}`（**限本连接实例**的该任务，默认取它对这个目标的最后一次读取，`other_reads` 列出其余几次；`as_of` 自己的读取读到的是历史版本，不算在内）；后两种按那次读取所见状态的位置还原，那次读取读的是同一张表时另沿用它的业务时间条件，别的表的读取只取位置。早于第一条操作的时刻给 `seq: 0`、不带 `recorded_at`，结果为空。结果标明当时的 `sv`，值按它解释；早于这个 slot 第一次生效的位置，`sv` 取它的第一版（表名、字段名也按它）。`{read}` 指向一次不可见范围内的读取时报 `not_found`（`read`）；`{task}` 下没有读过这个目标报 `not_found`（`read`，`param` 为 `as_of/task`）。
   - 事件类表、无时间表上，到那时已撤销的行照样返回，带 `marks.revoked`；那时还不存在的目标结果为空。
   - 目标从未有过任何版本（对它的写入都没有生效，例如唯一的一次写入只成了候选或待确认）时报 `not_found`（`row` / `entity`），与 ID 不存在相同，各种模式都一样；目标有过版本、`as_of` 早于它的第一个版本时结果为空（上一条）。
@@ -480,7 +480,7 @@
 
 ### `sources`
 
-- `list`（默认）、`search`（`q` 必填；第一版是子串匹配）、`get`（`id` 必填）。`from` / `to` 按记录时间，`[from, to)`。`kind` 的取值含 saveslot 生成的 `api_call`；被纠错写入用作值来源的带 `correction: true`。只返回可见 slot 的源数据；`slot` 过滤指向不存在或不可见的 slot 报 `not_found`（`slot`），不可见的源数据 ID 报 `not_found`。调用方对某个 slot 的可见范围不是整个 slot（只到其中一部分表）时，第一版里这个 slot 的源数据对它一律不存在：`list` 与 `search` 不给，`get` 报与不存在相同的 `not_found`，按名字过滤这个 slot 得到空列表（slot 本身仍可见）——源数据属于 slot，原文与 `api_call` 的请求里可以提到这个 slot 的任何表（[`08-open-questions.md`](08-open-questions.md)）。`list` 与 `search` 按 `seq` 倒序（日志里的先后，不按记录时刻：时钟回拨时记录时刻不单调），翻页的键也是它。`search` 比对原文、`file_ref` 的名字与摘录、`api_call` 的请求文本，不比 slot 名与写入者；两边先做 NFC，只折叠 ASCII 字母 A–Z（与名字的比较同一口径，不做 Unicode 大小写折叠），`q` 为空或 NFC 之后为空报 `invalid_argument`；一次调用扫过的条数有上限，所以一页可能不满却仍给出下一页。
+- `list`（默认）、`search`（`q` 必填；第一版是子串匹配）、`get`（`id` 必填）。`from` / `to` 按记录时间，`[from, to)`。`kind` 的取值含 saveslot 生成的 `api_call`；被纠错写入用作值来源的带 `correction: true`。只返回可见 slot 的源数据；`slot` 过滤指向不存在或不可见的 slot 报 `not_found`（`slot`），不可见的源数据 ID 报 `not_found`。调用方对某个 slot 的可见范围不是整个 slot（只到其中一部分表）时，第一版里这个 slot 的源数据对它一律不存在：`list` 与 `search` 不给，`get` 报与不存在相同的 `not_found`，按名字过滤这个 slot 得到空列表（slot 本身仍可见）——源数据属于 slot，原文与 `api_call` 的请求里可以提到这个 slot 的任何表（[`08-open-questions.md`](08-open-questions.md)）。`list` 与 `search` 按 `seq` 倒序（日志里的先后，不按记录时刻：时钟回拨时记录时刻不单调），翻页的键也是它。`search` 比对原文、`file_ref` 的名字与摘录、`api_call` 的请求文本，不比 slot 名与写入者；两边先做 NFC，只折叠 ASCII 字母 A–Z（与名字的比较同一口径，不做 Unicode 大小写折叠），`q` 为空或 NFC 之后为空报 `invalid_argument`；一次调用扫过的条数有上限，所以一页可能不满却仍给出下一页。`total`：`list` 是满足过滤条件的全部源数据（宽限期内待删除的也算）；`search` 是全部命中，只在满足过滤条件的源数据一次调用就能扫完时给，这时每一页都扫过全部、给出同一个数；扫不完时不给 `total`，还有没有下一页只看 `next_cursor`。待删除的原文读不到，不计入 `search` 的命中。
 - `get` 返回原文或文件引用、所属 slot、记录时间、写入者，以及它产生了哪些数据（只列调用方可见的表）。`api_call` 没有原文：`get` 的 `text` 给它的请求的 JCS 文本，列表的 `excerpt` 给这段文本的前 200 个字符。`correction: true` 指它是某次意图为 `correct` 的写入的值来源。三种模式都记入 read_log，只记操作、模式与 ID，搜索词不记。
 - **宽限期内待删除的**不返回内容，带 `deletion: {state: "pending", item, expires_at}`；**已物理删除的**带 `deletion: {state: "removed", at, reason}`。列表里同样处理。待删除的照给的只有不属于它内容的部分：ID、种类、来源级别、slot、记录时间、写入者、`correction`；它自己的块（原文、文件、请求、陈述时间 `stated_at`）不给，`get` 也不给 `produced`。`search` 按原文匹配，待删除的原文读不到，所以搜不到它；排序只按记录次序、`from` / `to` 只按记录时间，读不到的 `stated_at` 不参与定位置与筛选。**这一版的限制**：这一版不落账删除的执行，源数据不会处于已物理删除的状态；内核遇到这样一条时，读到它的那次调用报 `not_in_this_version`（`reason` 是 `not_implemented`），不给它的任何内容。
 
@@ -782,7 +782,7 @@
 | `rate_limited` | 限流或配额（`quota`）；同一租户已有一次对拍或导入在跑（`busy`） |
 | `handle_expired` | 签名句柄过期（`expired`）、恢复次数对不上（`restored`）、`dc_` 已经执行过而又拿它重出预览（`executed`）、翻页期间派生表被刷新过（`derived_changed`） |
 | `not_in_this_version` | 调用了第一版不实现、或 0.1.0 尚未提供的参数、取值或操作。`reason` 说明是哪一种，附是哪个；schema 草稿里只对从未被写入的表放开的改动用在写入过的表上时，`reason` 是 `table_written` |
-| `unavailable` | 暂时不能处理：租户被占用或此刻打不开——写入排队、加锁超时、它的存储还没释放（`busy`）；租户正在走恢复流程（`restoring`）；租户正在导入（`importing`）；对拍进入比较阶段而排队超时（`reconciling`）；服务刚启动还在补跑到期任务（`starting`）；服务正在停止，不再接新的请求（`stopping`）。可重试时附 `retry_after` |
+| `unavailable` | 暂时不能处理：租户被占用或此刻打不开——写入排队、加锁超时、它的存储还没释放，或服务器模式下这次使用撞上租户的连接已断开、确定没有提交（`busy`）；租户正在走恢复流程（`restoring`）；租户正在导入（`importing`）；对拍进入比较阶段而排队超时（`reconciling`）；服务刚启动还在补跑到期任务（`starting`）；服务正在停止，不再接新的请求（`stopping`）。可重试时附 `retry_after` |
 | `internal` | 服务端内部错误。附 `incident`（供排查的编号，不含用户内容） |
 | `import_rejected` | 导入的文件不合格：格式不认识（`unsupported_format`）、不是从头开始（`not_from_start`）、续传的几段顺序不对（`segment_order`）、事件头链断裂（`chain_broken`）、内容校验和不符（`checksum_mismatch`）、条数或末尾对不上、清单与内容对不上（`incomplete`，如清单里的恢复次数不是导入的日志自己的）、重放失败（`replay_failed`）。只给位置（`seq`、`path`），不回显内容 |
 

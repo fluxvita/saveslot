@@ -888,6 +888,24 @@ describe("a read's column names (05 §6 saveslot_query)", () => {
   });
 });
 
+describe("a timeline item a deletion removed (05 §6 `timeline`)", () => {
+  it("is marked removed by a deletion, without its value", () => {
+    const h = sample("history");
+    const entries = h.result["entries"] as R[];
+    const first = entries[0] as R;
+    const removed = {
+      ...first,
+      fields: {
+        amount: { result: "removed", removed: true, sources: { value: [], operation: [] } },
+      },
+    };
+    const x = renderResult(h.tool, { ...h.result, entries: [removed, ...entries.slice(1)] });
+    expect(x).toContain("(removed by a deletion)");
+    // A known code: not the fallback that quotes an unknown one.
+    expect(x).not.toMatch(/\(untrusted-data-[0-9a-f]{32}[^)]*removed/);
+  });
+});
+
 describe("every mark of the contract has a text (05 §4.2)", () => {
   const item = "pi_8VEZWJ3J7BMKMXTV";
   const ref = { table: "ledger.expenses", row: "r_4KWKRM296X61WJ89DY5XJNVA4P" };

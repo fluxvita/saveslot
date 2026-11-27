@@ -296,11 +296,67 @@ describe("a search looks at a bounded number of sources a call", () => {
         seen.push(...result.sources.map((x) => x.excerpt as string));
         // At most 3 looked at: never all three matches on one page.
         expect(result.sources.length).toBeLessThan(3);
+        // More sources than one scan looks at: no total, on any page.
+        expect(result).not.toHaveProperty("total");
         position = result.next_position;
         pages += 1;
       } while (position !== undefined && pages < 10);
       expect(seen).toEqual(["match 5", "match 3", "match 1"]);
       expect(pages).toBeGreaterThan(1);
+    },
+    T,
+  );
+});
+
+describe("total", () => {
+  it(
+    "list: every source the filters take, on each page as of the first page's operation",
+    async () => {
+      for (const [i, text] of ["one", "two", "three"].entries()) {
+        await said(text, [{ intent: "insert", table: "ledger.lunch", set: { note: `n${i}` } }]);
+      }
+      const all = (await list({})) as Listed & { total: number };
+      expect(all.total).toBe(all.sources.length);
+      const first = (await list({ limit: 1 })) as Listed & { total: number };
+      expect(first.total).toBe(all.total);
+      expect(first.sources).toHaveLength(1);
+      const messages = (await list({ kind: "user_message" })) as Listed & { total: number };
+      expect(messages.total).toBe(3);
+      // A source recorded between the pages is not on the next page, nor in its total.
+      await said("four", [{ intent: "insert", table: "ledger.lunch", set: { note: "n3" } }]);
+      const page1 = (await list({ kind: "user_message", limit: 2 })) as Listed & { total: number };
+      expect(page1.total).toBe(4);
+      await said("five", [{ intent: "insert", table: "ledger.lunch", set: { note: "n4" } }]);
+      const page2 = (await list({
+        kind: "user_message",
+        limit: 2,
+        position: page1.next_position,
+      })) as Listed & { total: number };
+      expect(page2.total).toBe(4);
+      expect(page2.sources).toHaveLength(2);
+      expect(page2.next_position).toBeUndefined();
+    },
+    T,
+  );
+
+  it(
+    "search: every match, the same on each page, when every source fits in one scan",
+    async () => {
+      for (const [i, text] of ["match 1", "other 2", "match 3", "other 4", "match 5"].entries()) {
+        await said(text, [{ intent: "insert", table: "ledger.lunch", set: { note: `n${i}` } }]);
+      }
+      const search = (more: Record<string, unknown>) =>
+        list({ mode: "search", q: "match", ...more }) as Promise<Listed & { total?: number }>;
+      const one = await search({ limit: 1 });
+      expect(one.total).toBe(3);
+      expect(one.sources.map((x) => x.excerpt)).toEqual(["match 5"]);
+      const two = await search({ limit: 1, position: one.next_position });
+      expect(two.total).toBe(3);
+      expect(two.sources.map((x) => x.excerpt)).toEqual(["match 3"]);
+      const three = await search({ limit: 1, position: two.next_position });
+      expect(three.sources.map((x) => x.excerpt)).toEqual(["match 1"]);
+      expect(three.next_position).toBeUndefined();
+      expect((await search({ q: "nothing like it" })).total).toBe(0);
     },
     T,
   );

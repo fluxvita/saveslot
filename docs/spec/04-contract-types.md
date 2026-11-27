@@ -734,7 +734,7 @@ interface TimelineField {
     uncovered?: true;            // this item (a revert, taking the previous value) only makes the reverted write stop taking effect in this segment, and gives no value: this segment returns to the gap left by the revoke
     before?: Value; after?: Value;
     valid?: Interval;            // state table: the interval this item resolved to (the latest one given prevails: at write time, or re-resolved later by a privacy deletion)
-    removed?: true;              // the content has been removed by a deletion
+    removed?: true;              // the content has been removed by a deletion; result is then removed
     /** schema_const: this value comes from the constant backfill at the schema switch to version sv (it has no source data and is not cleared by a privacy deletion). */
     sources?: { value: SourceRef[]; operation: SourceRef[]; schema_const?: { sv: Sv } };
 }
@@ -756,7 +756,7 @@ interface AsOfResult extends CommonResult, PageResult {
   other_reads?: Array<{ read: ReadId; seq: Seq; at: Instant }>;   // with as_of: {task}: the other reads of this target by the same task
 }
 
-/** before / after are not given when there is no value. "*": a boolean, true means exists. */
+/** before / after are not given when there is no value, nor when a contribution a deletion removed gave it (the entry then carries partially_deleted). "*": a boolean, true means exists. */
 interface ChangedField { before?: Value; after?: Value }
 
 interface ChangesResult extends CommonResult, PageResult {
@@ -771,6 +771,8 @@ interface ChangesResult extends CommonResult, PageResult {
     target: TargetRef;
     /** Lists only the fields whose value actually changed. Event tables, timeless tables: one object per field. State tables: each field is an array ordered by interval, each segment with its own interval (the same shape as TimelineField[] in timeline). "*" is whether this row / this segment exists, given when a revoke or the undo of a revoke changes it. */
     fields: Record<FieldName | "*", ChangedField | Array<ChangedField & { valid: Interval }>>;
+    /** A field's before or after came from a contribution a deletion removed (in its grace period or carried out): that side is not given (data-model "Deletion · Version table"). */
+    partially_deleted?: true;
   }>;
 }
 ```
@@ -817,8 +819,10 @@ interface SourcesParams extends CommonParams, PageParams {
   id?: SourceId;                      // get: required
 }
 
-interface SourcesListResult extends CommonResult, PageResult {
+interface SourcesListResult extends CommonResult, Omit<PageResult, "total"> {
   mode: "list" | "search";
+  /** Always for list. For search, only when the source data the filters take can be scanned in full by one call (all the matches); otherwise not given, and next_cursor says more may follow (04-contract sources). */
+  total?: number;
   sources: Array<{
     id: SourceId; kind: SourceKind; slot: SlotName;
     recorded_at: Instant; stated_at?: Instant; actor: Actor;
@@ -1348,8 +1352,11 @@ type FieldResultCode = "applied" | "candidate" | "awaiting" | "corroborated" | "
 
 /** The result code of one contribution in the timeline. One more than the write receipt, dropped: after the replay of a privacy deletion this item is no longer a contribution
  *  (it has the same value as the one before it and originally did not point to evidence; the write it reverted is gone; or its interval was merged into another item of the same field). Appears only in the timeline.
- *  Does not include noop: a no-op produces no version, and the timeline does not list fields with a no-op. */
-type TimelineResultCode = Exclude<FieldResultCode, "noop"> | "dropped";
+ *  Does not include noop: a no-op produces no version, and the timeline does not list fields with a no-op.
+ *  removed: the content of this item has been removed by a deletion (in the grace period or carried out), and the entry carries removed: true as well; the two are either both there or both absent.
+ *  It differs from dropped: dropped is one of the three cases above, no longer a contribution after the replay, with its content still there; removed is an item whose source data was deleted, its content unreadable,
+ *  whether a contribution in effect that was taken away or a candidate or awaiting item whose evidence was deleted. After the deletion is cancelled, the original result code is back. */
+type TimelineResultCode = Exclude<FieldResultCode, "noop"> | "dropped" | "removed";
 
 type FieldResult =
   | { result: "applied";
