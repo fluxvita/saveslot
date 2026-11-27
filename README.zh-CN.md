@@ -127,6 +127,8 @@ echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> ~/.profile
 
 讲解与规格不一致时以规格为准。
 
+要把 Agent 或程序接到 saveslot 上，从[接入指南](docs/zh-CN/integration/README.md)开始。
+
 ## 仓库与许可证
 
 - 仓库：`fluxvita/saveslot`；网站：`saveslot.ai`；npm 包：`@fluxvita/saveslot`。

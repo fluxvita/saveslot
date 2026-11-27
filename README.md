@@ -28,6 +28,8 @@ The guide and the specification are in English under [`docs/`](docs/README.md). 
 | [`docs/zh-CN/research/`](docs/zh-CN/research/) | Background research (Chinese only for now) |
 | [`docs/`](docs/README.md) | Index of every document in both editions |
 
+To connect an agent or an application to saveslot, start at the [integration guide](docs/integration/README.md).
+
 ## Try it (local mode)
 
 You need Node 24.22.1 or later on the 24 line, or 26.12.1 or later.

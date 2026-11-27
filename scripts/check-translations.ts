@@ -29,7 +29,13 @@ export interface TranslationProblem {
 }
 
 /** Directories whose English files are translations of the same path under docs/zh-CN/. */
-const TRANSLATED = ["docs/spec/", "docs/guide/", "docs/process/", "docs/research/"];
+const TRANSLATED = [
+  "docs/spec/",
+  "docs/guide/",
+  "docs/process/",
+  "docs/research/",
+  "docs/integration/",
+];
 
 /**
  * Chinese directories whose English edition is not required yet. Each entry says why and until
@@ -67,6 +73,11 @@ export const ZH_LINKS_KEPT: readonly { file: string; target: string; why: string
     file: "docs/spec/README.md",
     target: "docs/zh-CN/spec/README.md",
     why: "the line saying the Chinese edition is authoritative",
+  },
+  {
+    file: "docs/integration/README.md",
+    target: "docs/zh-CN/integration/README.md",
+    why: "the language switch at the top of the page, which links its Chinese edition",
   },
   {
     file: "CONTRIBUTING.md",
