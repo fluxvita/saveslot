@@ -4,9 +4,10 @@
 # branch, so main never publishes. Publishes nothing in Changesets pre mode (prereleases are
 # published by hand) or when the entry's version is already on npm, so every other push to a release
 # branch ends after the first steps. Once a release is published, the `image` workflow builds and
-# pushes its container image, tagged with the version and `latest`. GitHub runs a `workflow_run`
-# workflow from the default branch's copy of this file, so a change to it takes effect once it is on
-# main.
+# pushes its container image, tagged with the version and `latest`; `next` is pointed at the
+# release, and the release's GitHub Release is created with notes from the packages' changelogs.
+# GitHub runs a `workflow_run` workflow from the default branch's copy of this file, so a change to
+# it takes effect once it is on main.
 
 name: release
 
@@ -79,6 +80,35 @@ jobs:
         run: |
           git tag "v$(node -p 'require("./packages/saveslot/package.json").version')"
           git push origin --tags
+      # `next` follows a release: `changeset publish` moves `latest` only, so `next` would stay on
+      # the last prerelease and `@next` would be older than `@latest` (RELEASING.md).
+      - if: steps.publish.outcome == 'success'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          version="$(node -p 'require("./packages/saveslot/package.json").version')"
+          for f in packages/*/package.json; do
+            name="$(node -p 'const p = require("./" + process.argv[1]); p.private ? "" : p.name' "$f")"
+            if [ -n "$name" ]; then npm dist-tag add "${name}@${version}" next; fi
+          done
+      # The GitHub Release of the tag, its notes gathered from the published packages' changelogs:
+      # each entry once, without the lines that only bump a dependency.
+      - if: steps.publish.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(node -p 'require("./packages/saveslot/package.json").version')"
+          for f in packages/*/package.json; do
+            if node -e 'process.exit(require("./" + process.argv[1]).private ? 1 : 0)' "$f"; then
+              awk -v v="## ${version}" '$0 == v { on = 1; next } on && /^## / { exit } on' \
+                "$(dirname "$f")/CHANGELOG.md"
+            fi
+          done |
+            grep -v -e '^### ' -e '^- Updated dependencies' -e '^ *- @fluxvita/' \
+              -e '^No changes in this release' |
+            awk 'NF == 0 { next } !seen[$0]++' > "$RUNNER_TEMP/notes.md"
+          gh release create "v${version}" --verify-tag --title "v${version}" \
+            --notes-file "$RUNNER_TEMP/notes.md" --latest
 
   image:
     needs: publish
