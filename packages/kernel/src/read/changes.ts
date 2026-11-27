@@ -115,9 +115,9 @@ function reads(table: string, row: string | undefined) {
 }
 
 /**
- * The position of this connection's latest read counted for the call under its task, if there is
- * one; else, when it read only under another task (or without one), that read's task. The connect
- * self-check read counts for neither.
+ * The greatest position of this connection's reads counted for the call under its task, if there
+ * is one; else, when it read only under another task (or without one), the task of that read of the
+ * greatest position. The connect self-check read counts for neither.
  */
 async function lastReadOf(
   tx: ReadTx,
@@ -128,9 +128,12 @@ async function lastReadOf(
   row: string | undefined,
 ): Promise<{ pos: number } | { other: string | null } | undefined> {
   const counts = reads(table, row);
-  // The buffered reads are later than every written one.
-  let other: { task: string | null } | undefined;
-  for (const e of [...buffer.entries()].reverse()) {
+  // The read of the greatest position, buffered or written, not the latest recorded: reads may be
+  // recorded in an order not theirs (several processes; a buffer written out or not), and the
+  // answer must not depend on it (02-architecture §7 «read_log 的持久性»).
+  let mine: number | undefined;
+  let other: { task: string | null; pos: number } | undefined;
+  for (const e of buffer.entries()) {
     if (e.actor !== actor || e.selfcheck === true) continue;
     const covers =
       e.table === table ||
@@ -138,8 +141,9 @@ async function lastReadOf(
       e.coarse.includes(table as TableId);
     if (!covers && e.operation !== "history") continue;
     if (!counts({ operation: e.operation, shape: e.shape, covers })) continue;
-    if (e.task === task) return { pos: e.pos };
-    other ??= { task: e.task };
+    const pos = Number(e.pos);
+    if (e.task === task) mine = Math.max(mine ?? pos, pos);
+    else if (other === undefined || pos >= other.pos) other = { task: e.task, pos };
   }
   const shapes = [
     historyShape("changes", table, null),
@@ -151,22 +155,26 @@ async function lastReadOf(
        ((l.operation NOT IN ('history', 'sql') AND (l.table_id = $3 OR EXISTS
          (SELECT 1 FROM read_log_rows x WHERE x.read_id = l.read_id AND x.table_id = $3)))
         OR (l.operation = 'history' AND l.shape = ANY($4)))`;
-  const mine = await tx.query<{ pos: unknown }>(
-    `SELECT l.pos FROM read_log l
-     WHERE l.actor = $1 AND l.task IS NOT DISTINCT FROM $2::text AND ${counted}
-     ORDER BY l.n DESC LIMIT 1`,
+  const written = await tx.query<{ pos: unknown }>(
+    `SELECT max(l.pos) AS pos FROM read_log l
+     WHERE l.actor = $1 AND l.task IS NOT DISTINCT FROM $2::text AND ${counted}`,
     [actor, task, table, shapes] as never,
   );
-  const x = mine.rows[0];
-  if (x !== undefined) return { pos: Number(x.pos) };
-  if (other !== undefined) return { other: other.task };
-  const o = await tx.query<{ task: string | null }>(
-    `SELECT l.task FROM read_log l
+  const x = written.rows[0]?.pos;
+  if (x !== undefined && x !== null) mine = Math.max(mine ?? Number(x), Number(x));
+  if (mine !== undefined) return { pos: mine };
+  const o = await tx.query<{ task: string | null; pos: unknown }>(
+    `SELECT l.task, l.pos FROM read_log l
      WHERE l.actor = $1 AND l.task IS DISTINCT FROM $2::text AND ${counted}
-     ORDER BY l.n DESC LIMIT 1`,
+     ORDER BY l.pos DESC, l.n DESC LIMIT 1`,
     [actor, task, table, shapes] as never,
   );
-  return o.rows[0] === undefined ? undefined : { other: o.rows[0].task };
+  const w = o.rows[0];
+  // Of the same position, the buffered one is the later recorded.
+  if (w !== undefined && (other === undefined || Number(w.pos) > other.pos)) {
+    return { other: w.task };
+  }
+  return other === undefined ? undefined : { other: other.task };
 }
 
 /** `since` and `until` as the caller gave them, for the position's identity. */

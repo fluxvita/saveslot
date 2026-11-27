@@ -10,7 +10,7 @@
 
 import { randomBytes } from "node:crypto";
 import { ERROR_CODES, type ErrorCode, type ErrorReason } from "@fluxvita/saveslot-contract";
-import type { KERNEL_OUTER_ERROR_REASONS } from "@fluxvita/saveslot-kernel";
+import { type KERNEL_OUTER_ERROR_REASONS, ReadNotRecorded } from "@fluxvita/saveslot-kernel";
 
 // The outer codes the kernel raises are the contract's, with the contract's reasons, but for
 // `internal`: its reasons (`not_implemented`, `inconsistent`) are the kernel's own, and are never
@@ -158,6 +158,9 @@ const LOST_RETRY_AFTER = 1;
 /** A new incident reference: random, no user content. */
 export const newIncident = (): string => `inc_${randomBytes(8).toString("hex")}`;
 
+/** Seconds a read refused for its record not written is tried again after. */
+const READ_RETRY_AFTER = 1;
+
 /**
  * The contract error of anything an operation threw. `warn` hears of every path not implemented
  * (by its reason) and every internal error (by its incident and the error's own name and code,
@@ -169,6 +172,32 @@ export function contractError(
   o: { readonly tenant?: string } = {},
 ): ContractError {
   if (e instanceof ContractError) return e;
+  // A read whose record could not be written is not given (02-architecture §7 «read_log 的持久性»):
+  // the caller tries again, and reading again is right. Also when the record's COMMIT went
+  // unanswered: the caller has nothing, and a record that may be there is harmless. Before the
+  // lost connection below: an error raised over one is this, not a write's. What failed, by name
+  // and code only; a connection gone is told as such, with its code.
+  if (e instanceof ReadNotRecorded) {
+    const gone = lostConnectionOf(e);
+    if (gone !== undefined) {
+      warn("tenant_connection_lost", {
+        ...(o.tenant !== undefined ? { tenant: o.tenant } : {}),
+        code: gone,
+      });
+    } else {
+      const cause = e.cause;
+      warn("read_not_recorded", {
+        ...(cause instanceof Error ? { cause: cause.name } : {}),
+        ...(typeof (cause as { code?: unknown })?.code === "string"
+          ? { cause_code: (cause as { code: string }).code }
+          : {}),
+      });
+    }
+    return new ContractError("unavailable", "the read could not be recorded; try again", {
+      reason: "busy",
+      retry_after: READ_RETRY_AFTER,
+    });
+  }
   // Logged where it was thrown (the try given up), once: answered as `connection_lost` is.
   if (e instanceof RetryOnLostConnection) {
     return new ContractError("unavailable", "the tenant's connection was gone; try again", {

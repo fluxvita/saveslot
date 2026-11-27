@@ -19,7 +19,7 @@ import {
   write,
 } from "@fluxvita/saveslot-kernel";
 import { COMPILED_V1, createSlotEvents, queryInTx } from "@fluxvita/saveslot-kernel/testing";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { insertRows } from "./testing/copy-log.fixture.ts";
 import { openReusable, type ReusableStore, snapshot } from "./testing/reusable-store.fixture.ts";
 
@@ -195,6 +195,10 @@ beforeAll(async () => {
 afterAll(async () => {
   await s?.close();
 }, T);
+// The cases that look into the read buffer keep their reads in it; the others run as the backend does.
+afterEach(() => {
+  s.buffered(false);
+});
 // Each case starts from the tables written once in beforeAll: the store emptied, the log put back
 // and replayed (K12: the log replayed into an empty storage gives the same tables), the clock as it
 // was. Writing them anew for each case took most of the file's time; the first case checks that the
@@ -318,6 +322,7 @@ async function written(): Promise<void> {
 }
 
 it("each case starts from the tables as they were written: every table, row for row", async () => {
+  s.buffered(true);
   expect(Object.keys(seed.tables).length).toBeGreaterThan(10);
   expect(seed.events.length).toBeGreaterThan(20);
   expect(await s.store.read(snapshot)).toEqual(seed.tables);
@@ -1227,6 +1232,7 @@ describe("condition warnings, refusals, names echoed, edges", () => {
   });
 
   it("records only the rows of the page given", async () => {
+    s.buffered(true);
     await q({ table: "spend", limit: 1 });
     const [entry] = readBufferOf(s.store).take();
     expect(entry?.rows).toHaveLength(1);
@@ -1328,6 +1334,7 @@ describe("refusals", () => {
 
 describe("the read recorded", () => {
   it("records the page's rows with versions, one per entity, a shape without values", async () => {
+    s.buffered(true);
     const r = await q(
       {
         table: "budgets",
@@ -1367,6 +1374,7 @@ describe("the read recorded", () => {
   });
 
   it("is what a write without ver falls back to", async () => {
+    s.buffered(true);
     const r = await q(
       { table: "spend", where: [{ field: "note", op: "=", value: "lunch" }] },
       { actor: OTHER },

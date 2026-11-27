@@ -433,12 +433,9 @@ export async function runOperation(o: {
     // A call that may have taken effect (its operation done, not a read), its answer not made for
     // the connection gone: not `busy`, which says nothing was recorded. Internal, as a COMMIT
     // unanswered is: the caller reads the state before sending it again.
-    if (done && !READ_ONLY_OPERATIONS.has(o.operation) && lostConnectionOf(e) !== undefined) {
-      o.warn("tenant_connection_lost", {
-        tenant: o.tenant.tenant,
-        code: "connection_lost",
-        after: "effect",
-      });
+    const gone = lostConnectionOf(e);
+    if (done && !READ_ONLY_OPERATIONS.has(o.operation) && gone !== undefined) {
+      o.warn("tenant_connection_lost", { tenant: o.tenant.tenant, code: gone, after: "effect" });
       throw internalError(e, o.warn);
     }
     // A read meeting its tenant's connection gone, nothing given yet: once more, opened again.

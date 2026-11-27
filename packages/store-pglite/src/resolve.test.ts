@@ -20,6 +20,7 @@ import {
   renameConnection,
   resolve as resolve$,
   revokeConnection,
+  type TenantStore,
   WriteError,
 } from "@fluxvita/saveslot-kernel";
 import {
@@ -171,7 +172,7 @@ async function eventsOfOp(op: number) {
 }
 
 beforeAll(async () => {
-  s = await openReusable("saveslot-resolve-cases-");
+  s = await openReusable("saveslot-resolve-cases-", { buffered: true });
 }, T);
 afterAll(async () => {
   await s?.close();
@@ -1241,6 +1242,51 @@ describe("confirmation_mismatch gives the item as it is now (04-contract-types Â
         status: "resolved",
         warnings: [
           { code: "item_ver_fallback", item_ver: (detail as { item_ver: string }).item_ver },
+        ],
+      });
+    },
+    T,
+  );
+
+  it(
+    "with recordReads (the server mode): the detail a mismatch gives is written once the write's transaction is over, and counts as read",
+    async () => {
+      const { b, c, row, item } = await disputed();
+      await update(row, { b: "9.6" }, verAt(b), { actor: OTHER });
+      // The store as the server mode's: a read's record written through `recordReads` (here the
+      // store's own write transaction), none kept in a buffer.
+      const written: number[] = [];
+      const server: TenantStore = {
+        write: (fn) => s.store.write(fn),
+        read: (fn) => s.store.read(fn),
+        purgeResidue: () => s.store.purgeResidue(),
+        snapshot: () => s.store.snapshot(),
+        formatVersion: s.store.formatVersion,
+        close: async () => {},
+        recordReads: (fn) => {
+          written.push(1);
+          return s.store.write(fn);
+        },
+      };
+      const err = await refusal(
+        resolve$(server, ctxOf(USER), {
+          id: item,
+          decision: "keep_effective",
+          item_ver: verOfItem(c, item),
+        }),
+      );
+      expect(err).toMatchObject({ code: "confirmation_mismatch", reason: "changed" });
+      expect(written).toHaveLength(1);
+      expect(readBufferOf(server).size).toBe(0);
+      // Read through the mismatch, from what was written: the item version is the one current gave.
+      const r = await resolve$(server, ctxOf(USER), { id: item, decision: "keep_effective" });
+      expect(r).toMatchObject({
+        status: "resolved",
+        warnings: [
+          {
+            code: "item_ver_fallback",
+            item_ver: (err["current"] as { item_ver: string }).item_ver,
+          },
         ],
       });
     },

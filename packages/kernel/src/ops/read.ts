@@ -1,6 +1,7 @@
 // The read operations `query`, `history`, `catalog`, `pending`, `sources` and `reads.list` (docs/zh-CN/spec/04-contract-types.md §4.2, §4.3, §4.5, §4.6, §4.8, §8.3): the call context and the
-// parameters into `read`, in one read transaction of the tenant store; the read is recorded in the
-// store's read buffer once it succeeded (02-architecture §7 «read_log 的持久性»). A caller may keep
+// parameters into `read`, in one read transaction of the tenant store; the read is recorded once it
+// succeeded and before it is returned: written at once where the store has `recordReads`, else in
+// its read buffer (`keepRead`; 02-architecture §7 «read_log 的持久性»). A caller may keep
 // less of a read than was asked for (`Fit`): what is recorded is then what it keeps.
 
 import { readBufferOf } from "../audit/index.ts";
@@ -28,7 +29,7 @@ import {
 } from "../read/index.ts";
 import type { ReadTx, TenantStore } from "../store/ports.ts";
 import { createOpsContext, type OpsContext } from "./context.ts";
-import { flushReads } from "./flush-reads.ts";
+import { flushReads, keepRead } from "./flush-reads.ts";
 import { newReadId } from "./ids.ts";
 
 /**
@@ -107,7 +108,7 @@ export async function query(
     (r) => r.rows.length,
     fit,
   );
-  readBufferOf(store).record(entry);
+  await keepRead(store, entry);
   return result;
 }
 
@@ -140,7 +141,7 @@ export async function history(
           : length((r as { rows?: unknown }).rows),
     fit,
   );
-  reads.record(entry);
+  await keepRead(store, entry);
   return result;
 }
 
@@ -191,7 +192,7 @@ export async function catalog(
         : undefined,
     fit,
   );
-  readBufferOf(store).record(entry);
+  await keepRead(store, entry);
   return result;
 }
 
@@ -218,7 +219,7 @@ export async function sources(
     (r) => (r.mode === "get" ? undefined : r.sources.length),
     fit,
   );
-  readBufferOf(store).record(entry);
+  await keepRead(store, entry);
   return result;
 }
 
@@ -258,7 +259,7 @@ export async function pending(
     (r) => ("items" in r ? length(r["items"]) : undefined),
     fit,
   );
-  readBufferOf(store).record(entry);
+  await keepRead(store, entry);
   return result;
 }
 
@@ -300,6 +301,6 @@ export async function sql(
     options.fit,
     "max_rows",
   );
-  readBufferOf(store).record(entry);
+  await keepRead(store, entry);
   return result;
 }

@@ -18,7 +18,7 @@ import {
 } from "@fluxvita/saveslot-kernel";
 import { derivedSchema, rule } from "@fluxvita/saveslot-kernel/rsql-testing";
 import { createSlotEvents, SLOT } from "@fluxvita/saveslot-kernel/testing";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { openReusable, type ReusableStore } from "./testing/reusable-store.fixture.ts";
 
 const T = 120_000;
@@ -132,6 +132,10 @@ beforeAll(async () => {
 afterAll(async () => {
   await s?.close();
 }, T);
+// The cases that look into the read buffer keep their reads in it; the others run as the backend does.
+afterEach(() => {
+  s.buffered(false);
+});
 beforeEach(async () => {
   await s.reset();
   readBufferOf(s.store).take();
@@ -808,6 +812,7 @@ describe("my_last_read", () => {
   });
 
   it("counts the buffered reads and the written ones alike", async () => {
+    s.buffered(true);
     await q("runs");
     // A write puts the buffered reads into the read log.
     const a = await w({
@@ -859,6 +864,7 @@ describe("my_last_read", () => {
     });
 
     it("finds a read in the read log as well as in the buffer", async () => {
+      s.buffered(true);
       await q("runs", { task: "A" });
       await w({ ops: [{ intent: "update", table: "runs", row: run, set: { feeling: "z" } }] });
       expect(readBufferOf(s.store).size).toBe(0);
@@ -932,9 +938,10 @@ describe("my_last_read", () => {
   it("is the table's reads only: an as_of of one row is the row's, at its point", async () => {
     await q("runs");
     await history(s.store, ctx(), { table: "runs", row: run, mode: "as_of", as_of: ops["update"] });
-    // The newer of the table's read and the row's is the row's (recorded later), at its point.
+    // Of the table's read and the row's, the one of the greater position counts, not the one
+    // recorded later: the table's (the row's is at its point, earlier).
     expect(await h({ table: "runs", row: run, since: "my_last_read" })).toMatchObject({
-      since: ops["update"],
+      since: ops["rent"],
     });
     expect(await h({ table: "runs", since: "my_last_read" })).toMatchObject({
       since: ops["rent"],
@@ -1291,6 +1298,7 @@ describe("the parameters of a mode", () => {
 
 describe("the read recorded", () => {
   it("is a read of the table at `until`, with no version given: not a row read for the fallback", async () => {
+    s.buffered(true);
     readBufferOf(s.store).take();
     await h({ table: "runs", since: 0, until: ops["update"] });
     const [e] = readBufferOf(s.store).entries();
@@ -1315,6 +1323,7 @@ describe("the read recorded", () => {
   });
 
   it("counts as a read of the slot's sv: a write without sv passes by sv_fallback", async () => {
+    s.buffered(true);
     readBufferOf(s.store).take();
     await h({ table: "runs", since: 0 }, { actor: OTHER });
     const [e] = readBufferOf(s.store).entries();
@@ -1325,6 +1334,7 @@ describe("the read recorded", () => {
   });
 
   it("is kept to what the caller keeps: the next page starts at the first entry not kept", async () => {
+    s.buffered(true);
     readBufferOf(s.store).take();
     const kept = (await history(
       s.store,

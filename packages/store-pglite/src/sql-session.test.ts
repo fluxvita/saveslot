@@ -12,7 +12,7 @@ import { buildTenant, NOW, runSql, TENANT, USER } from "./testing/sql-tenant.fix
 let s: ReusableStore;
 beforeAll(async () => {
   await loadRsql();
-  s = await openReusable("saveslot-sqlsession-");
+  s = await openReusable("saveslot-sqlsession-", { buffered: true });
   await buildTenant(s);
 }, 300_000);
 afterAll(async () => {

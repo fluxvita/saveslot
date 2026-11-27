@@ -677,7 +677,7 @@ interface ChangesParams extends CommonParams, PageParams {
   mode: "changes";
   table: TableName;              // a base table. A derived table reports invalid_argument (derived_table)
   row?: RowId; entity?: EntityId; entity_key?: Record<FieldName, Value>;   // no target = the whole table
-  /** Exclusive. Required. "my_last_read" = the position this connection last read (with task, only the same task counts), recognized by the range the read covered (a call on the whole table only recognizes reads that covered the table); if there was no read, reports read_first (no_read); if it was read only under another task, reports read_first (task_mismatch). 0 looks from the beginning. */
+  /** Exclusive. Required. "my_last_read" = the latest position this connection has read (with task, only the same task counts), recognized by the range the read covered (a call on the whole table only recognizes reads that covered the table); if there was no read, reports read_first (no_read); if it was read only under another task, reports read_first (task_mismatch). 0 looks from the beginning. */
   since: RecordPoint | "my_last_read";
   /** Inclusive. Default latest. */
   until?: RecordPoint;

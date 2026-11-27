@@ -2721,6 +2721,16 @@ describe.skipIf(TEST_BACKEND !== "postgres")("runServer: a use meets its connect
       return {
         write: (fn) => run(() => store.write(fn), true),
         read: (fn) => run(() => store.read(fn), false),
+        // A read's record, written before it answers: counted as a read transaction here.
+        ...(store.recordReads !== undefined
+          ? {
+              recordReads: <T>(fn: Parameters<NonNullable<Store["recordReads"]>>[0]) =>
+                run(
+                  () => (store.recordReads as NonNullable<Store["recordReads"]>)(fn),
+                  false,
+                ) as Promise<T>,
+            }
+          : {}),
         purgeResidue: () => store.purgeResidue(),
         snapshot: () => store.snapshot(),
         formatVersion: store.formatVersion,
@@ -2853,6 +2863,27 @@ describe.skipIf(TEST_BACKEND !== "postgres")("runServer: a use meets its connect
         expect([after.status, after.body.slice(0, 200)]).toEqual([200, expect.any(String)]);
         expect(x.k.opened).toBe(opened + 1);
         expect(x.reopened()).toBe(1);
+        expect(x.lostLines()).toHaveLength(1);
+      } finally {
+        await x.s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "a read whose record meets it, the read itself done: run once more, answered",
+    async () => {
+      const x = await lostServer();
+      try {
+        expect((await send(x.s, { path: "/v1/slots", headers: x.auth })).status).toBe(200);
+        const opened = x.k.opened;
+        // The authentication's read and the operation's read pass; the record's write meets it.
+        x.k.passFirst = 2;
+        x.k.failNext = "connection_lost";
+        const after = await send(x.s, { path: "/v1/slots", headers: x.auth });
+        expect([after.status, after.body.slice(0, 200)]).toEqual([200, expect.any(String)]);
+        expect(x.k.opened).toBe(opened + 1);
         expect(x.lostLines()).toHaveLength(1);
       } finally {
         await x.s.close();
