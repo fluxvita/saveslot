@@ -1,4 +1,10 @@
-# <img src="docs/assets/saveslot-mark.svg" width="32" height="32" alt=""> saveslot
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme-banner-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/readme-banner-light.png">
+  <img alt="SaveSlot" src="docs/assets/readme-banner-light.png">
+</picture>
+
+# saveslot
 
 [English](README.md) · 简体中文
 
