@@ -168,6 +168,11 @@ export async function openAccounts(
     control = await openControlPlane(db);
   } catch (e) {
     if (!(e instanceof ControlPlaneError)) throw e;
+    // Older: upgraded by `server start` or `server init`, with no server running, not here.
+    if (e.code === "control_format_old") {
+      io.err(TEXTS.server.restoreControlOld);
+      return 5;
+    }
     if (e.code !== "control_not_initialized" && e.code !== "control_format_mismatch") throw e;
     io.err(
       TEXTS.server.startRefused(

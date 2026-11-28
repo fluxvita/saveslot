@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   addLocalUser,
+  CONTROL_FORMAT,
   CursorKeys,
   initControlPlane,
   initLocalAccounts,
@@ -29,6 +30,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { cellFromEnv, sqlOn } from "../../store-postgres/src/testing/server.fixture.ts";
 import { databaseOf, TEST_BACKEND, testBackend } from "../../test-backend/src/index.fixture.ts";
 import {
+  CURRENT_CONTROL_FORMAT,
   CURRENT_FORMAT,
   dumpDatabase,
   dumpScript,
@@ -164,7 +166,11 @@ async function makeSample(out: string): Promise<ServerSampleExpected> {
   for (const t of tenants) {
     dumpDatabase(from, databaseOf(d.dirOf(t.database)), join(out, `tenant-${t.database}.sql`));
   }
-  const sample: ServerSampleExpected = { storage_format: CURRENT_FORMAT, tenants };
+  const sample: ServerSampleExpected = {
+    storage_format: CURRENT_FORMAT,
+    control_format: CURRENT_CONTROL_FORMAT,
+    tenants,
+  };
   writeFileSync(join(out, "expected.json"), `${JSON.stringify(sample, null, 2)}\n`);
   return sample;
 }
@@ -207,6 +213,11 @@ async function readSample(dir: string): Promise<void> {
     expect(now.storage_format).toBe(sample.storage_format);
   }
   await server.close();
+  // The control database, of the sample's format, was upgraded to this version's when it started.
+  const control = await store.read((tx) =>
+    tx.query<{ value: string }>("SELECT value FROM control_meta WHERE key = 'format'"),
+  );
+  expect(control.rows[0]?.value).toBe(String(CONTROL_FORMAT));
   // K12: each tenant's log replayed into an empty database gives the tables the sample holds.
   const reconciler = new TenantReconciler({
     scratch: {
@@ -232,6 +243,11 @@ async function readSample(dir: string): Promise<void> {
   }
   await store.close();
 }
+
+// The control format this file writes into a sample is the service's: filed by it, upgraded to it.
+it("the control format a sample is filed under is the service's", () => {
+  expect(CURRENT_CONTROL_FORMAT).toBe(CONTROL_FORMAT);
+});
 
 describe.skipIf(!ON_POSTGRES)("a sample of the current storage format, server mode", () => {
   const out = OUT ?? join(root, "sample");
@@ -267,12 +283,13 @@ describe.skipIf(!ON_POSTGRES || KEPT.length === 0)(
   () => {
     it.each(KEPT)(
       "$name: opens with this version, with the values it was dumped with",
-      async ({ format, name }) => {
+      async ({ format, name, controlFormat }) => {
         const dir = join(REPO, SAMPLES_DIR, name);
         const sample = JSON.parse(
           readFileSync(join(dir, "expected.json"), "utf8"),
         ) as ServerSampleExpected;
         expect(sample.storage_format).toBe(format);
+        expect(sample.control_format ?? 1).toBe(controlFormat ?? 1);
         await readSample(dir);
       },
       T,

@@ -13,6 +13,7 @@ import { TEST_KEY } from "../../service/src/external-assertion.fixture.ts";
 import { cellFromEnv } from "../../store-postgres/src/testing/server.fixture.ts";
 import { testPostgres } from "../../store-postgres/src/testing/test-postgres.fixture.ts";
 import { TEST_BACKEND, testBackend } from "../../test-backend/src/index.fixture.ts";
+import { secondConnection } from "../../test-backend/src/second-connection.fixture.ts";
 import type { ServerCommandIO } from "./server-command-io.ts";
 import { serverCommand } from "./server-commands.ts";
 import { SERVER_LOCK } from "./server-lock.ts";
@@ -37,7 +38,11 @@ afterAll(async () => {
 }, T);
 
 /** A control database of its own; `close` from the command leaves it open for the test. */
-async function controlDb(): Promise<{ store: TenantStore; open: () => Promise<ControlDatabase> }> {
+async function controlDb(): Promise<{
+  store: TenantStore;
+  dir: string;
+  open: () => Promise<ControlDatabase>;
+}> {
   const dir = join(root, `db${n++}`);
   const store = tmp.track(
     `the control database ${dir}`,
@@ -46,6 +51,7 @@ async function controlDb(): Promise<{ store: TenantStore; open: () => Promise<Co
   stores.push(store);
   return {
     store,
+    dir,
     open: async () => ({
       read: store.read.bind(store),
       write: store.write.bind(store),
@@ -170,6 +176,73 @@ describe("saveslot server init", () => {
           ],
       );
       expect(format).toBe("99");
+    },
+    T,
+  );
+});
+
+describe("saveslot server init: a control database of an older format (06-cli §4.1)", () => {
+  const formatOf = async (store: TenantStore) =>
+    (await store.read((tx) => tx.query("SELECT value FROM control_meta WHERE key = 'format'")))
+      .rows[0]?.["value"];
+  const asFormat1 = (store: TenantStore) =>
+    store.write((tx) =>
+      tx.exec(
+        "ALTER TABLE tenants DROP COLUMN import_holder; UPDATE control_meta SET value = '1' WHERE key = 'format'",
+      ),
+    );
+
+  it(
+    "with no server running: upgraded, and said so; run again, nothing more",
+    async () => {
+      const db = await controlDb();
+      const keyFile = join(keyDir(), "handle-key");
+      expect((await server(["init"], { env: env(keyFile), openControl: db.open })).code).toBe(0);
+      await asFormat1(db.store);
+      const r = await server(["init"], { env: env(keyFile), openControl: db.open });
+      expect(r).toMatchObject({ code: 0, err: "" });
+      expect(r.out).toContain("Upgraded the control database from format 1 to 2");
+      expect(await formatOf(db.store)).toBe("2");
+      const again = await server(["init"], { env: env(keyFile), openControl: db.open });
+      expect(again.code).toBe(0);
+      expect(again.out).not.toContain("Upgraded");
+    },
+    T,
+  );
+
+  // PGlite has one connection to a database: a server holding the lock exists on PostgreSQL only.
+  it.runIf(TEST_BACKEND === "postgres")(
+    "while a server holds the lock: refused with 5, nothing changed; of this format, init goes on",
+    async () => {
+      const db = await controlDb();
+      const keyFile = join(keyDir(), "handle-key");
+      expect((await server(["init"], { env: env(keyFile), openControl: db.open })).code).toBe(0);
+      await asFormat1(db.store);
+      const holder = await secondConnection(db.dir);
+      try {
+        const got = await holder.write((tx) =>
+          tx.query<{ got: boolean }>("SELECT pg_try_advisory_lock($1) AS got", [
+            SERVER_LOCK.toString(),
+          ]),
+        );
+        expect(got.rows[0]?.got).toBe(true);
+        const r = await server(["init"], { env: env(keyFile), openControl: db.open });
+        expect(r.code).toBe(5);
+        expect(r.err).toContain("upgraded only while no saveslot server runs on it");
+        expect(await formatOf(db.store)).toBe("1");
+        await holder.write((tx) =>
+          tx.query("SELECT pg_advisory_unlock($1)", [SERVER_LOCK.toString()]),
+        );
+        expect((await server(["init"], { env: env(keyFile), openControl: db.open })).code).toBe(0);
+        expect(await formatOf(db.store)).toBe("2");
+        // Of this format, a running server does not stop init.
+        await holder.write((tx) =>
+          tx.query("SELECT pg_try_advisory_lock($1)", [SERVER_LOCK.toString()]),
+        );
+        expect((await server(["init"], { env: env(keyFile), openControl: db.open })).code).toBe(0);
+      } finally {
+        await holder.close();
+      }
     },
     T,
   );

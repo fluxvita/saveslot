@@ -35,6 +35,7 @@ import {
   checkDiscard,
   openControlDatabase,
   PostgresBackend,
+  PostgresStoreError,
 } from "@fluxvita/saveslot-store-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TEST_KEY } from "../../service/src/external-assertion.fixture.ts";
@@ -48,8 +49,11 @@ import {
 import { secondConnection } from "../../test-backend/src/second-connection.fixture.ts";
 import { SAMPLE_SLOT } from "./format-sample.fixture.ts";
 import {
+  CellIdentityRefused,
+  CellUnreachable,
   cellBackend,
   cellDiscarder,
+  cellIdentityOf,
   type RunningServer,
   type RunServerOptions,
   ServerAlreadyRunning,
@@ -510,6 +514,124 @@ describe("runServer: what answers which request", () => {
       expect(statuses).toEqual([401, 401, 401, 401, 401, 429]);
       // Another source behind the same proxy is not held back with it.
       expect(await failedLogin(s, "203.0.113.6", "alex")).toBe(401);
+    },
+    T,
+  );
+});
+
+// One control database, servers one after another (06-cli §4.1 `server start`): the control
+// database upgraded by the server that holds the lock alone; the settings every server shares
+// recorded, a change logged; a login form one server gave taken by the next, the key file shared.
+describe("runServer: servers one after another on one control database", () => {
+  const start = async (
+    c: Awaited<ReturnType<typeof controlDb>>,
+    cfg: ServerConfig,
+    warned: [string, Readonly<Record<string, string>>][],
+  ) =>
+    runServer({
+      config: cfg,
+      version: "0.0.0-test",
+      openControl: async () => c.db,
+      backend: tenants().backend,
+      warn: (event, fields) => warned.push([event, fields]),
+    });
+
+  it(
+    "a control database of format 1 is upgraded at start, each step logged",
+    async () => {
+      const c = await controlDb();
+      await c.store.write((tx) =>
+        tx.exec(
+          "ALTER TABLE tenants DROP COLUMN import_holder; UPDATE control_meta SET value = '1' WHERE key = 'format'",
+        ),
+      );
+      const cfg = config();
+      await CursorKeys.createFile(cfg.handleKeyFile);
+      const warned: [string, Readonly<Record<string, string>>][] = [];
+      const s = await start(c, cfg, warned);
+      await s.close();
+      expect(warned.filter(([e]) => e.startsWith("control_upgrad"))).toEqual([
+        ["control_upgrading", { from: "1", to: "2" }],
+        ["control_upgrade_step", { step: "1->2" }],
+        ["control_upgraded", { from: "1", to: "2" }],
+      ]);
+      const f = await c.store.read((tx) =>
+        tx.query<{ value: string }>("SELECT value FROM control_meta WHERE key = 'format'"),
+      );
+      expect(f.rows[0]?.value).toBe("2");
+    },
+    T,
+  );
+
+  it(
+    "the settings recorded at the first start; one changed is logged at the next, by name only",
+    async () => {
+      const c = await controlDb();
+      const cfg = config();
+      await CursorKeys.createFile(cfg.handleKeyFile);
+      const warned: [string, Readonly<Record<string, string>>][] = [];
+      await (await start(c, cfg, warned)).close();
+      const recorded = async () =>
+        (
+          await c.store.read((tx) =>
+            tx.query<{ value: string }>(
+              "SELECT value FROM control_meta WHERE key = 'config_fingerprint'",
+            ),
+          )
+        ).rows[0]?.value;
+      const first = await recorded();
+      expect(first).toBeDefined();
+      await (await start(c, cfg, warned)).close();
+      expect(await recorded()).toBe(first);
+      expect(warned.map(([e]) => e)).not.toContain("config_fingerprint_changed");
+      await (await start(c, { ...cfg, allowedOrigins: ["https://app.example"] }, warned)).close();
+      expect(warned.filter(([e]) => e === "config_fingerprint_changed")).toEqual([
+        ["config_fingerprint_changed", { items: "allowed_origins" }],
+      ]);
+      expect(await recorded()).not.toBe(first);
+      expect(await recorded()).not.toContain("app.example");
+    },
+    T,
+  );
+
+  it(
+    "a login form one server gave is taken by the next; under another key file it is not",
+    async () => {
+      const c = await controlDb();
+      const cfg = config();
+      await CursorKeys.createFile(cfg.handleKeyFile);
+      const warned: [string, Readonly<Record<string, string>>][] = [];
+      const one = await start(c, cfg, warned);
+      const f = await loginForm(one, "203.0.113.20");
+      await one.close();
+      const post = (s: RunningServer) =>
+        send(s, {
+          method: "POST",
+          path: "/account/login",
+          headers: { ...FORM, cookie: f.cookie, "x-forwarded-for": "203.0.113.20" },
+          body: new URLSearchParams({
+            form_token: f.token,
+            return_to: "/oauth/",
+            name: "nobody-here",
+            password: "not-the-password",
+          }).toString(),
+        });
+      // The form taken: the login itself fails (no such account), not the form.
+      const two = await start(c, cfg, warned);
+      try {
+        expect((await post(two)).status).toBe(401);
+      } finally {
+        await two.close();
+      }
+      // Another key file (a deployment that changed it, every server stopped): the form is not.
+      const other = config();
+      await CursorKeys.createFile(other.handleKeyFile);
+      const three = await start(c, { ...cfg, handleKeyFile: other.handleKeyFile }, warned);
+      try {
+        expect((await post(three)).status).toBe(400);
+      } finally {
+        await three.close();
+      }
     },
     T,
   );
@@ -3828,5 +3950,40 @@ describe("runServer: call records", () => {
     expect([...seen].filter((k) => !(CALL_RECORD_FIELDS as readonly string[]).includes(k))).toEqual(
       [],
     );
+  });
+});
+
+// Telling the cell's server apart (06-cli §4.1 «各进程相同的配置»): what a failure is answered as.
+describe("runServer: the cell's server told apart", () => {
+  class Asked extends PostgresBackend {
+    readonly answer: () => Promise<never>;
+    constructor(answer: () => Promise<never>) {
+      super({ cells: {} });
+      this.answer = answer;
+    }
+    override clusterIdentity(): Promise<never> {
+      return this.answer();
+    }
+  }
+  const failing = (code: string, sqlState?: string) =>
+    new Asked(() =>
+      Promise.reject(
+        new PostgresStoreError(
+          code as never,
+          "refused",
+          sqlState !== undefined ? { sqlState } : {},
+        ),
+      ),
+    );
+
+  it("not reached, or its connection broken: unreachable (to retry); any other refusal: refused, with its SQLSTATE", async () => {
+    for (const code of ["connection_failed", "connection_lost"]) {
+      await expect(cellIdentityOf(failing(code), config())).rejects.toBeInstanceOf(CellUnreachable);
+    }
+    const refused = await cellIdentityOf(failing("query_failed", "XX000"), config()).catch(
+      (e: unknown) => e,
+    );
+    expect(refused).toBeInstanceOf(CellIdentityRefused);
+    expect(refused).toMatchObject({ sqlState: "XX000" });
   });
 });
