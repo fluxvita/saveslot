@@ -62,7 +62,7 @@ Agent 经 **MCP** 连 saveslot（第 1 章介绍过：Agent 调用外部工具�
 | `saveslot_pending`      | 读     | 列出待处理事项，看某一项的详情                                    |
 | `saveslot_write`        | 写     | 写入：新增、变更、纠错、撤销                                     |
 | `saveslot_resolve`      | 写     | 处理一个待处理事项                                          |
-| `saveslot_schema_draft` | 写     | 提交 schema 草稿（建 slot、改表结构；第一版先开建 slot）                 |
+| `saveslot_schema_draft` | 写     | 提交 schema 草稿：建 slot、改已有 slot 的 schema（0.2.0 能生效哪些改动见第 9 章） |
 | `saveslot_delete`       | 写     | 执行一次已预览的删除（0.2.0 尚未提供）                              |
 
 完整设计里还有两个与"重新抽取"有关的工具，随那部分功能后做。
@@ -121,7 +121,7 @@ Agent 的宿主直接走远程 MCP，地址形如 `https://<域名>/mcp`。授�
 
 ### 没有 Agent 的程序：HTTP
 
-脚本、自己写的程序可以直接调 HTTP 接口，路径以 `/v1` 开头，请求和回执就是契约里定义的 JSON。HTTP 和 MCP 由同一份契约生成，能做的事基本一样；差别主要是 HTTP 不做文本渲染、不按长度截断结果，并且开放管理类操作。
+脚本、自己写的程序可以直接调 HTTP 接口，路径以 `/v1` 开头，请求和回执就是契约里定义的 JSON。HTTP 和 MCP 实现的是同一份契约，能做的事基本一样；差别主要是 HTTP 不做文本渲染、不按长度截断结果，并且开放管理类操作。
 
 这类调用方里有一种值得单独说：**连接器**，即定时把某个外部系统（手环、记账 App）的数据搬进 saveslot 的程序。它不是 saveslot 的一部分，由官方或开发者各自编写；saveslot 不调度它，也不替它保管外部系统的授权令牌。它以一个连接实例的身份经 HTTP 写入，和别的接入方同等对待。saveslot 为它准备的只有三样通用能力：凭证可以只限定到它负责的那个 slot（第 4 节）；表上可以声明来源键，同一条记录反复同步不会重复新增（第 9 章）；分批写入的重发识别。凭证这样取得：
 
@@ -153,14 +153,14 @@ $ saveslot connect http --name "手环 · 连接器" --slots health
 | 删除与撤回（0.2.0 尚未提供） | `saveslot delete`、`saveslot delete cancel` |
 | 查数据、看历史 | `saveslot query`、`saveslot history`、`saveslot sql`、`saveslot sources` |
 | 看谁读过什么 | `saveslot reads` |
-| 校验、对拍 | `saveslot verify`、`saveslot verify --replay` |
+| 校验、对拍（对拍 0.2.0 尚未提供） | `saveslot verify`、`saveslot verify --replay` |
 | 导出（可选口令加密）、导入到空的账户 | `saveslot export`、`saveslot import` |
 
 三点设计值得知道：
 
 - **命令行不做业务写入。** 没有 `saveslot write`。写入需要把一句话变成意图、行、值和证据，这是 Agent 的事。人想改数据，对 Agent 说，那句话就是证据。
 - **命令行不直接碰数据目录。** 除了初始化那一次，所有命令都经 saveslot 服务。这样单写者和读取留痕都不会被绕过。
-- **确认时绑定的是人刚看到的那一份。** 处理事项时，命令行先把详情展示出来，再用展示时拿到的事项版本去执行；删除时用的是刚展示的那份预览的句柄。删除的确认要求输入完整的 `delete`，不接受按一下 `y`。
+- **确认时绑定的是人刚看到的那一份。** 处理事项时，命令行先把详情展示出来，再用展示时拿到的事项版本去执行；删除时用的是刚展示的那份预览的句柄，确认要求输入完整的 `delete`，不接受按一下 `y`（删除 0.2.0 尚未提供，见上表）。
 
 规格：[`../spec/06-cli.md`](../spec/06-cli.md)。
 
@@ -185,8 +185,8 @@ $ saveslot connect http --name "手环 · 连接器" --slots health
 |---|---|---|
 | `saveslot.read` | 全部读操作，含删除预览 | 每个连接实例都必须有 |
 | `saveslot.write` | 写入；处理与写入有关的事项 | 给 |
-| `saveslot.schema` | 提交 schema 草稿；处理 schema 变更事项 | 不给，要显式勾选 |
-| `saveslot.delete` | 执行删除；撤回删除（0.2.0 尚未提供） | 不给，要显式勾选 |
+| `saveslot.schema` | 提交 schema 草稿；处理 schema 变更事项 | 命令行签发时给；OAuth 授权页上不预先勾选，要用户自己勾 |
+| `saveslot.delete` | 执行删除；撤回删除（0.2.0 尚未提供） | 不给，要显式要求 |
 
 命令行签发时用 `--scope` 调整。两种写法，不能混用：
 
@@ -219,7 +219,7 @@ $ saveslot connect http --name "手环 · 连接器" --slots health
 
 ### 只有用户会话能做的事
 
-签发、改名、吊销连接实例；查看读取审计；日志校验与对拍；导出；导入。
+签发、改名、吊销连接实例；移除空的 slot；查看读取审计；日志校验与对拍；导出；导入。
 
 理由很直接：能签发凭证的 Agent 可以给自己任意权限；审计的对象正是各个 Agent，被审计的一方不该能读全部审计；导出是一次拿走全部数据，这是用户的权利，不是 Agent 的；导入决定了这个账户里有什么、谁的凭证还有效。
 
@@ -249,7 +249,7 @@ $ saveslot setup
       [x] Claude Code（claude 2.x，/usr/local/bin/claude）
       [x] Codex（codex 0.x，/opt/homebrew/bin/codex）
       [ ] Cursor（没有添加命令，需要手动粘贴配置：saveslot connect cursor）
-[5/5] 将为每个宿主签发一个连接实例（scope saveslot.read saveslot.write），并执行：
+[5/5] 将为每个宿主签发一个连接实例（scope saveslot.read saveslot.write saveslot.schema），并执行：
         claude mcp add saveslot --scope user -e SAVESLOT_TOKEN=<令牌> -- /usr/local/bin/saveslot mcp
         codex mcp add saveslot --env SAVESLOT_TOKEN=<令牌> -- /usr/local/bin/saveslot mcp
       执行以上 2 条命令？[Y/n]
@@ -257,8 +257,6 @@ $ saveslot setup
       Codex：已签发 MacBook · Codex · 自检通过 · 已接入
 完成。在 Claude Code 里输入 /mcp__saveslot__overview（斜杠菜单里显示为 /saveslot:overview）；在任何宿主里也可以问一句"saveslot 里有什么"。
 ```
-
-（宿主命令的确切写法以实现时的实测为准。）
 
 你要做的只有选择和一次同意：用哪个模板、接哪些宿主，每一项都有默认值；然后对"将要在宿主那一侧执行的命令"回答一次。这是接入的设计要求，以后新增的接入方式都按它检查：接入的每一步手动操作都会筛掉一部分人，而这些步骤里没有一步需要人的判断，人要判断的只有"接不接、给多大权限"。同意的对象是一份逐字列出的清单，这同时是安全上的好处。
 
@@ -302,7 +300,7 @@ saveslot 只执行宿主自己提供的添加命令（`claude mcp add`、`codex 
 | `control/` | 控制面，是几个文件：凭证的哈希、租户目录、登记存储（删除登记、最高序号、恢复次数、"恢复进行中"与"导入进行中"标记）、句柄签名密钥 |
 | `credentials/` | 用户会话的令牌，只有当前系统用户可读 |
 
-配置文件 `config.toml` 不由 `init` 生成：没有它时每一项都取默认值；要改就在 `~/.saveslot/` 下自己建这个文件，用 `saveslot config get` 查看每一项现在的值与来源。读取记录的落盘间隔这类数值在这里（如 `read_log.flush_seconds`）。文件里有写错的地方时服务不启动，并指出是哪一项。
+配置文件 `config.toml` 不由 `init` 生成：没有它时每一项都取默认值。要改就用 `saveslot config set <项> <值>`，它只收这个版本用到的项（0.2.0 里是 `read_log.flush_seconds`、`mcp.autostart`、`upgrade.backup`）；用 `saveslot config get` 查看每一项现在的值与来源。读取记录的落盘间隔这类数值在这里（如 `read_log.flush_seconds`）。文件里有写错的地方时服务不启动，并指出是哪一项。
 
 数据目录不要放在 iCloud Drive、Dropbox 这类同步盘里，同步软件会在 saveslot 不知情时改动文件；saveslot 检测到时会警告。
 
@@ -338,7 +336,7 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
 
 看到一条自检之外的读取记录，才说明 Agent 确实经这个连接实例连上了。在 Claude Code 里输入 `/mcp__saveslot__overview` 也一样：它会让 Agent 去读目录，产生一次这样的读取。
 
-出了问题，先跑 `saveslot doctor`。它逐项检查：服务在运行、套接字和凭证文件的权限、数据目录不在同步盘里、单写者锁、版本一致、有没有逾期没物理删除的删除、各宿主里 saveslot 的条目指向的可执行文件还在不在（用宿主自己的查看命令，不读它的配置文件）。每项结果是"通过 / 不通过 / 提醒"。三项只给提醒、不算不通过：系统时钟比日志末端落后 5 分钟以上；某个宿主里的 Agent 还没有经 saveslot 读过任何东西（如果已经让它记过而没有记上，多半是宿主没有允许它使用 saveslot 的工具，提醒里写着放行办法；刚接上还没用过时也会出现，用过一次就没有了）；**数据规模**，列出行数超过舒适线或实测线的表，以及事件总数、数据目录大小、最近一次打开数据的耗时，和实测范围对照（第 10 章第 5 节"关于数据量与日志的大小"）。
+出了问题，先跑 `saveslot doctor`。它逐项检查：服务在运行、套接字和凭证文件的权限、数据目录不在同步盘里、单写者锁、版本一致、各宿主里 saveslot 的条目（用宿主自己的查看命令，不读它的配置文件）。设计里还有一项"有没有逾期没物理删除的删除"，0.2.0 还没有隐私删除，不列这一项。每项结果是"通过 / 不通过 / 提醒"。下面几项只给提醒、不算不通过：系统时钟比日志末端落后 5 分钟以上；某个宿主里的 saveslot 条目看不出指向的是这一个 saveslot 的路径（宿主可能换了写法，提醒里给出移除那一条的命令）；某个宿主里的 Agent 还没有经 saveslot 读过任何东西（如果已经让它记过而没有记上，多半是宿主没有允许它使用 saveslot 的工具，提醒里写着放行办法；刚接上还没用过时也会出现，用过一次就没有了）；**数据规模**，列出行数超过舒适线或实测线的表，以及事件总数、数据目录大小、最近一次打开数据的耗时，和实测范围对照（第 10 章第 5 节"关于数据量与日志的大小"）。
 
 **服务器模式的上手**：`saveslot setup --profile <名字>` 走同一条线，步骤换成——没登录就先 `saveslot login`（SSH 里没有浏览器时加 `--device`）；没有 slot 就按模板建；对选中的宿主执行远程形式的添加命令。这条路上没有令牌，凭证由宿主自己走 OAuth 取得，授权页上的那次"授权"就是那一次同意（第 2 节），所以这里不选权限。能自动接的只有 Claude Code 和 Codex，其余宿主用 `saveslot connect <宿主> --profile <名字>`。宿主里已经有一条 `saveslot`（比如本机那条）时不会被覆盖，setup 会给出移除它的命令。它不切换当前使用的 profile，最后会提示 `saveslot profile use <名字>`。自部署还需要先在服务器上用 `saveslot server init` 初始化、`saveslot server user add` 建账户。
 
@@ -425,7 +423,7 @@ $ saveslot export --encrypt -o saveslot-2026-11.ndjson.age
 | 模式 | 怎么触发 |
 |---|---|
 | 服务器模式 | 运维命令 `saveslot server restore --tenant <租户>`（或 `--user <账户名>`） |
-| 本机模式 | `saveslot start --restored` |
+| 本机模式 | `saveslot start --restored`（0.2.0 尚未提供，见本小节末尾） |
 
 恢复流程做的事依次是：在控制面做一个"恢复进行中"的标记并把恢复次数加一；打开租户；追加一条"恢复"事件；按删除登记补删；补做已经到期的物理删除；核对；清掉标记；对外服务。
 
@@ -437,6 +435,8 @@ $ saveslot export --encrypt -o saveslot-2026-11.ndjson.age
 - 把删除登记和日志对一遍，发现了正常运行中不可能出现的组合（比如登记说某次删除待执行，日志里却根本没有它）。
 
 发现之后，服务器模式下拒绝对外服务、提示走恢复流程；本机模式下自动走恢复流程（本机只有一个用户，没有运维，拒绝服务没有意义）。兜底发现不了全部情形：回退的幅度很小、期间又没有删除时看不出来。所以恢复应当一律显式触发。
+
+> 0.2.0 里的情形：本机模式还没有恢复流程，`saveslot start` 不收 `--restored`；打开时发现"恢复进行中"的标记，或日志末尾的序号低于最高序号，就停下、不对外服务，也不自动走恢复流程。最高序号只在关闭租户时推进，所以第一道兜底只看得出日志被拨回到上一次关闭租户时的末尾之前。第二道兜底（对删除登记）随隐私删除一起提供。服务器模式下发现日志落后时，对这个租户的请求答 `internal`，回复里不提 `saveslot server restore`。
 
 ### 恢复流程管不到的情形
 
@@ -463,10 +463,10 @@ $ saveslot export --encrypt -o saveslot-2026-11.ndjson.age
 | 不做 | 第一版的替代 |
 |---|---|
 | 本地和云端各存一份并同步；多设备同步；离线写入 | 多设备共用就都连同一个服务器模式的 saveslot |
-| 合并导入（把导出装进已有数据的账户）、本机与服务器之间的持续同步 | 只能导入到空的租户：一次性地从一处搬到另一处（第 6 节；随服务器模式一起发布） |
+| 合并导入（把导出装进已有数据的账户）、本机与服务器之间的持续同步 | 只能导入到空的租户：一次性地从一处搬到另一处（第 6 节） |
 | 图形界面的 App | 命令行，或交代给 Agent |
 | 开发者 SDK（把 saveslot 嵌进别人的 Agent） | 只有 saveslot 服务这一种形态 |
-| 表级、字段级的数据权限 | 四种动作权限 × slot 范围（slot 范围随服务器模式一起发布） |
+| 表级、字段级的数据权限 | 四种动作权限 × slot 范围 |
 | 多人共享的 slot | 一个租户就是一个用户 |
 | 加密 | saveslot 不做应用层加密；云服务的存储在基础设施层加密，运营方读得到；自部署、本机由磁盘加密决定。删除靠物理删除。导出文件可以用口令加密（第 6 节） |
 | 弹窗确认（MCP 的 elicitation） | Agent 在对话里征得用户同意后再调用 |
@@ -475,6 +475,6 @@ $ saveslot export --encrypt -o saveslot-2026-11.ndjson.age
 | 本机模式的 Windows 支持 | macOS、Linux |
 | saveslot 自己调用模型 | 理解和抽取都由用户的 Agent 做 |
 
-发布顺序上，本机模式先发，服务器模式（云服务和自部署一起）随后。
+0.2.0 两种模式都提供；它提供哪些、尚未提供哪些，见 [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md) 第 7 节。
 
 完整范围见 [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md)；后续规划见 [`../spec/01-positioning.md`](../spec/01-positioning.md)「后续规划」。

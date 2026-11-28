@@ -31,7 +31,7 @@ The following are guaranteed by deterministic checks in the kernel, with no mode
 | If a declared premise changes, it is always pointed out | A row declared "I wrote this after seeing the value of that row", when that row changes within the declared range (corrected, changed, revoked, deleted), carries "premise changed" for every reader, stating which record changed and in which operation | Premise declarations and their changes are both written into the log (chapter 5, section 6) |
 | History is not lost | Corrections, changes and revocations are all appended as new events; the old value stays in history, can be read back as of a given moment, and can also be reverted | The log is append-only |
 | A resend does not duplicate | If the same request is resent because of a network problem, it is applied only once | Request key |
-| What is confirmed is what is executed | When handling a pending item or executing a deletion, if the version or handle passed back does not match the current content, it is rejected | `item_ver`, the `dc_` handle |
+| What is confirmed is what is executed | When handling a pending item or executing a deletion, if the version or handle passed back does not match the current content, it is rejected (the half about deletion and the `dc_` handle is not provided yet in 0.2.0) | `item_ver`, the `dc_` handle |
 | Deletion can be regretted (not provided yet in 0.2.0) | Privacy deletion is previewed first, then confirmed, and within 24 hours after confirmation it can be cancelled | Grace period |
 | Deleted data does not come back | The deletion itself is a log event; replaying an export or restoring an old backup does not bring the deleted data back (restoring a backup has a boundary, see section 5) | Tombstone, deletion register |
 | Queries cannot step outside | Read-only SQL accepts only syntax on the allowlist, cannot write data, and cannot touch internal tables | Syntax tree allowlist (the specification, "Restricted SQL") |
@@ -105,7 +105,7 @@ Beyond the boundary, saveslot cannot defend against:
 
 When the kernel is later embedded in other applications (the developer SDK, later), the boundary becomes that application: it is the owner of the data and can open the database directly, and saveslot cannot defend against it.
 
-Whether such a bypass can be detected afterwards: partly. Replaying from the log and comparing with the live tables (the replay comparison) can detect that "someone changed the tables directly without changing the log"; log verification can detect missing events or altered event headers. But if the other party changes the log as well and recomputes the verification information, it cannot be detected.
+Whether such a bypass can be detected afterwards: partly. Replaying from the log and comparing with the live tables (the replay comparison, not provided yet in 0.2.0) can detect that "someone changed the tables directly without changing the log"; log verification can detect missing events or altered event headers. But if the other party changes the log as well and recomputes the verification information, it cannot be detected.
 
 In addition, saveslot by default sends usage data nowhere, and local mode can be used in full without a network. If usage statistics are added in the future (including crash or error reports sent from the machine), they must be explicitly enabled by the user or the deployer, and user content is never collected; logs written on the local machine do not count (the telemetry paragraph of architecture §10).
 
@@ -118,13 +118,13 @@ saveslot's goal for log integrity is deliberately narrowed:
 | Tables can be changed only by `apply`, and the log is append-only | Business code or operations scripts that bypass the kernel and change tables directly |
 | The event header chain (each event header carries the SHA-256 hash of the previous one) | Missing events, events reordered, event headers changed by accident |
 | A checksum for every content block (also SHA-256, stored together with the content and cleared together with it) | Content changed by storage corruption |
-| The replay comparison: replay from the log and compare with the live tables | Tables and log that are inconsistent |
+| The replay comparison: replay from the log and compare with the live tables (not provided yet in 0.2.0) | Tables and log that are inconsistent |
 
 **Not promised**: protection against tampering by a person who can write to storage (including the operator). If they change the content and recompute the checksum, or recompute the whole event header chain, the verification passes all the same. saveslot also does not give third parties a verifiable proof that "this log has not been touched".
 
 This is a deliberate trade-off, not an oversight. The first version sets its goal at "traceable and protected against mistakes", and makes "can be deleted completely" solid: no value computed from content is put in an event header, so once the content is deleted, nothing can be used to verify "whether a sentence ever existed". The checksum uses the same algorithm as the hash chain, but it is used only to detect corruption and is not a commitment to the content: when a content block is cleared, it is cleared with it. The signed checkpoints, hash trees and commitments to content that tamper protection would need are in the later plans, to be done as the product requires; they will be added through a new event format, and existing events are not affected.
 
-There are two checks the user can run: `verify` (verifies the event header chain and the content checksums) and the replay comparison. In the first version the replay comparison is triggered manually by the user, and there is no periodic background spot check.
+In the design there are two checks the user can run: `verify` (verifies the event header chain and the content checksums) and the replay comparison; in the first version the replay comparison is triggered manually by the user, and there is no periodic background spot check. 0.2.0 does not provide the replay comparison yet (`saveslot verify --replay`), so the only check a user can run is `saveslot verify`.
 
 ## 5. What is explicitly not guaranteed
 
@@ -136,7 +136,7 @@ Listed one by one, so that none is assumed to be "surely there".
 - **Re-applying deletions after a restore has a precondition.** It relies on a deletion register kept outside the log; if the register is restored together with the data, saveslot cannot re-apply the deletions and cannot detect this either. The default directory layout of local mode is exactly this case.
 - **Swapping back old data without going through the restore procedure may not be detected.** There are two fallback checks, but when the rollback is small and there are no deletions in the meantime, it cannot be seen.
 - **In an extremely narrow window, a cancellation may be lost.** The direction is deleting more, not deleting less.
-- **Metadata that remains after deletion.** You can see that an operation of some type took place at some moment, who did it, on which row of which table (internal ID), and what its intent was; you cannot see any value, original words, table name or field name. Whether this meets the requirements of the "right to be forgotten" is still waiting for legal confirmation, and the conclusion must be obtained before server mode goes live.
+- **Metadata that remains after deletion.** You can see that an operation of some type took place at some moment, who did it, on which row of which table (internal ID), and what its intent was; you cannot see any value, original words, table name or field name. Whether this meets the requirements of the "right to be forgotten" is still waiting for legal confirmation (specification [`../spec/08-open-questions.md`](../spec/08-open-questions.md), "The legal position on deletion").
 - **Text in the schema and the names of connections do not go with the deletion.** They are not derived from any source. The same holds, for operations that have no evidence at all, for the task identifier the agent reports about itself and for an explicit idempotency key.
 - **The request key of another request is a hash that contains content.** When another request passed back a deleted value unchanged, the request key of that request is deleted only together with its own evidence (chapter 8, section 8).
 - **External files.** saveslot stores only references and cannot delete the files themselves.
@@ -147,7 +147,7 @@ Listed one by one, so that none is assumed to be "surely there".
 
 **About the read record**
 
-- **It has a retention period.** The read record is cleaned up when it expires (initial value 180 days, adjustable with `saveslot config set read_log.retention_days`, not lower than 30 days), so "whom a correction affected" can only be answered for reads within the retention period, and the result states which day it covers.
+- **It has a retention period.** The read record is cleaned up when it expires (initial value 180 days, not lower than 30 days), so "whom a correction affected" can only be answered for reads within the retention period, and the result states which day it covers. 0.2.0 does not clean up read records yet (they only grow), and `read_log.retention_days` cannot be set yet.
 - **The last few seconds may be lost in a crash.** Only for a process crash, and only those reads after which there is no write at all.
 - **It does not go with the export.** What is exported is the log; the read record is not part of it.
 
@@ -232,7 +232,7 @@ This only lowers the risk and cannot be taken as a guarantee: a model can still 
 - Ordinary writes all keep history and can be reverted.
 - A high-impact write does not take effect directly and first goes into awaiting confirmation.
 - The only irreversible action is deletion, and deletion must be previewed first and then executed with the handle, and after execution there are still 24 hours in which it can be cancelled.
-- Issuing, renaming and revoking credentials, viewing read auditing, verifying the log and the replay comparison, exporting all data, and importing an export: only a user session can do these, and an agent connected only through MCP cannot.
+- Issuing, renaming and revoking credentials, removing an empty slot, viewing read auditing, verifying the log and the replay comparison (the replay comparison is not provided yet in 0.2.0), exporting all data, and importing an export: only a user session can do these, and an agent connected only through MCP cannot.
 
 Taking the two layers together: saveslot does not claim to have solved prompt injection; what it does is keep the consequences of an injection within the range of "visible and revertible".
 
