@@ -4892,6 +4892,66 @@ describe("in the grace period, decisions and undo on the affected row are refuse
     expect(run.steps.at(-1)?.refused).toBe(false);
     expect(run.steps.at(-1)?.decided).toEqual(["17/f2"]);
   });
+  // #19 writes 7 over [11-07, 11-09), apart from the item: deleting s19 affects the row too.
+  const withNineteen: LogEntry[] = [
+    ...candidates,
+    put(18, 19, "7", ["s19"], "11-07", "11-09", { seen: 16, acknowledge: ["overwrite"] }),
+  ];
+  const keep: LogEntry = {
+    kind: "resolve",
+    op: 40,
+    event: 41,
+    decision: "keep_effective",
+    candidates: [17],
+    unit: "f2",
+  } as LogEntry;
+  const execute = (op: number, id: string): LogEntry => ({ kind: "execute", op, id });
+  it("only the pending deletions touching the row are named, in operation order", () => {
+    // pi_m removes a source cited nowhere on the row; pi_z and pi_a each remove one of its.
+    const run = evaluateLog(STATE, [
+      ...withNineteen,
+      del(20, "pi_m", ["s99"]),
+      del(22, "pi_z", ["s15"]),
+      del(24, "pi_a", ["s19"]),
+      keep,
+    ]);
+    expect(run.steps.at(-1)?.pendingDeletionTarget).toEqual(["pi_z", "pi_a"]);
+  });
+  // A deletion carried out (`execute`) is no longer pending: the row is judged on its state after
+  // it, and only deletions still pending can make it affected (03-deletion «撤回与宽限期»: "待执行"
+  // until the tombstone).
+  it("the affecting deletion carried out: the decision goes ahead", () => {
+    const run = evaluateLog(STATE, [
+      ...withNineteen,
+      del(20, "d", ["s15"]),
+      execute(30, "d"),
+      keep,
+    ]);
+    expect(run.steps.at(-1)?.refused).toBe(false);
+  });
+  it("the affecting deletion carried out, an unrelated one still pending: the decision goes ahead", () => {
+    const run = evaluateLog(STATE, [
+      ...withNineteen,
+      del(20, "d", ["s15"]),
+      del(22, "m", ["s99"]),
+      execute(30, "d"),
+      keep,
+    ]);
+    expect(run.steps.at(-1)?.refused).toBe(false);
+  });
+  it("the affecting deletion carried out, another affecting one still pending: refused, naming only that one", () => {
+    const run = evaluateLog(STATE, [
+      ...withNineteen,
+      del(20, "d", ["s15"]),
+      del(22, "e", ["s19"]),
+      execute(30, "d"),
+      keep,
+    ]);
+    expect({
+      refused: run.steps.at(-1)?.refused,
+      by: run.steps.at(-1)?.pendingDeletionTarget,
+    }).toEqual({ refused: true, by: ["e"] });
+  });
   it("cancelled: the candidate the deletion removed is back in its open item, nothing put back", () => {
     const run = evaluateLog(STATE, [
       ...candidates,
