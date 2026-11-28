@@ -1027,7 +1027,7 @@ describe("planEvent: a switch from an earlier version that rebuilds nothing", ()
         ),
         inputs(V2),
       ),
-    ).toBe("not_implemented: a switch rebuilding tables is not applied yet");
+    ).toBe("inconsistent: table t1 is listed as rebuilt, but has no new physical table to rebuild");
     expect(reason(switched(), inputs(V2, { currentSv: 3 }))).toBe(
       `inconsistent: slot ${SLOT} is at version 3, not 1`,
     );
@@ -1037,6 +1037,73 @@ describe("planEvent: a switch from an earlier version that rebuilds nothing", ()
     expect(reason(switched(), { ...inputs(V2), switchTo: { seq: 7, compiled: V2 } })).toBe(
       "inconsistent: no definition of version 1",
     );
+  });
+
+  it("a table rebuilt: built, rebuilt from the earlier one with the switch's constants, held to its check", () => {
+    const t1 = COMPILED_V1.tables.find((t) => t.id === "t1") as CompiledBaseTable;
+    const added = {
+      id: "f99",
+      name: "category",
+      description: "a category",
+      type: "text",
+      required: true,
+      backfill: { const: "other" },
+    };
+    const rebuilt = {
+      ...t1,
+      physical: { table: "t_t1_v2", since: 2 },
+      fields: [...t1.fields, added],
+    } as unknown as CompiledBaseTable;
+    const base = next(COMPILED_V1);
+    const v2 = { ...base, tables: base.tables.map((t) => (t.id === "t1" ? rebuilt : t)) } as Def;
+    const ROW = `r_${"6".repeat(26)}`;
+    const blocks = {
+      "tables/t1": { rows: 1, checksum: HASH },
+      "backfill_rows/t1/f99/0": [ROW],
+    };
+    const changes = planEvent(
+      switched({ migration_id: MIGRATION, rebuilt_tables: ["t1"] }, blocks),
+      inputs(v2),
+    );
+    expect(changes[0]).toEqual({ kind: "ddl", sql: baseTableDdl(rebuilt as never) });
+    const r = changes.find((c) => c.kind === "table_rebuild");
+    expect(r).toMatchObject({
+      kind: "table_rebuild",
+      slot: SLOT,
+      from: t1,
+      to: rebuilt,
+      version: { sv: 2 },
+      verify: { rows: 1, checksum: HASH },
+    });
+    const x = r as Extract<typeof r, { kind: "table_rebuild" }>;
+    expect(x.map.added).toEqual([{ field: "f99", backfill: { const: "other" } }]);
+    expect([...x.backfill.rows]).toEqual([["f99", new Set([ROW])]]);
+    expect([...x.backfill.values]).toEqual([["f99", "other"]]);
+    // Rebuilt before the pointer moves; the migration is over with it.
+    expect(changes.findIndex((c) => c.kind === "table_rebuild")).toBeLessThan(
+      changes.findIndex((c) => c.kind === "version_switch"),
+    );
+    expect(changes.at(-1)).toMatchObject({ kind: "version_switch", migration: MIGRATION });
+    // The log at odds with itself: positions of a table not rebuilt, or of a field with no
+    // constant in this switch.
+    expect(
+      reason(
+        switched(
+          { migration_id: MIGRATION, rebuilt_tables: ["t1"] },
+          { ...blocks, "backfill_rows/t2/f1/0": [ROW] },
+        ),
+        inputs(v2),
+      ),
+    ).toBe("inconsistent: backfill_rows/t2/f1/0 is of table t2, which the switch does not rebuild");
+    expect(
+      reason(
+        switched(
+          { migration_id: MIGRATION, rebuilt_tables: ["t1"] },
+          { ...blocks, "backfill_rows/t1/f1/0": [ROW] },
+        ),
+        inputs(v2),
+      ),
+    ).toBe("inconsistent: backfill_rows/t1/f1/0: field f1 has no constant backfill in this switch");
   });
 
   it("stops on a time zone of its own: nothing here recomputes what depends on it", () => {

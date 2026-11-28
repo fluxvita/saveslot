@@ -1,7 +1,30 @@
 // What apply plans: the changes an event makes to the materialized state, and why apply stops.
 
-import type { Seq } from "@fluxvita/saveslot-contract-core";
+import type {
+  CompiledBaseTable,
+  CompiledSchema,
+  FieldId,
+  FieldValue,
+  Seq,
+} from "@fluxvita/saveslot-contract-core";
 import type { SqlValue } from "../store/ports.ts";
+import type { TableMap } from "./convert.ts";
+
+/** Where a switch's constant `backfill` gave a value, as its event records it (09 §5.5). */
+export interface Backfill {
+  /** Event and timeless tables (`backfill_rows/<t>/<f>/<n>`): by field, the rows. */
+  readonly rows: ReadonlyMap<FieldId, ReadonlySet<string>>;
+  /**
+   * State tables (`backfill/<t>/<f>/<n>`, the blocks a deletion removed left out): by entity, its
+   * stretches in block order.
+   */
+  readonly stretches: ReadonlyMap<
+    string,
+    readonly { readonly field: FieldId; readonly from: string; readonly to: string | null }[]
+  >;
+  /** The constant of each field filled, as the new version has it. */
+  readonly values: ReadonlyMap<FieldId, FieldValue>;
+}
 
 export type ApplyErrorReason =
   /** Not a valid v1 event (§1.6). */
@@ -199,6 +222,32 @@ export type Change =
       readonly draft_id: string;
       readonly name: string;
       readonly timezone: string;
+      /** The migration that built the version, when it went through one: it is switched. */
+      readonly migration?: string;
+    }
+  /**
+   * A base table rebuilt for the version switched to, every row from the old version's tables
+   * (09 §5.5 `schema.switched` `rebuilt_tables`; ./rebuild.ts), then held to its `tables/<t>`.
+   */
+  | {
+      readonly kind: "table_rebuild";
+      readonly slot: string;
+      readonly op: Seq;
+      readonly from: CompiledBaseTable;
+      readonly to: CompiledBaseTable;
+      readonly map: TableMap;
+      /** The version switched to: its number, definition and changes. */
+      readonly version: {
+        readonly sv: number;
+        readonly compiled: CompiledSchema;
+        readonly changes: readonly {
+          readonly change: string;
+          readonly target: Readonly<Record<string, unknown>>;
+        }[];
+      };
+      readonly backfill: Backfill;
+      /** `tables/<t>`, unless a deletion removed it. */
+      readonly verify?: { readonly rows: number; readonly checksum: string };
     }
   /** A draft compiled into version `sv`, awaiting confirmation (09 §5.5 `schema.compiled` pending). */
   | {
@@ -251,10 +300,13 @@ export type Change =
       readonly spans: string | null;
     }
   | { readonly kind: "flags_drop"; readonly item: string }
-  /** Rows added to a kernel table (`base_sources`). */
+  /**
+   * Rows added to a table: `base_sources`, or a version table a switch rebuilds (its name quoted,
+   * built from the compiled definition, ./rebuild.ts).
+   */
   | {
       readonly kind: "rows_insert";
-      readonly table: "base_sources";
+      readonly table: string;
       readonly columns: readonly string[];
       readonly rows: readonly (readonly SqlValue[])[];
     }
@@ -338,6 +390,17 @@ export type Change =
       readonly rows: readonly (readonly SqlValue[])[];
     }
   | { readonly kind: "counts_add"; readonly table_id: string; readonly delta: number }
+  /**
+   * A table's row count taken again from its business table (09 §5.5 `schema.switched`: `counts`
+   * rebuilt from the new version's table): not revoked rows, a state table's segments.
+   */
+  | {
+      readonly kind: "counts_recount";
+      readonly table_id: string;
+      /** The business table, quoted. */
+      readonly business: string;
+      readonly state: boolean;
+    }
   /**
    * The key index (§5.12 `external_keys`): a row given its whole external key holds it; the values
    * as a JCS array in the order of the table's key fields.

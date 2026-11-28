@@ -314,7 +314,7 @@ export const BASE_SOURCE_COLUMNS = [
 ];
 
 /** A field value as the columns of its field take it (02-architecture §8 «业务表»). */
-function columnValues(t: CompiledBaseTable, f: FieldId, v: FieldValue): SqlValue[] {
+export function columnValues(t: CompiledBaseTable, f: FieldId, v: FieldValue): SqlValue[] {
   const def = t.fields.find((x) => x.id === f);
   const zoned = def?.type === "zoned_datetime";
   if (v === null) return zoned ? [null, null] : [null];

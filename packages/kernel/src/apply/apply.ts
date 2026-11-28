@@ -36,6 +36,7 @@ import type { BlockState, PreparedOperation } from "../log/index.ts";
 import { readEvents } from "../log/log.ts";
 import { type DerivedRow, evaluateRule, evaluating, RuleEvaluationError } from "../rules/index.ts";
 import { isKnownLiteralChecker, isKnownRulesetVersion } from "../rules/version.ts";
+import { physical } from "../store/layout.ts";
 import type { ReadTx, SqlValue, Tx } from "../store/ports.ts";
 import { type RestorePoint, restorePoint } from "../store/restore-point.ts";
 import type { ValidParam } from "../time/index.ts";
@@ -59,6 +60,14 @@ import {
   planPremiseChanged,
 } from "./premises.ts";
 import {
+  planRebuildRow,
+  RebuildError,
+  type RebuildSpec,
+  rebuildRows,
+  tableChecksum,
+} from "./rebuild.ts";
+import { constsOf, givesContent, rowItems } from "./row-items.ts";
+import {
   type MigrationInput,
   planSchema,
   type RemoveInput,
@@ -66,6 +75,7 @@ import {
   type SwitchInput,
 } from "./schema.ts";
 import type { SettleItem } from "./settle.ts";
+import { slotVersions } from "./shapes.ts";
 import {
   corroborationEnds as endsOf,
   type OpenCell,
@@ -176,7 +186,7 @@ export function planEvent(ev: ApplyEvent, inputs: PlanInputs = {}): Change[] {
   const slot = ev.header["slot"] as string | undefined;
   const changes =
     planPrincipals(type, ev.seq, block, present) ??
-    planSchema(type, ev.seq, slot, block, inputs) ??
+    planSchema(type, ev.seq, slot, block, inputs, op, present) ??
     planItem(type, ev.seq, op, slot, present, paths, inputs) ??
     planBase(type, ev.seq, op, present, inputs) ??
     (type === "write.derived"
@@ -694,7 +704,7 @@ async function readDerived(
 type FieldValueOf = DerivedRow["key"][number];
 
 /** A restatement that gives the item's content itself (09 §5.9 `restated/<k>`). */
-export const givesContent = (r: Obj) => "value" in r || "no_value" in r || "uncovered" in r;
+export { givesContent };
 
 /**
  * What a `deletion.confirmed` touches (./deletion.ts): every row with an item whose own block it
@@ -1123,58 +1133,12 @@ async function readRow(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<WriteBase
       `no table ${tableId} in the slot's current version`,
     );
   }
-  const stored = await tx.query<{
-    event_seq: unknown;
-    field_id: string;
-    k: number;
-    status: "applied" | "corroborated";
-    valid_from: string | null;
-    valid_to: string | null;
-    reverted: string;
-    body: string | null;
-    given: string | null;
-  }>(
-    // An item a deletion restated with a new content (a carried item's value, `no_value`,
-    // `uncovered`) has it in that event's `restated/<k>` (`given_path`); any other, in its own block.
-    // That block is read by a scalar subquery, not a second join of `content`: it is at most one
-    // row (the key of `content`), null when `given_seq` is, and as a join it made the planner,
-    // without statistics, read the whole key of `base_sources` for one row's sources.
-    `SELECT b.event_seq, b.field_id, b.k, b.status, b.valid_from, b.valid_to, b.reverted, c.body,
-       CASE WHEN b.given_seq IS NULL THEN NULL ELSE
-         (SELECT g.body FROM content g WHERE g.seq = b.given_seq AND g.path = b.given_path) END
-         AS given
-     FROM base_sources b LEFT JOIN content c ON c.seq = b.event_seq AND c.path =
-       CASE WHEN b.field_id = 'existence' THEN 'existence/' || b.k ELSE 'fields/' || b.field_id || '/' || b.k END
-     WHERE b.row_id = $1 AND b.n = 0 ORDER BY b.event_seq, b.field_id COLLATE "C", b.k`,
-    [rowId],
+  const items: SettleItem[] = await rowItems(
+    tx,
+    tableId,
+    rowId,
+    constsOf(tx, ev.header["slot"] as string),
   );
-  const items: SettleItem[] = [];
-  for (const r of stored.rows) {
-    const given = r.given === null ? undefined : (JSON.parse(r.given) as Obj);
-    const own = r.body === null ? undefined : (JSON.parse(r.body) as Obj);
-    const b = given !== undefined && givesContent(given) ? given : own;
-    if (b === undefined) continue; // the block was removed (a deletion's tombstone)
-    const existence = r.field_id === "existence";
-    items.push({
-      event: Number(r.event_seq),
-      target: r.field_id as SettleItem["target"],
-      k: r.k,
-      status: r.status,
-      valid: storedValid(r.valid_from, r.valid_to),
-      content: existence
-        ? b["restored"] === true || own?.["restored"] === true
-          ? { kind: "restore" }
-          : { kind: "revoke" }
-        : "value" in b
-          ? { kind: "value", value: b["value"] as never }
-          : "no_value" in b
-            ? { kind: "no_value" }
-            : { kind: "uncovered" },
-      reverted: (
-        JSON.parse(r.reverted) as { op: Seq; valid: { from: string | null; to: string | null }[] }[]
-      ).map((x) => ({ op: x.op, valid: x.valid as never })),
-    });
-  }
   const { openCells, count } = await cellsOf(tx, table, rowId);
   const origin = await tx.query<{ table_id: string }>(
     "SELECT table_id FROM row_origins WHERE row_id = $1",
@@ -1407,6 +1371,16 @@ async function write(tx: Tx, seq: Seq, c: Change): Promise<void> {
           [c.sv, c.name, c.timezone, c.slot],
           `no slot ${c.slot}`,
         );
+        // The migration that built it is over (08 «状态机»).
+        if (c.migration !== undefined)
+          await one(
+            tx,
+            seq,
+            `UPDATE migrations SET state = 'switched'
+             WHERE id = $1 AND slot_id = $2 AND target_sv = $3 AND state = 'started'`,
+            [c.migration, c.slot, c.sv],
+            `migration ${c.migration} of ${c.slot} to version ${c.sv} is not started`,
+          );
         return;
       }
       // The slot's first version (a slot being created): no earlier version to retire.
@@ -1644,6 +1618,67 @@ async function write(tx: Tx, seq: Seq, c: Change): Promise<void> {
     }
     case "external_keys_clear":
       await tx.query("DELETE FROM external_keys WHERE table_id = $1", [c.table_id]);
+      return;
+    case "table_rebuild": {
+      const versions = [
+        ...(await slotVersions(tx, c.slot)),
+        {
+          sv: c.version.sv,
+          switchedSeq: seq,
+          compiled: c.version.compiled,
+          changes: c.version.changes,
+        },
+      ];
+      const spec: RebuildSpec = {
+        from: c.from,
+        to: c.to,
+        map: c.map,
+        versions,
+        sv: c.version.sv,
+        switchSeq: seq,
+        switchOp: c.op,
+        backfill: c.backfill,
+        constOf: constsOf(tx, c.slot),
+      };
+      for (const id of await rebuildRows(tx, spec)) {
+        let planned: Awaited<ReturnType<typeof planRebuildRow>>;
+        try {
+          planned = await planRebuildRow(tx, spec, id);
+        } catch (e) {
+          // The log says the switch was made: a value it could not convert is the log at odds
+          // with this kernel.
+          if (e instanceof RebuildError) throw new ApplyError("inconsistent", seq, e.message);
+          throw e;
+        }
+        for (const x of [...planned.table, ...planned.sources]) await write(tx, seq, x);
+      }
+      const { business } = physical(c.to);
+      await write(tx, seq, {
+        kind: "counts_recount",
+        table_id: c.to.id,
+        business,
+        state: c.to.time.type === "state",
+      });
+      if (c.verify !== undefined) {
+        const got = await tableChecksum(tx, c.to);
+        if (got.rows !== c.verify.rows || got.checksum !== c.verify.checksum)
+          throw new ApplyError(
+            "inconsistent",
+            seq,
+            `table ${c.to.id} rebuilt to ${got.rows} rows, checksum ${got.checksum}; tables/${c.to.id} records ${c.verify.rows}, ${c.verify.checksum}`,
+          );
+      }
+      return;
+    }
+    case "counts_recount":
+      await one(
+        tx,
+        seq,
+        `UPDATE counts SET row_count = (SELECT count(*) FROM ${c.business}${c.state ? "" : " WHERE NOT revoked"})
+         WHERE table_id = $1 AND partition_key = ''`,
+        [c.table_id],
+        `no count of ${c.table_id}`,
+      );
       return;
     case "counts_add":
       await one(
