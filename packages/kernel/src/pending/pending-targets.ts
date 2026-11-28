@@ -2,10 +2,15 @@
 // period no decision is taken on them; 04-contract `resolve` step 3, `undo`, the item's `blocked`).
 //
 // A pending deletion affects a row when its own event lists it: a result for the row, a
-// restatement of one of the row's contributions, or a position on one of the row's events. A
-// position on a head event shared by several operations' rows counts for each of them (it refuses
-// more, never less). Read once for a request from the pending deletions alone, so its cost does not
-// grow with the rows or items asked about.
+// restatement of one of the row's contributions, or a position on one of the row's own events.
+// Those are where a change to the row's replay shows: a contribution lives on the row's
+// `write.base`, and a deletion that changes what the row's replay gives lists those blocks or
+// restates them, or gives the row a result. Positions on an operation's head event (its `task`,
+// `request_key`, `idempotency`, the request as sent) and on `source.recorded` events do not count
+// by themselves: deleting only an operation's source, such as an undo's or a revocation's
+// evidence, leaves the replay as it was, and 03-deletion «撤回与宽限期» does not count such a row as
+// affected. Read once for a request from the pending deletions alone, so its cost does not grow
+// with the rows or items asked about.
 
 import type { Instant, ItemId, Seq } from "@fluxvita/saveslot-contract-core";
 import type { ReadTx } from "../store/ports.ts";
@@ -56,7 +61,7 @@ export async function readPendingTargets(tx: ReadTx): Promise<PendingTargets> {
       add(rowsOf, d, key(t.table, (t.row ?? t.entity) as string));
     }
   }
-  // The events' rows: their own target, or (a head event) its operation's rows.
+  // The events' rows: their own target. A head event's or a source's positions name no row.
   const seqs = [...new Set([...eventsOf.values()].flatMap((s) => [...s]))];
   const rowOfEvent = new Map<number, string[]>();
   if (seqs.length > 0) {
@@ -66,10 +71,7 @@ export async function readPendingTargets(tx: ReadTx): Promise<PendingTargets> {
       target_row: string | null;
     }>(
       `SELECT e.seq, e.target_table, e.target_row FROM events e WHERE e.seq = ANY($1)
-         AND e.target_row IS NOT NULL
-       UNION ALL
-       SELECT b.op AS seq, b.target_table, b.target_row FROM events b
-         WHERE b.type = 'write.base' AND b.op = ANY($1) AND b.target_row IS NOT NULL`,
+         AND e.target_row IS NOT NULL`,
       [seqs] as never,
     );
     for (const x of r.rows) {
