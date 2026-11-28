@@ -118,7 +118,7 @@
 
 | 机制 | 现有设计在哪 | 判定 | 简化版砍掉什么 | 理由 | 对不变量的影响 | 阶段 |
 |---|---|---|---|---|---|---|
-| `catalog`（分层发现、派生表标只读、概况与取值示例） | data-model「数据目录」；contract §10 | 简化 | 概况只给行数、业务时间范围与规模提示（行数过界时的 `scale`）；取值示例按确定性规则取每个字段最近 K 个不同取值 | eval 1 只要能发现表与单位 | — | P1（发现）、P2（概况） |
+| `catalog`（分层发现、派生表标只读、概况与取值示例） | data-model「数据目录」；contract §10 | 简化 | 概况只给行数、业务时间范围与规模提示（行数过界时的 `scale`）；字段的取值示例不给 | eval 1 只要能发现表与单位 | — | P1（发现）、P2（概况） |
 | `query`（当前、`valid_at`、`valid_during`）；`as_of` 只在 `history` | data-model「时间 · 查询」 | 做 | — | eval 1、4 | K7 | P1 |
 | `history`：`timeline`、`as_of`、`changes`、`composition` | contract §10 | 简化 | `composition`（派生值构成）后续 | 前三个是 eval 2、4 定位行与 `undo` 要用的 | — | P1（`timeline`、`as_of`）、P2（`changes`） |
 | `sources`：列出、读取、搜索 | contract §10 | 简化 | 搜索先用子串匹配，不建全文索引（中文分词另议） | 全文索引是 (b) 类，可重建，纯增量 | — | P2 |

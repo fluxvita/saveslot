@@ -44,7 +44,7 @@ This document writes out the complete design. Parameters, values and operations 
 | Operations | `extract_claim`, `extract_submit`, `policy.set` |
 | Errors | `lease_expired`, `referenced` |
 | Slot policy | arbitration by source level during a conflict (the first version has only `keep_current`); extra high-impact tables / fields; the switch "a kind of handling accepts confirmation only from a user session" |
-| Profile | In the first version the table profile of `catalog` has only the row count and the valid-time range, the size hint `scale`, and the most recent K distinct values of each field; there is no "time of the most recent write". The `table` level carries `profile` (row count, valid-time range, size hint); the `examples` and `described_by` of each field are not provided in the first version |
+| Profile | In the first version the table profile of `catalog` has only the row count, the valid-time range and the size hint `scale` (the `profile` at the `table` level); there is no "time of the most recent write". A field's value examples (`examples`, the latest K distinct values) and `described_by` are not provided in the first version |
 
 **Not provided in 0.2.0 yet (part of the first version)**: 0.2.0 is the current version released publicly and provides only a part of the first version ([`07-scope-v1.md`](07-scope-v1.md) section 7). The items below are within the design scope of the first version and are written out in this document as they are; calling them in 0.2.0 reports `not_in_this_version`. This is separate from the table above: the table above lists what the first version does not do, and the table below lists what the first version does and 0.2.0 does not provide yet.
 

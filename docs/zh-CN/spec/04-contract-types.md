@@ -44,7 +44,7 @@
 | 操作 | `extract_claim`、`extract_submit`、`policy.set` |
 | 错误 | `lease_expired`、`referenced` |
 | slot 策略 | 冲突期间按来源级别裁定（第一版只有 `keep_current`）；额外的高影响表 / 字段；"某类处理只接受用户会话的确认"开关 |
-| 概况 | `catalog` 的表概况第一版只有行数与业务时间范围、规模提示 `scale`、每个字段最近 K 个不同取值；没有"最近一次写入时间"。`table` 档带 `profile`（行数、业务时间范围、规模提示）；每个字段的 `examples` 与 `described_by` 第一版不给 |
+| 概况 | `catalog` 的表概况第一版只有行数、业务时间范围与规模提示 `scale`（`table` 档的 `profile`）；没有"最近一次写入时间"。字段的取值示例（`examples`，最近 K 个不同取值）与 `described_by` 第一版不给 |
 
 **0.2.0 尚未提供（第一版里有）**：0.2.0 是目前对外发布的版本，只提供第一版的一部分（[`07-scope-v1.md`](07-scope-v1.md) 第 7 节）。下面这些在第一版的设计范围内，本文照写，0.2.0 里调用它们报 `not_in_this_version`。与上表分开：上表是第一版不做的，下表是第一版做、0.2.0 暂未提供的。
 
