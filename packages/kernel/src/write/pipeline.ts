@@ -112,7 +112,7 @@ import { createdInEffect, duplicateBlock, duplicateOf, flaggedItem } from "./dup
 import { WriteError } from "./errors.ts";
 import { type OpenedFlagged, settleFlagged } from "./flagged.ts";
 import {
-  createSimilarCache,
+  createKeyCache,
   type EntityKeyText,
   entitiesByKey,
   existingKeys,
@@ -1765,8 +1765,8 @@ async function writeIn(
   // over every stretch, an undo, or a write left a candidate on an entity with none). Read off its
   // state once an op changes it, not again at each comparison.
   const writtenHere = new Map<EntityId, { table: TableId; revoked: boolean }>();
-  // What `similar_keys` reads of the store, once a request.
-  const similarCache = createSimilarCache();
+  // What the request reads of the store's keys (by key, `similar_keys`, the keys shown), once.
+  const keyCache = createKeyCache();
 
   /** The edges and clearing entries this request's ops recorded so far (the fan-in counts them). */
   const recordedHere: RecordedHere = { edges: [], clears: [] };
@@ -2007,7 +2007,7 @@ async function writeIn(
       const token = `${table.id} ${keyToken(table, key)}`;
       byKey = createdByKey.get(token);
       if (byKey === undefined) {
-        const held = await entitiesByKey(tx, table, key);
+        const held = await entitiesByKey(tx, table, key, keyCache);
         // Keys are unique over all time (05-time): two holders is a store out of order.
         if (held.length > 1) {
           throw new WriteError("internal", "two entities hold one key", {
@@ -2045,14 +2045,14 @@ async function writeIn(
                 : {}),
               revoked: x.revoked,
             })),
-          similarCache,
+          keyCache,
         );
         if (alike.length > 0) keysAlike.set(o.index, alike);
         const first = alike.map((x) => x.key);
         const seen = new Set(first.map((k) => JSON.stringify(k)));
         const rest = [
           ...mine.map((x) => keyText(table, x.key)),
-          ...(await existingKeys(tx, table, EXISTING_KEYS)),
+          ...(await existingKeys(tx, table, EXISTING_KEYS, keyCache)),
         ].filter((k) => !seen.has(JSON.stringify(k)));
         keysShown.set(o.index, [...first, ...rest].slice(0, EXISTING_KEYS));
         byKey = input.newId("entity") as EntityId;

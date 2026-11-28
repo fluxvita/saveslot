@@ -463,7 +463,7 @@ export const TEXTS = {
         : "Give the host this address:",
     ),
   remoteChosenOnPage: s(
-    "--name, --scope and --slots are for a token issued here; a host connecting to a server chooses them on the authorization page. For a static token, use saveslot connect http --profile <profile>.",
+    "--name, --scope and --slots are for a token issued here; a host connecting to a server chooses them on the authorization page. For a static token, use saveslot connect http --profile <profile>",
   ),
   deviceIsForServer: s("--device signs in to a server profile: give it with --profile <profile>"),
   setupScopeOnPage: s(

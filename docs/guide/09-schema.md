@@ -149,6 +149,8 @@ This is decided by the slot's policy. When a slot is created, saveslot writes a 
 What they have in common: they do not change existing values, do not make writes that carry an old version fail, and do not make existing reads see something different. **If even one item in a draft is not in this list, the whole draft goes to awaiting confirmation.**
 
 > The first version has no operation for changing the slot policy; every slot uses the policy written when it was created. The policy is written in the log and does not change with the kernel: if a later default policy adds kinds, it applies only to slots created afterwards.
+>
+> 0.2.0 differs from the table above in two places. First, "nobody else is using it" is not computed yet: every table and every field counts as in use, so a rename, and a change to the structure of a table that has never been written, always wait for confirmation. Second, adding a derived table to an existing slot, or changing a derived table, is not provided yet; the draft reports `not_in_this_version`.
 
 ### How to submit a change
 
@@ -205,19 +207,21 @@ When a schema changes, the existing data has to follow. The cost has three tiers
 
 Which kind applies is decided by saveslot and listed item by item in the compilation receipt. (Creating a new slot or adding a table has no "existing data", so it belongs to none of the three kinds and is listed separately in the receipt as "new".) When designing a schema, try to keep changes within the first two kinds. The specification has a complete table that lists, for every key of the schema document and every kind of change to it, which kind it belongs to, whether it takes effect automatically, whether a write with an old version is still accepted, and whether the first version supports it ([`../spec/03-data-model/07-schema-evolution.md`](../spec/03-data-model/07-schema-evolution.md), "Kinds of change and means of migration"). A few examples of each follow.
 
+> In 0.2.0 some of this section cannot be used yet, and the draft reports `not_in_this_version`: a deterministic conversion on a table that has been written (converting between units of the same kind, changing precision, filling with a constant) needs a physical table rebuilt and is not provided yet (section 5); changing the slot's time zone, changing an event table's time field, and changing a base table into a derived table are not provided yet on any table; on a table a derivation rule reads, the time type, `entity_key` and `granularity` cannot be changed, and a field the rule reads cannot change its type, unit or precision.
+
 ### Metadata-only changes
 
 **Example 1: add an optional field.** Add `payee` to `expenses`. In old rows this field is empty.
 
 **Example 2: rename.** `note` becomes `memo`. The field ID does not change, and the column name in storage uses the ID, so not a byte of data moves; only the name in the catalog changes. If another connection has recently read or written it by the old name, it is listed in the preview and needs confirmation.
 
-**Example 3: delete a field.** List the field in `drop_fields`. The field and its data in the table are deleted; the source data is untouched. Deleting a field needs confirmation (except when the table has never been written; see the end of this section). A field that is used elsewhere (a derivation rule, `entity_key`, `duplicate_keys`) cannot be deleted directly; the places that depend on it must be changed in the same draft.
+**Example 3: delete a field.** List the field in `drop_fields`. The field and its data in the table are deleted; the source data is untouched. Deleting a field needs confirmation (except when the table has never been written, see the end of this section; in 0.2.0 it waits for confirmation there too, see the note above). A field that is used elsewhere (a derivation rule, `entity_key`, `external_key`, `time.field`, `duplicate_keys`, `together`) cannot be deleted directly; the places that depend on it must be changed in the same draft.
 
 **Example 4: delete a whole table.** List the table name in the slot-level `drop_tables`, which also needs confirmation. After that the table disappears from the catalog of the current version and can no longer be read or written, and a request that writes it with an old version number is rejected. Its source data is untouched (those words are still there and can be viewed and privacy-deleted as usual), and the events about it are all still in the log; a read at a past recorded time can still show how it looked then. A table that a reference field of another table points to cannot be deleted directly; the fields that reference it must be changed in the same draft.
 
 ### Deterministic conversions
 
-> The first version does not yet support migration expressions: a field that carries `migrate`, or a `backfill` written as an expression, makes the whole draft report `not_in_this_version` (see [Scope of the first version](../spec/07-scope-v1.md)). Conversion between units of the same kind, changing precision and filling with a constant work as usual. The example below describes the complete design.
+> The first version does not yet support migration expressions: a field that carries `migrate`, or a `backfill` written as an expression, makes the whole draft report `not_in_this_version` (see [Scope of the first version](../spec/07-scope-v1.md)). Conversion between units of the same kind, changing precision and filling with a constant work as usual in the first version (for 0.2.0, see the start of this section). The example below describes the complete design.
 
 **Example: text becomes an enum.** `category` used to be free text, and now we want to normalize it to a few fixed values. The agent writes a migration expression on the field:
 
@@ -263,7 +267,7 @@ The cost is that a table that has had a single piece of test data written can on
 
 ## 5. The migration process: reads never stop
 
-> **0.2.0 does not yet provide migrations that need a physical table rebuilt**: drafts that add a field, delete a field, tighten a constraint, change precision or change a unit on a table that has been written can be submitted and previewed, but cannot yet take effect, and confirmation reports `not_in_this_version`. Changes that touch only the catalog, and changes to a table that has never been written, take effect as usual in 0.2.0 ([`../spec/07-scope-v1.md`](../spec/07-scope-v1.md), section 7). The background build and switch described in this section are the design of such migrations.
+> **0.2.0 does not yet provide migrations that need a physical table rebuilt**: drafts that add a field, delete a field, tighten a constraint, change precision or change a unit on a table that has been written cannot take effect yet: one that would take effect automatically (adding only an optional field, for example) reports `not_in_this_version` when it is submitted; one that waits for confirmation can be submitted and previewed, and its confirmation reports `not_in_this_version`, the draft staying where it is. Changes that touch only the catalog, and changes to a table that has never been written, take effect as usual in 0.2.0 ([`../spec/07-scope-v1.md`](../spec/07-scope-v1.md), section 7). The background build and switch described in this section are the design of such migrations.
 
 After a change is confirmed, how does the data go from the old structure to the new? saveslot's way is: **build the new version in the background, catch up, then switch once.** Throughout the process reads do not stop, and writes pause only for the instant of the switch.
 
@@ -340,6 +344,8 @@ Rules come in three levels:
 
 The criterion for the levels is whether the result is deterministic: only a deterministic result can serve as a cache and be recomputed at any time; a non-deterministic one must be recorded as a write.
 
+> In 0.2.0 a derivation rule reads one base table: it cannot join another table, and its `FROM` cannot have a subquery. Where this section speaks of joins (excluding rows that point to a revoked record, a rule whose inner level joins other tables), it describes the design of the first version; such a rule cannot be written in 0.2.0 yet.
+
 ### Rules must be deterministic
 
 When the same log is replayed on the local embedded database and on PostgreSQL on a server, the derived results must be identical row by row. For this:
@@ -360,7 +366,7 @@ The unit and precision of a derived field are inferred by saveslot from the rule
 
 ### Refreshed in the same transaction
 
-**The base write and the affected derived values are updated in the same transaction.** So a derived value that is read never lags behind the base data. The "derived write" event that follows every write in chapter 2 is exactly this.
+**The base write and the affected derived values are updated in the same transaction.** So a derived value that is read never lags behind the base data. The "derived write" events that follow the writes in chapter 2 are exactly this: one for each derived row whose result changed, none for a row whose result did not.
 
 The refresh is straightforward: **recompute the affected group.** When a rule is compiled, saveslot analyzes what it groups by. If the amount of one expense changes, only the month it is in is recomputed. If what changes is the date, moved from November to October, both months are recomputed.
 
@@ -390,7 +396,7 @@ Some writes cannot be split, such as importing a year of data at once. In the co
 
 This is a relaxation of "derived values never lag", with a very narrow scope: only during the job, only for the affected derived values, and always marked. The acceptance, completion and failure of a job are log events.
 
-> The first version has no large-write jobs. A write over the threshold is always rejected, and the caller splits it into batches. That is, in the first version derived values are not allowed to lag, which is stricter than the complete design.
+> In the first version, write admission is simplified: no estimate, no refusal. Some rules are recomputed whole every time (the note under "Refreshed in the same transaction" above), a cost that does not change with the size of the request, so splitting into batches would not lower it; estimating by the affected groups, and the threshold, wait for experiment 4. The first version has no large-write jobs either: once admission is enabled, a write over the threshold is always rejected, and the caller splits it into batches. That is, in the first version derived values are not allowed to lag, which is stricter than the complete design.
 
 ### How a derived value comes about
 

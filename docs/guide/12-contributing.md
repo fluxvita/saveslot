@@ -6,26 +6,25 @@ This chapter is for people who want to get their hands dirty: what you can do no
 
 ## 0. Where things stand now, and what to do first
 
-**saveslot is in early development: the design is settled, the first implementation step (the P0 scaffolding) is under way, and there is no usable version yet.** The code organization and the tests described in the sections below are designs that have already been decided; follow them when implementing.
+**saveslot is released and usable: local mode and server mode both ship, and the repository is public.** For what the current version provides and what it does not yet, see the [Status](../../README.md#status) section of the README and section 7 of the specification [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md). The commands for setting up, running the checks and making a first change are in [`../development.md`](../development.md). The code organization and the tests described in the sections below are how the repository works now.
 
 What you can take part in now:
 
 | What you can do | Where to start |
 |---|---|
-| Build the scaffolding (P0 in the implementation steps): create the repository and the packages, wire the dependency rules into the automatic checks, write the event format and the contract as types | The package table in section 1; [`../spec/09-event-format.md`](../spec/09-event-format.md), [`../spec/04-contract-types.md`](../spec/04-contract-types.md) |
-| Run experiment 1 (durability of the local database) and experiment 8 (the single-writer lock). They come first; the method and the pass criteria are already written, and they depend on only one file | [`../zh-CN/process/decisions/pre-dev-w0-experiments.md`](../zh-CN/process/decisions/pre-dev-w0-experiments.md) (Chinese); section 3 |
-| Write the reference evaluator: write the definition "as if that sentence had never been said" as the most plain-spoken program possible. It does not depend on any code of the kernel | Section 2; chapter 8, section 10 |
+| Implement what the specification settles and this version does not provide yet, as section 7 of 07 lists it: for example privacy deletion and the restore flow, and migrations that need a physical table rebuilt | Section 7 of [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md); chapter 8, chapter 9 section 5 |
+| Finish the experiments: those in the table of section 3 that have no result yet, and the remaining steps of those done only in part. The results so far are under `docs/zh-CN/process/experiments/` (Chinese) | [`../zh-CN/process/decisions/pre-dev-w0-experiments.md`](../zh-CN/process/decisions/pre-dev-w0-experiments.md) (Chinese); section 3 |
 | Walk through a new scenario as a walkthrough, or check a rule against its definition | Section 4, "Walkthroughs: a way to test the design" |
-| Claim a matter that is not yet decided | Section 5 |
+| Claim a matter that is not yet decided | [`../spec/08-open-questions.md`](../spec/08-open-questions.md); section 5 |
 
 ### The repository, the license, how we collaborate
 
 | Item | What it is |
 |---|---|
-| Repository | `fluxvita/saveslot`. It is made public once it is usable (the threshold is the end of P2 in the implementation steps: writing, reading, deletion and conflicts work end to end, and the evals can run); when it is made public it comes with its full commit history |
+| Repository | `fluxvita/saveslot`, public |
 | Packages | What is installed from outside is `@fluxvita/saveslot` (the command-line tool and the service); the other packages in the repository are named `@fluxvita/saveslot-<package name>`, with the package names in the package table in section 1 |
 | License | Apache-2.0, for code and documents alike. No agreement needs to be signed to contribute: each commit carries one `Signed-off-by` line (`git commit -s`). Use your real name, with the same email as the commit author. A change made with the help of AI is signed off by a person all the same, and the person who signs off is responsible for the change |
-| Where to talk | After the repository is made public: file bugs and tasks as Issues, ask questions and hold design discussions in Discussions, and report security issues through the repository's private vulnerability reporting. Before it is made public, use Issues and merge requests on the internal code hosting platform, which becomes read-only once the project moves to GitHub |
+| Where to talk | File bugs and tasks as Issues, ask questions and hold design discussions in Discussions, and report security issues through the repository's private vulnerability reporting |
 | How to submit | Create a branch from the main branch (fork first if you cannot push branches) → open a pull request against `main` using the template (every pull request targets `main`; a fix that has to be in a released version is cherry-picked by a maintainer onto the release branch `release/0.<minor>` after it is merged into `main`) → all the automatic checks on the pull request pass (the quick checks plus `pnpm check`), all review threads are resolved, and one maintainer approves → a maintainer merges it as one commit. Commit messages and pull request titles both use Conventional Commits (the `feat(kernel): …` style), and CI checks the title |
 | Language | Commit messages, code comments, identifiers, log and error messages are written in English. The specification and the guide have two editions, aligned in meaning: Chinese under `docs/zh-CN/`, English at the same path under `docs/` ([`docs/README.md`](../README.md) lists them); the decision records, walkthroughs and research notes are in Chinese only, and no English edition is scheduled. Change both editions in the same pull request; a difference between them is a defect. |
 | Versions | 0.x until 1.0. The event format has its own version number, independent of the package version |
@@ -43,10 +42,10 @@ The main points of the submission process are also written in `CONTRIBUTING.md` 
 | Tests | Vitest; fast-check for property tests (section 2) |
 | Formatting and lint | Biome |
 | Dependency-direction check | dependency-cruiser (it enforces the three hard rules in section 1) |
-| Build | `tsc` for each package; tsup bundles the command-line tool |
+| Build | `pnpm build`: `tsc -b` compiles the packages, then `scripts/mark-bins.ts` makes the executable entries runnable; nothing is bundled |
 | Versions and change log | Changesets |
 
-All checks are written as scripts in the repository, and the single `pnpm check` you run locally is the same set the automatic checks run: type check, lint, tests, dependency rules, links in the documents, whether the JSON examples in the documents parse, whether each document of the two editions links the other, the claims index, whether the code's references to the specification match its titles, and whether a merge conflict left a marker behind. On every pull request the automatic checks run a few quick items (title, sign-off, secrets, banned words) and the full `pnpm check`, and all of them must pass before a merge; the author runs it locally before pushing. After merges and every night they run again on `main`, adding Node 26 LTS and the tests on PostgreSQL. The long property-test runs run every night on their own, hold back neither merges nor releases, and open an issue for each test they find failing.
+All checks are written as scripts in the repository, and the single `pnpm check` you run locally is the same set the automatic checks run: type check, lint, tests, dependency rules, links in the documents, whether the JSON examples in the documents parse, whether each document of the two editions links the other, the claims index, whether the code's references to the specification match its titles, and whether a merge conflict left a marker behind. On every pull request the automatic checks run a few quick items (title, sign-off, secrets, banned words) and the full `pnpm check`, plus `age-interop` (saveslot and the age command line each open an export the other encrypted) when the request changes the export encryption code, and all of them must pass before a merge; the author runs it locally before pushing. After a merge into `main`, or a pick onto a release branch (`release/0.<minor>`), they run again, adding Node 26 LTS, the tests on PostgreSQL and `age-interop`; every night they run the same way on `main`. The long property-test runs run every night on their own, hold back neither merges nor releases, and open an issue for each test they find failing.
 
 ## 1. How the code is split into packages
 
@@ -57,15 +56,20 @@ The whole project lives in one repository and is split into several packages (th
 | `contract-core` | The shape of data: how values are encoded, evidence, flags, intents, domain errors; the types of the event format | Nothing |
 | `kernel` | All the kernel's modules and `ops` (chapter 4, section 4); the two interfaces, tenant storage and registry storage; the file implementation of registry storage | `contract-core`; storage depends on the interfaces only |
 | `store-pglite`, `store-postgres` | The two storage backends | The storage interfaces in `kernel` |
-| `contract` | The external contract: operation definitions, idempotency, paging, handles, credential-related fields and errors; the HTTP and MCP interface descriptions are generated from it | `contract-core` |
+| `contract` | The external contract: operation definitions, idempotency, paging, handles, credential-related fields and errors | `contract-core` |
 | `service` | The service layer: identity, permissions, idempotency waiting, handles, rate limiting, control-database storage (a file implementation and a PostgreSQL implementation) | `kernel`, `contract` |
 | `server` | The two adapters, HTTP and MCP, and the renderer that turns results into text | `service`, `contract` |
 | `daemon` | The assembly entry point: chooses the backend, wires the service layer and the adapters together, reads the configuration, starts the process; the scheduler for background tasks | `server`, `service`, the two backends |
-| `client` | The HTTP client generated from the contract | `contract` |
+| `client` | The contract's HTTP client | `contract` |
 | `cli` | The command-line tool, which always goes through `client` over HTTP | `client` |
 | `saveslot` (entry point) | The executable, which only dispatches: commands that manage the process go to `daemon`, the rest to `cli` | `cli`, `daemon` |
+| `connector-ts` | The TypeScript SDK for writing connectors, which calls the service over HTTP as a script does; not published | Nothing (its tests start the real local service, using `daemon`, `service`, `store-pglite`) |
+| `reference` | The reference evaluator (section 2), for tests only | `contract-core` |
+| `test-backend` | The backend the tests open their stores with: PGlite, or PostgreSQL in its place when asked; for tests only | `kernel`, the two backends |
 
-The first version contains no package for a developer SDK, and no sync module or job module in `kernel`.
+Besides the packages there are two directories, neither published: `evals/` holds the data and the runner of the eval tasks (section 2, "Evals"), and `experiments/` holds the programs of the experiments (section 3, "Required experiments").
+
+The first version contains no package for a developer SDK, and no sync module or job module in `kernel`. In 0.2.0 neither the HTTP and MCP interface descriptions nor the HTTP client are generated from the contract: which route each operation maps to is written by hand in the client.
 
 ### Dependency direction
 
@@ -126,7 +130,7 @@ This is the direct test of the statement "the log is the only source of truth". 
 
 Export → replay into an empty database → compare row by row with the original tables. Do both backends crosswise: an export made on PGlite is replayed into PostgreSQL, and the reverse as well. An export with "pending deletion" placeholders is also tested: after the replay, the current business state matches the live one.
 
-**What it guards against:** "your data can be taken away" turning into an empty phrase. The first version has no user command to load an export back in, so this promise is tested only here.
+**What it guards against:** "your data can be taken away" turning into an empty phrase. Importing into an empty tenant (`saveslot import`, chapter 11, section 6) rests on this too.
 
 ### Kernel-only consistency tests
 
@@ -148,7 +152,7 @@ Give the kernel an "empty service layer" (everyone can see all the data, no idem
 
 ### The reference evaluator and property tests
 
-Chapter 8 explained that the result of a privacy deletion is computed from one sentence of definition. The code that actually runs, for efficiency, recomputes only the affected rows, and its logic is quite complicated. So a separate **reference evaluator** is written: a pure function whose input is "all the write events of one row + the set of deleted source data" and whose output is what that row should look like. It treats the state as "the value of each field at each valid time", implements it in the plainest way according to the definition, does not pursue efficiency, **does not use any judgement code in the kernel** (including `judge`), and lives in the test package.
+Chapter 8 explained that the result of a privacy deletion is computed from one sentence of definition. The code that actually runs, for efficiency, recomputes only the affected rows, and its logic is quite complicated. So a separate **reference evaluator** is written: a pure function whose input is "all the write events of one row + the set of deleted source data" and whose output is what that row should look like. It treats the state as "the value of each field at each valid time", implements it in the plainest way according to the definition, does not pursue efficiency, **does not use any judgement code in the kernel** (including `judge`). It is in `packages/reference`, depends only on `contract-core`, and only tests may import it.
 
 When the deleted set is empty, what it computes is "what things should look like after a series of writes". So it checks not only deletion but also the rules for writes, time and conflicts.
 
@@ -196,15 +200,15 @@ Evals do not verify the kernel's correctness; that is the job of the kinds of te
 
 ### Checks reserved for a future SDK
 
-The first version does not build an SDK, but several checks must pass in the first version, to guarantee that the kernel need not change when it is built later: the kernel can start on its own in several JavaScript runtimes (and computes the same hashes); two processes opening one data directory at the same time must produce an error; the call context can be fully serialized and restored; after being closed for 25 hours and opened again, deletions that are past the grace period must be completed first.
+The first version does not build an SDK, but several checks must pass in the first version, to guarantee that the kernel need not change when it is built later: the kernel can start on its own in several JavaScript runtimes (and computes the same hashes); two processes opening one data directory at the same time must produce an error; the call context can be fully serialized and restored; after being closed for 25 hours and opened again, deletions that are past the grace period must be completed first. Of these, "the kernel can start on its own in several runtimes" has no test yet ([`../spec/02-architecture.md`](../spec/02-architecture.md) §13).
 
 Specification: [`../spec/02-architecture.md`](../spec/02-architecture.md) §11 "The test matrix", §13; [`../spec/10-evals.md`](../spec/10-evals.md).
 
 ## 3. The order of work for the first version
 
-### What you need before starting
+### What the implementation rests on
 
-These are design work, not code, and must be settled before kernel development:
+These are design work, not code; the kernel is implemented by them, and all are settled:
 
 | Deliverable | Where |
 |---|---|
@@ -215,7 +219,7 @@ These are design work, not code, and must be settled before kernel development:
 | The pass criteria of each experiment | [`../zh-CN/process/decisions/pre-dev-w0-experiments.md`](../zh-CN/process/decisions/pre-dev-w0-experiments.md) (Chinese) |
 | The eval spec | [`../spec/10-evals.md`](../spec/10-evals.md) |
 
-**When the event format is frozen.** It is frozen before the first external release of local mode, and after that it only grows and is never changed. Before that, logs produced during development are not promised to be compatible, which leaves the implementation room to adjust.
+**The event format is frozen.** It is frozen from 0.1.0, the first external release, on: it only grows and is never changed, and a new version can replay the events written by any earlier release. Logs produced during development before 0.1.0 are not covered by the promise.
 
 ### Implementation steps
 
@@ -235,11 +239,11 @@ The implementation is divided into steps; each step adds to the one before, and 
 | P6 Wrap-up | Completing the command line (including the data-size warning of `saveslot doctor`), start at boot, tuning the tool descriptions, `instructions`, the suggested text and the various values according to the eval results | — |
 | P4b (not part of the first version) | Extraction jobs: the full flow for when a schema change needs re-extraction from the original words | The second half of schema changes |
 
-The release order is local mode first (P1–P4, P6), then server mode (P5). Before server mode goes online, privacy deletion must already be complete, and the legal conclusion on "metadata kept after deletion" must already be in hand.
+What is provided and what is not yet is as [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md), section 7, says. 0.2.0 provides local mode and server mode both; what it mainly lacks is privacy deletion from P3 and migrations that need a physical table rebuilt from P4, the same in both modes; the restore flow from P3 is missing in local mode only, and server mode has `saveslot server restore`.
 
-The restore flow is placed in P3 rather than P5: the acceptance tests of deletion need it, and local mode, which is released first, needs it too.
+The restore flow is placed in P3 rather than P5: the acceptance tests of deletion need it, and local mode needs it too.
 
-The person-week estimates for each step in the specification are rough figures from before the phases were adjusted and have not been re-estimated; they are not quoted here.
+The person-week estimates for each step in the specification are rough figures; they are not quoted here.
 
 ### Principles for trade-offs
 
@@ -257,7 +261,7 @@ Some things cannot be settled on paper and need experiments. Each experiment has
 
 | Experiment | What it asks | What the conclusion affects |
 |---|---|---|
-| 1 PGlite durability | After the process is killed hard or power is cut, are confirmed writes lost | **Done first.** If it falls short, replace the local backend with a bundled native PostgreSQL |
+| 1 PGlite durability | After the process is killed hard or power is cut, are confirmed writes lost | If it falls short, replace the local backend with a bundled native PostgreSQL |
 | 8 Single-writer lock | When two processes open one data directory at the same time, exactly one succeeds | How the lock is implemented |
 | 2 PGlite sandbox | How costly it is to terminate the worker; whether the SQL allowlist stops all kinds of bypasses | The timeout policy for slow queries |
 | 4 Latency of derivation refresh | How long recomputing the derived tables in the same transaction at write time takes at typical data sizes | The threshold for admitting a write |
@@ -269,7 +273,7 @@ Some things cannot be settled on paper and need experiments. Each experiment has
 
 One point in the design of experiment 1 is worth knowing: a test that only "kills the process" is not enough. When a process is killed, data already handed to the operating system is still in the memory cache and is not lost, so the test can pass even if nothing at all reached the disk. The experiment therefore has to observe the system calls that reach the disk directly, and do a real power cut; it also requires that the default configuration must lose data in the same test, otherwise the test method did not produce a real power cut.
 
-The two biggest uncertainties at present: the result of experiment 1; and the difficulty of implementing "replay the affected rows by definition" for deletion, which the small prototype midway in P1 probes first.
+The two biggest uncertainties at present: the power-cut step of experiment 1, not done yet; and the difficulty of implementing "replay the affected rows by definition" for privacy deletion.
 
 Specification: [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md). Its section 3 is the item-by-item list of mechanisms (more than ninety items, each marked Yes, Simplified or Later, in which phase, and what effect it has on which invariant); to find out whether the first version has a given feature, look there.
 
@@ -291,13 +295,14 @@ Specification: [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md). Its section 3
 | `02-architecture.md` | Kernel invariants, modules, runtime, the two storage interfaces and the list of the kernel's tables, trust boundaries, code organization, the test matrix | Before touching the kernel |
 | `03-data-model/` | The authoritative definitions of the data mechanisms, in 11 files (the 11th is the allowlist of restricted SQL) | Before changing any data rule. This is the most central group |
 | `04-contract.md` | The rules and explanations of each operation | When changing the interface, or writing an integrator |
-| `04-contract-types.md` | The type definitions and examples of the parameters, results and errors of each operation | When writing code that calls it, or generating the interface descriptions |
+| `04-contract-types.md` | The type definitions and examples of the parameters, results and errors of each operation | When writing code that calls it |
 | `05-surfaces.md` | The rules of MCP and HTTP each, how text is rendered | When changing tool descriptions and receipt wording |
 | `06-cli.md` | The command line | When changing commands |
 | `07-scope-v1.md` | The scope of the first version and the implementation order | Look it up any time |
 | `08-open-questions.md` | All the undecided items | Look it up any time |
 | `09-event-format.md` | The field-level definition of each kind of event in the log, the format of the export file | When touching `log` and `apply`, or when you need to read an exported log yourself |
 | `10-evals.md` | The executable specification of the eval tasks | After changing tool descriptions or receipt wording; when accepting a phase |
+| `11-claims.md` | The claims index: which test guards each "in every case …" claim of the specification, and whether it holds now | When changing such a claim, or the test that guards it |
 
 The documents are in the repository in two editions aligned in meaning: the guide in `docs/zh-CN/guide/` and `docs/guide/`, the specification in `docs/zh-CN/spec/` and `docs/spec/`. There are two more directories, in Chinese only: `docs/zh-CN/research/` is public technical research (technical choices and trade-offs on data models, storage, protocols, evaluation methods and so on); `docs/zh-CN/process/` is process material, including scenario walkthroughs (`walkthroughs/`) and the decision drafts for the design choices made before development started (`decisions/`, each stating what was chosen, why, and a minimal example).
 
@@ -354,8 +359,8 @@ All the undecided matters are collected in [`../spec/08-open-questions.md`](../s
 
 | Group | Meaning | Examples |
 |---|---|---|
-| Must be decided before development | Those that will be written into log events and are hard to change once decided. This group should be emptied before kernel development starts | None at present: all are decided, and the first version of the event format can be frozen |
-| Decided before a given phase starts | States which phase | The thresholds and the various timeouts for admitting a write, the values of the two size lines (waiting for experiment results); the batch size and threshold of the switch, the details of the official schemas (before P4); the legal basis of deletion, deletion of a whole tenant, which way of remote authorization to do first (before server mode goes online) |
+| Must be decided before development | Those that will be written into log events and are hard to change once decided. This group should be emptied before kernel development starts | None at present: all are decided, and the event format is frozen as of 0.1.0 |
+| Decided before a given phase starts | States which phase | The thresholds and the various timeouts for admitting a write, the values of the two size lines (waiting for experiment results); the batch size and threshold of the switch, the details of the official schemas (before P4); the legal basis of deletion, deletion of a whole tenant (before P5) |
 | Can be decided after development | Designs of later versions, or those that do not affect existing events | Table-level and field-level data permissions; when to implement the switch "accept only the user's own confirmation"; the details of automatic rulings by source level; the developer SDK; the safety of community schemas |
 
 To find an entry point for taking part in the discussion, you can start from the last two groups in this list.
@@ -364,5 +369,5 @@ To find an entry point for taking part in the discussion, you can start from the
 
 - The code is split into packages by layer, and dependencies run only from the outside in; the kernel depends on no transport and no service layer, only on the two storage interfaces.
 - Each kind of test corresponds to a specific class of mistake: both backends, replay comparison, export replay, counterexamples of the kernel invariants, the reference evaluator and the three groups of property tests, contract and renderer tests; evals check whether a real agent can understand it.
-- The first version is implemented step by step, each step accepted by the evals that run through; the event format is frozen before the first external release; the experiment to do first is the durability of PGlite.
+- The first version is implemented step by step, each step accepted by the evals that run through; the event format is frozen as of 0.1.0 and only grows; what 0.2.0 provides is in section 7 of `07-scope-v1.md`.
 - The authoritative definitions of rules are in `03-data-model/`, the shape of events in `09-event-format.md`, and the external shape in `04-contract-types.md`; when changing the design, update things together by the checklist; undecided matters are recorded in one place only.

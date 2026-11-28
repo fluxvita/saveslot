@@ -167,6 +167,29 @@ describe("escaping (05 §4.1, §5)", () => {
     expect(escapeJson(`e${cp(0x301)}`)).toBe(`"e${cp(0x301)}"`);
   });
 
+  it.each([
+    // The property's counterexample (seed -121467745, path 65:5:6): U+FF1C and U+FE64 are `<`.
+    ["full-width and small less-than signs", [{ [cp(0xff1c)]: null, [cp(0xfe64)]: {} }]],
+    ["a ligature and its letters", { [cp(0xfb01)]: 1, fi: 2 }],
+    ["an accent combined and precomposed", { [`e${cp(0x301)}`]: 1, [cp(0xe9)]: 2 }],
+  ])("JSON as written: keys a compatibility normalization would make one stay two (%s)", (_, v) => {
+    const text = escapeJson(v);
+    const keys = (x: unknown): number =>
+      Array.isArray(x) ? keys(x[0]) : Object.keys(x as object).length;
+    expect(JSON.parse(text)).toEqual(v);
+    expect(keys(JSON.parse(text.normalize("NFKC")))).toBe(keys(v));
+    expect(keys(JSON.parse(text.normalize("NFC")))).toBe(keys(v));
+  });
+
+  it("JSON as written: a key normalization would change has its code points past ASCII escaped; one it leaves alone is as it is", () => {
+    expect(escapeJson({ [`${cp(0xff1c)}x`]: 1 })).toBe(`{"${BS}uff1cx":1}`);
+    expect(escapeJson({ [`a${cp(0x301)}`]: 1 })).toBe(`{"a${BS}u0301":1}`);
+    // A key already in its normal form, as most names are, is written as it is.
+    expect(escapeJson({ 金额: 1, café: 2 })).toBe('{"金额":1,"café":2}');
+    // Values are not keys: their writing is the set's alone.
+    expect(escapeJson({ k: cp(0xff1c) })).toBe(`{"k":"${cp(0xff1c)}"}`);
+  });
+
   it("JSON as written takes plain JSON only: holes, dates, boxed values, toJSON are refused", () => {
     // biome-ignore lint/suspicious/noSparseArray: the hole is the case
     expect(() => escapeJson([1, , 2])).toThrow();

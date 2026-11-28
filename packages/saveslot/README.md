@@ -3,8 +3,9 @@
 saveslot is the open-source database all your AI tools share. Tell one agent you ran 5 km; ask another how far
 you ran this week. Every value keeps its sources and its history, and the data stays yours.
 
-This package is the `saveslot` command: the command line and the saveslot service. It needs Node 24.22.1 or later
-on the 24 line, or 26.12.1 or later.
+This package is the `saveslot` command: the command line and the saveslot service. It needs macOS or a Linux with
+glibc, and Node 24.22.1 or later on the 24 line, or 26.12.1 or later. musl distributions such as Alpine, `node:alpine`
+images included, are not supported yet.
 
 ```sh
 npm install -g @fluxvita/saveslot

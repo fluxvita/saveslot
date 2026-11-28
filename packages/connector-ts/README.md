@@ -12,11 +12,7 @@ This is the TypeScript side only. SDKs for other platforms and languages are dev
 
 ## Install
 
-Not published to npm yet: it will be, through CI, once the release process is set up. Until then, use it from this repository (a workspace dependency, or a path to `packages/connector-ts`). Once it is published:
-
-```bash
-npm install @fluxvita/saveslot-connector-ts
-```
+Not on npm yet: for now it is a private package of this repository, and it will be released on its own later. Use it from this repository (a workspace dependency, or a path to `packages/connector-ts`).
 
 Node.js 24 or later.
 

@@ -256,6 +256,11 @@ export interface AsOfResult {
   readonly total: number;
   readonly next_position?: string;
   readonly rows: readonly Row[];
+  /**
+   * Something a deletion still pending removed was left out: a row is marked, or a stretch is not
+   * listed (nothing of it left, or a business time condition only a withheld end could decide).
+   */
+  readonly partially_deleted?: true;
   readonly other_reads?: readonly {
     readonly read: string;
     readonly seq: Seq;

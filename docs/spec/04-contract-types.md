@@ -44,7 +44,7 @@ This document writes out the complete design. Parameters, values and operations 
 | Operations | `extract_claim`, `extract_submit`, `policy.set` |
 | Errors | `lease_expired`, `referenced` |
 | Slot policy | arbitration by source level during a conflict (the first version has only `keep_current`); extra high-impact tables / fields; the switch "a kind of handling accepts confirmation only from a user session" |
-| Profile | In the first version the table profile of `catalog` has only the row count and the valid-time range, the size hint `scale`, and the most recent K distinct values of each field; there is no "time of the most recent write". The `table` level carries `profile` (row count, valid-time range, size hint); the `examples` and `described_by` of each field are not provided in the first version |
+| Profile | In the first version the table profile of `catalog` has only the row count, the valid-time range and the size hint `scale` (the `profile` at the `table` level); there is no "time of the most recent write". A field's value examples (`examples`, the latest K distinct values) and `described_by` are not provided in the first version |
 
 **Not provided in 0.2.0 yet (part of the first version)**: 0.2.0 is the current version released publicly and provides only a part of the first version ([`07-scope-v1.md`](07-scope-v1.md) section 7). The items below are within the design scope of the first version and are written out in this document as they are; calling them in 0.2.0 reports `not_in_this_version`. This is separate from the table above: the table above lists what the first version does not do, and the table below lists what the first version does and 0.2.0 does not provide yet.
 
@@ -135,7 +135,7 @@ interface Interval {
    *  in a write receipt, the segment on a state table that acts on the whole time span: a revoke of the whole (a revoke without an interval), the undo of a revoke of the whole (the intent of the op can be
    *  update or correct), and the whole segment that include_later reverts together and turns into a candidate (both applied and candidate), where valid_to is also null;
    *  in a write receipt and in the timeline, the write-back segment that reverts a revoke of the whole (its start is open when it is cut up by other items).
-   *  A row in a read result always has a start; the item segments in flags are cut by the interval of the row, and when the first segment of an item has an open start it takes the start of the row, so it also always has a start. */
+   *  A row in a read result has a start (but for an end from deleted content in history's as_of: that key of the Row is left out there, not null); the item segments in flags are cut by the interval of the row, and when the first segment of an item has an open start it takes the start of the row, so it also always has a start. */
   valid_from: BizTime | null;
   valid_to: BizTime | null;        // null = continues indefinitely
   valid_to_inclusive?: DateStr;    // given only when the granularity is date and valid_to is not null: the last day in the interval
@@ -389,7 +389,9 @@ interface Row extends TargetRef {
   ver?: Ver | HistoricalVer;
   historical?: true;             // a historical version read with as_of
   values: Values;                // field name → value. Contains only the requested fields (all by default)
-  /** State table: the valid interval of this segment. One row per segment; the segments of the same entity have the same entity and ver. */
+  /** State table: the valid interval of this segment. One row per segment; the segments of the same entity have the same entity and ver.
+   *  In history's as_of, an end from content a deletion still pending removed leaves this key out (valid_to_inclusive is left out with valid_to), and the row is marked partially_deleted;
+   *  left out is not open: an open end is valid_to: null. */
   valid_from?: BizTime;
   valid_to?: BizTime | null;
   valid_to_inclusive?: DateStr;
@@ -752,6 +754,9 @@ interface AsOfResult extends CommonResult, PageResult {
   sv: Sv;                        // the schema version at that time, by which values are interpreted
   timezone: string;              // the slot's current time zone (same as timezone in catalog): instants in the result are shown in it
   rows: Row[];                   // ver is a HistoricalVer, historical: true; empty if the target did not exist at that time
+  /** Something was not given for a deletion still pending: a row carries partially_deleted, or a stretch is not listed (no value and no start given; or, with valid_at, only the end not given could decide whether it hits).
+   *  Given when the result is empty too: that is not the target missing then. */
+  partially_deleted?: true;
   other_reads?: Array<{ read: ReadId; seq: Seq; at: Instant }>;   // with as_of: {task}: the other reads of this target by the same task
 }
 
@@ -2210,7 +2215,7 @@ The accompanying fields of each error code:
 | `unauthenticated` | `missing` / `invalid` / `revoked` / `expired` / `account_disabled` (server mode: the account of the tenant owner is disabled) | — |
 | `insufficient_scope` | — | `required_scope: Scope \| "user_session" \| "all_slots"` (`all_slots`: this operation needs a credential whose scope is all slots, as when a credential limited to some slots creates a slot. Reported only for visible targets and does not reveal anything outside the visible range) |
 | `rate_limited` | `quota` / `busy` (the same tenant already has a reconcile or an import running) | `retry_after` |
-| `handle_expired` | `expired` / `restored` / `executed` / `derived_changed` (a derived table was refreshed during paging; re-read from the first page) / `deletion_changed` (a deletion was confirmed or cancelled after the first page; re-read from the first page) | `deletion?: ItemId` (the `dc_` that has already been executed) |
+| `handle_expired` | `expired` / `restored` / `executed` / `derived_changed` (a derived table was refreshed during paging; re-read from the first page) / `deletion_changed` (a deletion was confirmed or cancelled after the first page; re-read from the first page) / `format_changed` (the position is of a format before this version: `history`'s `as_of` on a state table gained a key in its positions; re-read from the first page) | `deletion?: ItemId` (the `dc_` that has already been executed) |
 | `not_in_this_version` | `parameter` / `value` / `operation` / `table_written` (a change allowed only on a table never written is used on a table that has been written) / `not_implemented` (a case that the implementation of 0.2.0 cannot reach yet: the parameter itself is valid, and it is not a parameter reserved for a later version) | `param?`, `value?` (carried when `reason` is `value` and that value is one of the fixed values of the parameter in the contract; a string the caller wrote casually is not carried), `operation?` |
 | `unavailable` | `busy` / `restoring` / `importing` / `reconciling` / `starting` / `stopping` | `retry_after?` |
 | `internal` | — | `incident: string` (a number for troubleshooting, with no content) |

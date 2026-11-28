@@ -146,6 +146,20 @@ describe.skipIf(cell === undefined)("against a server", () => {
       async (tx) => (await tx.query<{ p: number }>("SELECT pg_backend_pid() AS p")).rows[0]?.p,
     );
 
+  it(
+    "tells the cell's cluster apart by its system identifier, the one pg_control_system() gives",
+    async () => {
+      const id = await backend.clusterIdentity(pg.ref("unused").cell);
+      expect(id.by).toBe("system_identifier");
+      const r = await pg.sql(
+        "postgres",
+        "SELECT system_identifier::text AS id FROM pg_control_system()",
+      );
+      expect(id.value).toBe(r.rows[0]?.["id"]);
+    },
+    T,
+  );
+
   describe("opening", () => {
     it(
       "creates the database with the fixed encoding and locale, and the storage in it",

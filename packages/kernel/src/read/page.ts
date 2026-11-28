@@ -46,6 +46,8 @@ export async function positionOf(
     readonly since?: true;
     /** `reads.list`: the operation a read record's number stands for (its read's `pos`). */
     readonly opOf?: (seq: number) => number | undefined;
+    /** The position format the read uses (`encodePosition`); 1 when not given. */
+    readonly version?: number;
   },
 ): Promise<Position | undefined> {
   if (!has(params, "position")) return undefined;
@@ -76,6 +78,8 @@ export function pageAfter<T>(
     readonly since?: number;
     /** The log position when the first page was read, where `seq` is another point. */
     readonly logAt?: number;
+    /** The position format (`encodePosition`); 1 when not given. */
+    readonly version?: number;
   },
 ): { readonly page: T[]; readonly next?: string } {
   const after = o.position?.keys;
@@ -87,15 +91,19 @@ export function pageAfter<T>(
     page: page.map((x) => x.item),
     ...(rest.length > page.length && last !== undefined
       ? {
-          next: encodePosition(o.identity, {
-            seq: o.seq,
-            at: o.at,
-            restoreCount: o.restoreCount,
-            keys: last.keys,
-            ...(o.condition !== undefined ? { condition: o.condition } : {}),
-            ...(o.since !== undefined ? { since: o.since } : {}),
-            ...(o.logAt !== undefined ? { logAt: o.logAt } : {}),
-          }),
+          next: encodePosition(
+            o.identity,
+            {
+              seq: o.seq,
+              at: o.at,
+              restoreCount: o.restoreCount,
+              keys: last.keys,
+              ...(o.condition !== undefined ? { condition: o.condition } : {}),
+              ...(o.since !== undefined ? { since: o.since } : {}),
+              ...(o.logAt !== undefined ? { logAt: o.logAt } : {}),
+            },
+            o.version,
+          ),
         }
       : {}),
   };

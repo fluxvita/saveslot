@@ -133,6 +133,10 @@ async function restoreHeld(
     try {
       control = await openControlPlane(db);
     } catch (e) {
+      if (isCode(e, "control_format_old")) {
+        io.err(TEXTS.server.restoreControlOld);
+        return 5;
+      }
       if (!isCode(e, "control_not_initialized", "control_format_mismatch")) throw e;
       io.err(TEXTS.server.restoreControlNotReady);
       return 5;
