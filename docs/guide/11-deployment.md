@@ -64,7 +64,7 @@ An agent connects to saveslot through **MCP** (introduced in chapter 1: a genera
 | `saveslot_pending`      | Read  | List pending items, and see the details of one |
 | `saveslot_write`        | Write | Write: add, change, correct, revoke |
 | `saveslot_resolve`      | Write | Resolve one pending item |
-| `saveslot_schema_draft` | Write | Submit a schema draft (create a slot, change a table structure; the first version opens slot creation first) |
+| `saveslot_schema_draft` | Write | Submit a schema draft: create a slot, change an existing slot's schema (which changes take effect in 0.2.0: chapter 9) |
 | `saveslot_delete`       | Write | Execute a deletion that has been previewed (not provided yet in 0.2.0) |
 
 The complete design has two more tools related to "re-extraction"; they come later, together with that feature.
@@ -123,7 +123,7 @@ The command to add it on the host's side is likewise printed by `saveslot connec
 
 ### Programs without an agent: HTTP
 
-Scripts and programs you write yourself can call the HTTP interface directly; the paths begin with `/v1`, and the requests and receipts are the JSON defined in the contract. HTTP and MCP are generated from the same contract and can do basically the same things; the differences are mainly that HTTP does no text rendering, does not cut results by length, and opens the management operations.
+Scripts and programs you write yourself can call the HTTP interface directly; the paths begin with `/v1`, and the requests and receipts are the JSON defined in the contract. HTTP and MCP implement the same contract and can do basically the same things; the differences are mainly that HTTP does no text rendering, does not cut results by length, and opens the management operations.
 
 One kind of caller deserves its own mention: the **connector**, a program that periodically moves the data of an external system (a wristband, a bookkeeping app) into saveslot. It is not part of saveslot; it is written by the project or by developers on their own. saveslot does not schedule it and does not keep the external system's authorization token for it. It writes over HTTP as a connection and is treated the same as any other integrator. saveslot prepares only three general capabilities for it: a credential can be limited to the one slot it is responsible for (section 4); a table can declare an external key, so that syncing the same record repeatedly does not add it again (chapter 9); and recognition of resent batched writes. The credential is obtained like this:
 
@@ -155,14 +155,14 @@ What people do with the command line:
 | Delete and cancel (not provided yet in 0.2.0) | `saveslot delete`, `saveslot delete cancel` |
 | Query data, see history | `saveslot query`, `saveslot history`, `saveslot sql`, `saveslot sources` |
 | See who read what | `saveslot reads` |
-| Verify, replay comparison | `saveslot verify`, `saveslot verify --replay` |
+| Verify, replay comparison (the replay comparison is not provided yet in 0.2.0) | `saveslot verify`, `saveslot verify --replay` |
 | Export (optionally encrypted with a passphrase), import into an empty account | `saveslot export`, `saveslot import` |
 
 Three design points are worth knowing:
 
 - **The command line does no business writes.** There is no `saveslot write`. A write needs a sentence turned into an intent, rows, values and evidence, and that is the agent's job. A person who wants to change data tells the agent, and that sentence is the evidence.
 - **The command line does not touch the data directory directly.** Apart from the one-time initialization, all commands go through the saveslot service. This way the single writer and the recording of reads cannot be bypassed.
-- **What is bound at confirmation is the very version the person just saw.** When handling an item, the command line first shows the details, then executes with the item version obtained at display time; for a deletion, it uses the handle of the preview just shown. Confirming a deletion requires typing the full word `delete`; pressing `y` is not accepted.
+- **What is bound at confirmation is the very version the person just saw.** When handling an item, the command line first shows the details, then executes with the item version obtained at display time; for a deletion, it uses the handle of the preview just shown, and confirming requires typing the full word `delete`; pressing `y` is not accepted (deletion is not provided yet in 0.2.0; see the table above).
 
 Specification: [`../spec/06-cli.md`](../spec/06-cli.md).
 
@@ -187,8 +187,8 @@ Permissions are chosen when a connection is issued, and come in four kinds by ac
 |---|---|---|
 | `saveslot.read` | All read operations, including the deletion preview | Every connection must have it |
 | `saveslot.write` | Writing; handling items related to writing | Given |
-| `saveslot.schema` | Submitting schema drafts; handling schema-change items | Not given, must be ticked explicitly |
-| `saveslot.delete` | Executing deletions; cancelling a deletion (not provided yet in 0.2.0) | Not given, must be ticked explicitly |
+| `saveslot.schema` | Submitting schema drafts; handling schema-change items | Given when issued on the command line; on the OAuth consent page it is not ticked in advance, the user ticks it |
+| `saveslot.delete` | Executing deletions; cancelling a deletion (not provided yet in 0.2.0) | Not given, must be asked for explicitly |
 
 When issuing on the command line, adjust with `--scope`. There are two forms, which cannot be mixed:
 
@@ -221,7 +221,7 @@ Limits to be aware of:
 
 ### What only a user session can do
 
-Issuing, renaming and revoking connections; viewing the read audit; log verification and replay comparison; export; import.
+Issuing, renaming and revoking connections; removing an empty slot; viewing the read audit; log verification and replay comparison; export; import.
 
 The reasons are straightforward: an agent that can issue credentials can give itself any permissions; the audit's subjects are precisely the agents, and the party being audited should not be able to read the whole audit; export takes all the data away at once, which is the user's right and not the agent's; import decides what is in this account and whose credentials are still valid.
 
@@ -251,7 +251,7 @@ $ saveslot setup
       [x] Claude Code (claude 2.x, /usr/local/bin/claude)
       [x] Codex (codex 0.x, /opt/homebrew/bin/codex)
       [ ] Cursor (no add command; the configuration must be pasted by hand: saveslot connect cursor)
-[5/5] A connection will be issued for each host (scope saveslot.read saveslot.write), and these will be run:
+[5/5] A connection will be issued for each host (scope saveslot.read saveslot.write saveslot.schema), and these will be run:
         claude mcp add saveslot --scope user -e SAVESLOT_TOKEN=<token> -- /usr/local/bin/saveslot mcp
         codex mcp add saveslot --env SAVESLOT_TOKEN=<token> -- /usr/local/bin/saveslot mcp
       Run the 2 commands above? [Y/n]
@@ -259,8 +259,6 @@ $ saveslot setup
       Codex: issued MacBook · Codex · self-check passed · attached
 Done. In Claude Code, type /mcp__saveslot__overview (shown in the slash menu as /saveslot:overview); in any host you can also ask "what is in saveslot".
 ```
-
-(The exact form of the host commands is subject to what is measured at implementation.)
 
 All you have to do is make choices and agree once: which template, which hosts, each with a default; then answer once about "the commands that will be run on the host's side". This is a design requirement for integration, and every integration method added later is checked against it: every manual step in connecting filters out some people, and none of these steps needs a person's judgement; the only things a person has to judge are "whether to connect, and with how much permission". What you agree to is a list spelled out word for word, which is also a benefit for security.
 
@@ -304,7 +302,7 @@ Standalone executables and a desktop installer (which would not require the user
 | `control/` | The control plane, which is several files: credential hashes, the tenant directory, registry storage (the deletion register, the high-water mark of the highest number, the restore count, and the "restore in progress" and "import in progress" marks), and the handle signing key |
 | `credentials/` | The user session's token, readable only by the current system user |
 
-The configuration file `config.toml` is not generated by `init`: without it every item takes its default; to change something, create this file under `~/.saveslot/` yourself, and use `saveslot config get` to see the value of each item now and where it comes from. Numeric values such as the interval at which read records are flushed to disk are here (for example `read_log.flush_seconds`). If there is a mistake in the file, the service does not start, and says which item it is.
+The configuration file `config.toml` is not generated by `init`: without it every item takes its default. To change something, use `saveslot config set <item> <value>`, which takes only the items this version uses (in 0.2.0: `read_log.flush_seconds`, `mcp.autostart`, `upgrade.backup`); use `saveslot config get` to see the value of each item now and where it comes from. Numeric values such as the interval at which read records are flushed to disk are here (for example `read_log.flush_seconds`). If there is a mistake in the file, the service does not start, and says which item it is.
 
 Do not put the data directory in a synced folder such as iCloud Drive or Dropbox: the sync software changes files without saveslot knowing; saveslot warns when it detects this.
 
@@ -340,7 +338,7 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
 
 Seeing one read record other than the self-check shows that the agent really did connect through this connection. Typing `/mcp__saveslot__overview` in Claude Code works the same way: it makes the agent read the catalog, producing one such read.
 
-When something goes wrong, run `saveslot doctor` first. It checks item by item: the service is running, the permissions of the socket and credential files, the data directory is not in a synced folder, the single-writer lock, version consistency, whether any deletion is overdue for physical erasure, and whether the executables that the saveslot entries in each host point to still exist (using the host's own view command, without reading its configuration file). Each item's result is "pass / fail / warning". Three items give only a warning and do not count as a failure: the system clock being more than 5 minutes behind the end of the log; the agent in a host not having read anything through saveslot yet (if you have asked it to record something and nothing was recorded, the host has most likely not allowed it to use saveslot's tools, and the warning says how to allow them; it also appears for a host just connected and not yet used, and goes away after the first use); and the **data scale**, which lists the tables whose row count exceeds the comfort line or the measured line, along with the total number of events, the size of the data directory and the time of the most recent opening of the data, compared against the measured range (chapter 10, section 5, "About data volume and log size").
+When something goes wrong, run `saveslot doctor` first. It checks item by item: the service is running, the permissions of the socket and credential files, the data directory is not in a synced folder, the single-writer lock, version consistency, the start-at-login job (the programs it runs are still there, and the Node it uses is a supported version), and the saveslot entries in each host (using the host's own view command, without reading its configuration file). The design has one more item, "whether any deletion is overdue for physical erasure"; 0.2.0 has no privacy deletion yet and does not list it. Each item's result is "pass / fail / warning". The following give only a warning and do not count as a failure: the system clock being more than 5 minutes behind the end of the log; a host's saveslot entry not showing the path of this saveslot (the host may write it another way; the warning gives the command to remove that entry); the agent in a host not having read anything through saveslot yet (if you have asked it to record something and nothing was recorded, the host has most likely not allowed it to use saveslot's tools, and the warning says how to allow them; it also appears for a host just connected and not yet used, and goes away after the first use); and the **data scale**, which lists the tables whose row count exceeds the comfort line or the measured line, along with the total number of events, the size of the data directory and the time of the most recent opening of the data, compared against the measured range (chapter 10, section 5, "About data volume and log size").
 
 **Getting started in server mode**: `saveslot setup --profile <name>` follows the same line, with the steps changed to: if not logged in, `saveslot login` first (add `--device` when there is no browser over SSH); if there is no slot, create one from a template; for the selected hosts, run the add command in its remote form. There is no token on this path: the host obtains the credential itself through OAuth, and the one "Authorize" on the authorization page is that one agreement (section 2), so no permissions are selected here. Only Claude Code and Codex can be attached automatically; for the other hosts use `saveslot connect <host> --profile <name>`. When the host already has a `saveslot` entry (the local one, say), it is not overwritten, and setup gives the command to remove it. It does not switch the profile currently in use, and at the end it suggests `saveslot profile use <name>`. For self-hosting, you also need to initialize on the server first with `saveslot server init` and create an account with `saveslot server user add`.
 
@@ -427,7 +425,7 @@ So a restore is not "just swap the database back"; the restore procedure must be
 | Mode | How it is triggered |
 |---|---|
 | Server mode | The operations command `saveslot server restore --tenant <tenant>` (or `--user <account name>`) |
-| Local mode | `saveslot start --restored` |
+| Local mode | `saveslot start --restored` (not provided yet in 0.2.0; see the end of this subsection) |
 
 What the restore procedure does, in order: set a "restore in progress" mark in the control plane and add one to the restore count; open the tenant; append a "restore" event; re-apply deletions according to the deletion register; carry out the physical erasures that have already come due; check; clear the mark; serve outside requests.
 
@@ -439,6 +437,8 @@ If the database was swapped directly without going through the procedure, savesl
 - Comparing the deletion register with the log and finding a combination that cannot occur in normal operation (for example, the register says a deletion is pending, but the log has no trace of it at all).
 
 After detection, in server mode it refuses to serve outside requests and prompts to go through the restore procedure; in local mode it goes through the restore procedure automatically (local mode has only one user and no operator, so refusing service would be pointless). The fallbacks cannot detect every case: when the rollback is very small and there were no deletions in the period, it cannot be seen. So a restore should always be triggered explicitly.
+
+> How it is in 0.2.0: local mode has no restore procedure yet, and `saveslot start` does not accept `--restored`; on opening, finding the "restore in progress" mark, or the number at the end of the log below the highest number, it stops and does not serve, nor does it go through the restore procedure automatically. The highest number is advanced only when the tenant is closed, so the first fallback sees only a log wound back to before where it ended at the last close. The second fallback (comparing the deletion register) comes with privacy deletion. In server mode, a log found behind makes the requests to this tenant be answered `internal`, and the answer does not mention `saveslot server restore`.
 
 ### Cases the restore procedure cannot cover
 
@@ -465,10 +465,10 @@ Related to deployment and integration:
 | Not done | The first version's substitute |
 |---|---|
 | Storing one copy locally and one in the cloud and synchronizing them; multi-device sync; offline writes | For several devices to share, all connect to the same server-mode saveslot |
-| Merge import (loading an export into an account that already has data), continuous sync between local and server | Import only into an empty tenant: a one-time move from one place to another (section 6; released together with server mode) |
+| Merge import (loading an export into an account that already has data), continuous sync between local and server | Import only into an empty tenant: a one-time move from one place to another (section 6) |
 | An app with a graphical interface | The command line, or leave it to an agent |
 | A developer SDK (embedding saveslot in someone else's agent) | There is only one form, the saveslot service |
-| Table-level and field-level data permissions | Four action permissions × slot range (the slot range is released together with server mode) |
+| Table-level and field-level data permissions | Four action permissions × slot range |
 | Slots shared by several people | One tenant is one user |
 | Encryption | saveslot does no application-layer encryption; the cloud service's storage is encrypted at the infrastructure layer, and the operator can read it; for self-hosting and local mode it is determined by disk encryption. Deletion relies on physical erasure. An export file can be encrypted with a passphrase (section 6) |
 | Confirmation pop-ups (MCP elicitation) | The agent obtains the user's agreement in the conversation before calling |
@@ -477,6 +477,6 @@ Related to deployment and integration:
 | Windows support for local mode | macOS, Linux |
 | saveslot calling a model itself | Understanding and extraction are both done by the user's agent |
 
-In the order of release, local mode goes first, and server mode (the cloud service and self-hosting together) follows.
+0.2.0 provides both modes; what it provides and what it does not yet, see [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md), section 7.
 
 For the complete scope see [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md); for later plans see [`../spec/01-positioning.md`](../spec/01-positioning.md) "Later plans (not in the first version)".

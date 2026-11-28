@@ -32,7 +32,7 @@ The terms in the diagram (idempotent waiting, handles, control-plane storage, `o
 | **Operation contract** | A definition independent of the transport: which operations exist, what parameters each takes, what result it returns, what errors it reports | The shape of the parameters and the receipt of the `write` operation |
 | **Surface** | Carries the contract onto some concrete way of connecting | An agent calls `saveslot_write` through MCP; a person types `saveslot query` in a terminal |
 
-**The core is the first three: kernel + service layer + operation contract.** Surfaces can be added or removed: HTTP, MCP and CLI are all generated from the same contract and have equal standing, and adding an App or a developer SDK later is just one more surface. The correctness of saveslot does not depend on any one surface existing; all checks are in the kernel and the service layer.
+**The core is the first three: kernel + service layer + operation contract.** Surfaces can be added or removed: HTTP, MCP and CLI all implement the same contract and have equal standing, and adding an App or a developer SDK later is just one more surface. The correctness of saveslot does not depend on any one surface existing; all checks are in the kernel and the service layer.
 
 ## 2. Where the line between the kernel and the service layer falls
 
