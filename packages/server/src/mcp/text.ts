@@ -313,14 +313,21 @@ export function unescapeText(w: string): string {
   return out;
 }
 
-/** A JSON string with the code points `escapes` decides on written as `\uXXXX`. */
-function jsonString(s: string): string {
+/**
+ * A JSON string with the code points `escapes` decides on written as `\uXXXX`. A key that a
+ * compatibility normalization (NFKC) would change has every code point past ASCII written so too
+ * (05 §5 «JSON 原文»): a host normalizing the text cannot then make two keys one (U+FF1C and
+ * U+FE64 both become `<`), and it parses to the key it was.
+ */
+function jsonString(s: string, o: { readonly key?: boolean } = {}): string {
   const cs = Array.from(s);
   if (cut !== undefined && cs.length > SHOWN_CHARS) {
     cut.n++;
     cs.length = SHOWN_CHARS;
   }
-  const e = escapes(cs, (c) => c === '"' || c === "\\");
+  const set = escapes(cs, (c) => c === '"' || c === "\\");
+  const whole = o.key === true && s.normalize("NFKC") !== s;
+  const e = whole ? cs.map((c, i) => set[i] === true || cpOf(c) >= 0x80) : set;
   const body = cs
     .map((c, i) => {
       if (e[i]) {
@@ -359,7 +366,7 @@ export function escapeJson(v: unknown): string {
   const proto = typeof v === "object" ? Object.getPrototypeOf(v) : undefined;
   if (typeof v === "object" && (proto === Object.prototype || proto === null)) {
     const entries = Object.entries(v as Record<string, unknown>);
-    return `{${entries.map(([k, x]) => `${jsonString(k)}:${escapeJson(x)}`).join(",")}}`;
+    return `{${entries.map(([k, x]) => `${jsonString(k, { key: true })}:${escapeJson(x)}`).join(",")}}`;
   }
   throw new Error("not a JSON value");
 }

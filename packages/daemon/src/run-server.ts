@@ -58,11 +58,18 @@ import {
 } from "@fluxvita/saveslot-server";
 import {
   CallRecorder,
+  type CellIdentity,
+  ConfigFingerprintMismatch,
   ContractError,
+  type ControlUpgradeEvent,
   CursorKeys,
   checkAudience,
+  checkConfigFingerprint,
   type DiscardDatabase,
+  type FingerprintDifference,
+  fingerprintOf,
   importServerRequest,
+  LOGIN_FORM_PURPOSE,
   type OAuthDeps,
   type OAuthStore,
   openControlPlane,
@@ -74,6 +81,7 @@ import {
   type TenantPoolOptions,
   TenantRateLimiter,
   trustedProxies,
+  upgradeControlPlane,
 } from "@fluxvita/saveslot-service";
 import {
   type ControlDatabase,
@@ -104,6 +112,48 @@ export class ServerStartRefused extends Error {
     );
     this.set = set;
     this.reason = reason;
+  }
+}
+
+/** A step of the control database's upgrade failed: the step and the SQLSTATE, no database text. */
+export class ControlUpgradeFailed extends Error {
+  override readonly name = "ControlUpgradeFailed";
+  readonly step: string;
+  readonly sqlState: string | undefined;
+  constructor(step: string, sqlState: string | undefined) {
+    super(`step ${step} of the control database's upgrade failed`);
+    this.step = step;
+    this.sqlState = sqlState;
+  }
+}
+
+/** This process's settings differ from the deployment's (06-cli §4.1 «各进程相同的配置»). */
+export class ServerConfigRefused extends Error {
+  override readonly name = "ServerConfigRefused";
+  readonly differences: readonly FingerprintDifference[];
+  constructor(differences: readonly FingerprintDifference[]) {
+    super(`settings differ from the deployment's: ${differences.map((d) => d.item).join(", ")}`);
+    this.differences = differences;
+  }
+}
+
+/** The cell could not be reached to tell its cluster apart; the message names nothing of it. */
+export class CellUnreachable extends Error {
+  override readonly name = "CellUnreachable";
+}
+
+/**
+ * The cell's server refused to say which it is, otherwise than by giving no system identifier
+ * (which falls back to its address): its SQLSTATE, never the server's words.
+ */
+export class CellIdentityRefused extends Error {
+  override readonly name = "CellIdentityRefused";
+  readonly sqlState: string | undefined;
+  constructor(sqlState: string | undefined) {
+    super(
+      `the cell's database server refused to say which it is${sqlState !== undefined ? ` (SQLSTATE ${sqlState})` : ""}`,
+    );
+    this.sqlState = sqlState;
   }
 }
 
@@ -203,6 +253,31 @@ export function cellBackend(
   });
 }
 
+/**
+ * The cell's cluster as the fingerprint tells it apart: asked of the PostgreSQL backend; a backend
+ * that cannot be asked (a test's own) gives the cell's address without its credentials. A server
+ * not reached, or whose connection broke, is `CellUnreachable` (to retry); any other failure is
+ * `CellIdentityRefused`, with its SQLSTATE (settled: a retry does not change it).
+ */
+export async function cellIdentityOf(
+  backend: TenantPoolOptions["backend"],
+  config: ServerConfig,
+): Promise<CellIdentity> {
+  if (backend instanceof PostgresBackend) {
+    try {
+      return await backend.clusterIdentity(config.cellName);
+    } catch (e) {
+      const code = (e as { code?: unknown }).code;
+      if (code === "connection_failed" || code === "connection_lost") {
+        throw new CellUnreachable("the cell's database server could not be asked which it is");
+      }
+      throw new CellIdentityRefused((e as { sqlState?: string }).sqlState);
+    }
+  }
+  const c = config.cell;
+  return { by: "url", value: `${c.host}:${c.port ?? 5432}/${c.maintenanceDatabase ?? "postgres"}` };
+}
+
 export interface RunningServer {
   /** Where it listens (the port the system gave when the configuration asked for 0). */
   readonly address: { readonly host: string; readonly port: number };
@@ -273,6 +348,22 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
     if (!(await takeServerLock(db))) {
       throw new ServerAlreadyRunning("another server is running on this control database");
     }
+    // The lock is held alone: no other server runs, so the control database is upgraded here
+    // (06-cli §4.1 `server start`), each step in the server's log.
+    await upgradeControlPlane(db, (e: ControlUpgradeEvent) => {
+      const { event, ...fields } = e;
+      warn(event, Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, String(v)])));
+    }).catch((e: unknown) => {
+      const x = e as { code?: unknown; step?: string; sqlState?: string };
+      if (x.code === "control_upgrade_failed") {
+        warn("control_upgrade_failed", {
+          step: x.step ?? "",
+          ...(x.sqlState !== undefined ? { sql_state: x.sqlState } : {}),
+        });
+        throw new ControlUpgradeFailed(x.step ?? "", x.sqlState);
+      }
+      throw e;
+    });
     const control = await openControlPlane(db).catch((e: unknown) => {
       const code = (e as { code?: unknown }).code;
       if (code === "control_not_initialized")
@@ -289,8 +380,49 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
     });
     // A tenant's storage format upgraded when it is first opened (02-architecture §8): logged.
     const backend = o.backend ?? cellBackend(config, warn, o.testing?.formatUpgrade);
-    const identity = await openIdentity({ db, config, external, control, backend, now });
     const cursors = await CursorKeys.fromFile(config.handleKeyFile);
+    const identity = await openIdentity({
+      db,
+      config,
+      external,
+      control,
+      backend,
+      now,
+      // The login form's keys, from the key file every process reads (02-architecture §5
+      // «句柄签名密钥»): a form one process gave is taken by another.
+      formKeys: cursors.derive(LOGIN_FORM_PURPOSE),
+    });
+    // The settings every process must share, compared with the deployment's (06-cli §4.1
+    // «各进程相同的配置»). The lock is held alone, so a change is recorded and logged: every
+    // other process was stopped for it.
+    const cell = await cellIdentityOf(backend, config);
+    const fingerprint = fingerprintOf({
+      trustedProxies: config.trustedProxies,
+      publicUrl: config.publicUrl,
+      allowedOrigins: config.allowedOrigins,
+      ...(external !== undefined
+        ? {
+            identity: {
+              issuer: external.issuer,
+              loginUrl: external.loginUrl,
+              kids: external.keys.map((k) => String(k["kid"])),
+            },
+          }
+        : {}),
+      handleKeyIds: cursors.keyIds(),
+      cell,
+    });
+    const checked = await checkConfigFingerprint(db, fingerprint, { exclusive: true }).catch(
+      (e: unknown) => {
+        if (e instanceof ConfigFingerprintMismatch) throw new ServerConfigRefused(e.differences);
+        throw e;
+      },
+    );
+    if (checked.kind === "rewritten") {
+      warn("config_fingerprint_changed", {
+        items: checked.differences.map((d) => d.item).join(","),
+      });
+    }
     pool = new TenantPool({
       control,
       backend,

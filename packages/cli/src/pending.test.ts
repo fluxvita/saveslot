@@ -118,7 +118,7 @@ describe("pending (06 §5.1)", () => {
   it("an awaiting item: the proposal, the value in effect, each change it would make, the choices", () => {
     const lines = render(pendingDetail(AWAITING as never, NOW), terminal).split("\n");
     expect(lines).toEqual([
-      "pi_9BEZWJ3J7BMKMXTV awaiting_confirmation · marketing.budgets e_4KWKRM296X61WJ89DY5XJNVA4P · open · open 2 h · version iv_7EZWJ3J7BMKMXTVA.103.0",
+      "pi_9BEZWJ3J7BMKMXTV awaiting_confirmation · marketing.budgets e_4KWKRM296X61WJ89DY5XJNVA4P · open · opened 2 h ago · version iv_7EZWJ3J7BMKMXTVA.103.0",
       "  opened by 「MacBook · Codex」, 2026-11-10T18:02:00.000Z · reason overwrites_change_point",
       "  proposed: update amount 3000 「CNY」 (from 「2026-11-02」) (#104, 「MacBook · Codex」)",
       "  in effect now: amount 4000 「CNY」",

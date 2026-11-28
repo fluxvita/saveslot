@@ -443,6 +443,8 @@ describe("connect --profile", () => {
         2,
         `${TEXTS.usageError(TEXTS.remoteChosenOnPage)}\n`,
       ]);
+      // One full stop before the pointer to --help, not two.
+      expect(r.err).toContain("connect http --profile <profile>. See saveslot --help.\n");
     }
     expect(seen).toEqual([]);
   });

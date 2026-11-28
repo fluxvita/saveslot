@@ -17,8 +17,16 @@ import {
 } from "@fluxvita/saveslot-kernel";
 import {
   COMPILED_V1,
+  createKeyCache,
   createSlotEvents,
+  entitiesByKey,
+  entitiesByKeyWhole,
+  existingKeys,
+  existingKeysWhole,
+  keyOf,
+  keyOfWhole,
   resolveInTx,
+  tableKeys,
   writeInTx,
 } from "@fluxvita/saveslot-kernel/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -602,6 +610,105 @@ describe("existing_keys", () => {
       const again = await send(params);
       expect(again.replayed).toBe(true);
       expect(again.omitted).toBeUndefined();
+    },
+    T,
+  );
+});
+
+describe("a request reads a table's keys once; one entity's key alone", () => {
+  it(
+    "the same entities by key, keys of entities and existing keys as the whole table's read gives",
+    async () => {
+      // Budgets: a key of one text field, written again, revoked as a whole; two created and the
+      // first located again in one request. Limits: a key of two fields.
+      const made: { entity: string; ver: string }[] = [];
+      for (let i = 0; i < 12; i++) {
+        const r = await one(budget(`c${i}`, { amount: "1" }));
+        made.push({ entity: r.ops[0]?.target.entity as string, ver: r.ops[0]?.ver as string });
+      }
+      const [c0, c1] = made as [(typeof made)[number], (typeof made)[number]];
+      expect((await one(budget("c0", { amount: "2" }, { ver: c0.ver }))).refused).toBeUndefined();
+      const v = await one({ intent: "revoke", table: "budgets", entity: c1.entity, ver: c1.ver });
+      expect(v.refused).toBeUndefined();
+      const both = await send({
+        sv: 1,
+        ops: [
+          budget("x", { amount: "1" }),
+          budget("y", { amount: "1" }),
+          budget("x", { amount: "3" }),
+        ],
+      });
+      expect(both.refused).toBeUndefined();
+      expect(both.ops[2]?.target.entity).toBe(both.ops[0]?.target.entity);
+      for (const level of ["1", "2", "3"]) {
+        const r = await one({
+          intent: "update",
+          table: "limits",
+          entity_key: { region: "north", level },
+          set: { amount: "1" },
+          valid_from: "2026-10-01",
+        });
+        expect(r.refused).toBeUndefined();
+      }
+
+      await s.store.read(async (tx) => {
+        for (const id of ["t2", "t4"]) {
+          const t = COMPILED.tables.find((x) => x.id === id) as never;
+          const cache = createKeyCache();
+          const stored = await tableKeys(tx, t);
+          expect(stored.size).toBe(id === "t2" ? 14 : 3);
+          // Each stored key, and one no entity holds.
+          const keys = [...stored.values(), { f1: "nobody", f5: "9" } as never];
+          for (const k of keys) {
+            expect(await entitiesByKey(tx, t, k, cache)).toEqual(
+              await entitiesByKeyWhole(tx, t, k),
+            );
+            expect(await entitiesByKey(tx, t, k)).toEqual(await entitiesByKeyWhole(tx, t, k));
+          }
+          for (const e of [...stored.keys(), "e_unknown" as never]) {
+            expect(await keyOf(tx, t, e)).toEqual(await keyOfWhole(tx, t, e));
+          }
+          for (const n of [0, 3, 10, 100]) {
+            expect(await existingKeys(tx, t, n, cache)).toEqual(await existingKeysWhole(tx, t, n));
+          }
+          // Read once: the cache holds the table's keys after the first lookup.
+          expect(cache.keys.get(id as never)?.byEntity.size).toBe(stored.size);
+        }
+      });
+    },
+    T,
+  );
+});
+
+describe("a request's keys are read table by table", () => {
+  it(
+    "by key to one table, then by a key another table holds: that table's entity, nothing created",
+    async () => {
+      const lim = (level: string, extra: Record<string, unknown> = {}) => ({
+        intent: "update",
+        table: "limits",
+        entity_key: { region: "north", level },
+        set: { amount: "1" },
+        valid_from: "2026-10-01",
+        ...extra,
+      });
+      await one(budget("food", { amount: "1" }));
+      const held = await one(lim("1"));
+      const entity = held.ops[0]?.target.entity as string;
+      const before = await entities("t4");
+      // The budgets' keys are read first in this request; the limits' key must be looked up among
+      // the limits' own.
+      const r = await send({
+        sv: 1,
+        ops: [
+          budget("drink", { amount: "1" }),
+          lim("1", { ver: held.ops[0]?.ver, set: { amount: "2" } }),
+        ],
+      });
+      expect(r.refused).toBeUndefined();
+      expect(r.ops[1]?.created_entity).toBeUndefined();
+      expect(r.ops[1]?.target.entity).toBe(entity);
+      expect(await entities("t4")).toBe(before);
     },
     T,
   );

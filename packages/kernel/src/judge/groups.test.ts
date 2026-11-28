@@ -247,3 +247,76 @@ describe("a take on a group of a write with a field it gave as a no-op (property
     },
   );
 });
+
+// The same on existence (a property counterexample, seed -2121567779): with the row revoked (#24)
+// before #31 and #41 are written, both are candidates on existence, and the take of #31 is a take
+// on existence. #31 gave f2 as a no-op (the value it saw, #11's 1): it had no item on f2, so the
+// take writes no f2, and #41's same-valued f2 does not stand in for it. f2 stays #21's 5.
+describe("a take on existence of a write with a field of its group it gave as a no-op (a property counterexample)", () => {
+  it("event table: judge and the reference restore the row and write only the candidate's field", () => {
+    const schema: TableSchema = { kind: "event", required: ["f2"], groups: [["f2", "f3"]] };
+    const ops = [
+      {
+        kind: "write",
+        op: 10,
+        event: 11,
+        seen: 0,
+        fields: { f2: { value: "1", sources: ["S10"] }, f3: { value: "a", sources: ["S10"] } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "write",
+        op: 20,
+        event: 21,
+        seen: 10,
+        fields: { f2: { value: "5", sources: ["S20"] } },
+        acknowledge: ["overwrite"],
+      },
+      { kind: "revoke", op: 23, event: 24, seen: 22 },
+      {
+        kind: "write",
+        op: 30,
+        event: 31,
+        seen: 10,
+        fields: { f2: { value: "1", sources: ["S30"] }, f3: { value: "b", sources: ["S30f3"] } },
+      },
+      {
+        kind: "write",
+        op: 40,
+        event: 41,
+        seen: 20,
+        fields: { f2: { value: "1", sources: ["S4"], explicit: false } },
+        acknowledge: ["overwrite"],
+      },
+      {
+        kind: "resolve",
+        op: 43,
+        event: 44,
+        decision: "take_candidate",
+        candidates: [31, 41],
+        unit: "existence",
+        take: 31,
+      },
+    ] as Op[];
+    const { steps, refused } = judged(schema, ops, []);
+    expect(refused).toEqual([]);
+    const kernel = view(steps.at(-1)?.state as never);
+    const ref = evaluateLog(schema, ops).final as unknown as {
+      exists: boolean;
+      fields: Record<string, { value: unknown; by?: { event: number } }[]>;
+    };
+    const of = (xs: readonly { value: unknown; by?: { event: number } }[] | undefined) =>
+      (xs ?? []).map((x) => [x.value, x.by?.event]);
+    const kf = kernel.fields as unknown as Record<
+      string,
+      { value: unknown; by?: { event: number } }[]
+    >;
+    expect(of(kf["f2"])).toEqual([["5", 21]]);
+    expect(of(kf["f3"])).toEqual([["b", 44]]);
+    expect({ exists: ref.exists, f2: of(ref.fields["f2"]), f3: of(ref.fields["f3"]) }).toEqual({
+      exists: true,
+      f2: of(kf["f2"]),
+      f3: of(kf["f3"]),
+    });
+  });
+});

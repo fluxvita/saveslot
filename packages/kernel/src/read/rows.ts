@@ -814,10 +814,16 @@ export interface Position {
   readonly total?: number;
 }
 
-export function encodePosition(identity: string, p: Position): string {
+/**
+ * The format of a position (`v`): 1, but 2 for `history` `as_of` on a state table, whose keys gained
+ * an ordinal (a stretch whose start is withheld; the decision on interval ends of deleted content,
+ * §4). A position of an older format than its read's is expired, not malformed: the caller did
+ * nothing wrong, and reads from the first page again.
+ */
+export function encodePosition(identity: string, p: Position, version = 1): string {
   return Buffer.from(
     JSON.stringify({
-      v: 1,
+      v: version,
       q: identity,
       s: p.seq,
       t: p.at,
@@ -847,6 +853,8 @@ export function decodePosition(
     readonly since?: true;
     /** Whether the call may carry the first page's total (`query` only). */
     readonly total?: true;
+    /** The position format the call reads (`encodePosition`); 1 when not given. */
+    readonly version?: number;
     /**
      * The latest operation that confirmed or cancelled a deletion, in any slot (`deletionChangedAt`
      * in ./select.ts); 0 when none has. A position from before it is expired.
@@ -877,10 +885,25 @@ export function decodePosition(
     : "";
   if (
     !isObj(o) ||
-    (shape !== "k,q,r,s,t,v" && shape !== "c,k,q,r,s,t,v" && shape !== "f,k,q,r,s,t,v") ||
-    get(o, "v") !== 1
+    (shape !== "k,q,r,s,t,v" && shape !== "c,k,q,r,s,t,v" && shape !== "f,k,q,r,s,t,v")
   )
     throw bad();
+  const version = get(o, "v");
+  const want = check.version ?? 1;
+  if (version !== want) {
+    // An older format of the same read: expired, read again from the first page.
+    if (
+      typeof version === "number" &&
+      Number.isSafeInteger(version) &&
+      version >= 1 &&
+      version < want
+    )
+      throw new ReadError("handle_expired", "the position is of an older format", {
+        reason: "format_changed",
+        param,
+      });
+    throw bad();
+  }
   if (get(o, "q") !== check.identity) throw bad();
   const seq = get(o, "s");
   const at = get(o, "t");

@@ -149,8 +149,8 @@ const ALLOWED: Record<string, { readonly why: string; readonly readers: Record<s
   {
     // Must see pending blocks.
     "store/readable-content.ts": {
-      why: "the definition every other reader goes through; rawContentOf, the definition of a direct read limited to some events (each use counted where it is); and which block gave a version cell its value (cellWithheld): a restatement's identity (event, field, k) only, never its value, and whether a block was cleared (removed_by), both of blocks a deletion may list",
-      readers: { READABLE_CONTENT: 1, rawContentOf: 1, cellWithheld: 2 },
+      why: "the definition every other reader goes through; rawContentOf, the definition of a direct read limited to some events (each use counted where it is); and which block gave a version cell its value (cellWithheld): a restatement's identity (event, field, k) only, never its value, and whether a block was cleared (removed_by), both of blocks a deletion may list; and where a cell's ends came from (cellEnds): the same restatement's identity, the interval (never the value) of the block giving it, the item's target and the modes its head recorded for its ends, blocks a deletion may list",
+      readers: { READABLE_CONTENT: 1, rawContentOf: 1, cellWithheld: 2, cellEnds: 4 },
     },
     "apply/apply.ts": {
       why: "apply: a deletion's and a cancellation's own rows and the content they restore; covered events' paths (whose bodies it does not use); else metadata",

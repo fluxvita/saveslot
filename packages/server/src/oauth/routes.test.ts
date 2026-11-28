@@ -7,7 +7,7 @@
 
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import type { OAuthDeps } from "@fluxvita/saveslot-service";
+import { type OAuthDeps, TenantPoolError } from "@fluxvita/saveslot-service";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { handleOAuth, OAUTH_PATHS, TOKEN_BODY_MAX_BYTES } from "./routes.ts";
 
@@ -57,6 +57,11 @@ const deps = {
             // As the user's tenant refusing this process: upgraded by a newer version, or sealed.
             if (assertion === "format_too_new" || assertion === "tenant_sealed")
               throw Object.assign(new Error("refused"), { code: assertion });
+            // As the pool refuses a use: an import holds the tenant (here or in another process),
+            // or no connection is free yet.
+            if (assertion === "pool_importing") throw new TenantPoolError("importing", "held");
+            if (assertion === "pool_full") throw new TenantPoolError("pool_full", "full");
+            if (assertion === "pool_restoring") throw new TenantPoolError("restoring", "held");
             return assertion === "good" ? { user: USER, session: "s1" } : undefined;
           }
         : undefined;
@@ -333,6 +338,27 @@ describe("token endpoint", () => {
     },
   );
 
+  it.each([
+    ["pool_importing", "1"],
+    ["pool_restoring", "1"],
+    ["pool_full", "1"],
+  ])(
+    "a use the pool refuses (%s): 503 temporarily_unavailable with Retry-After, not 500",
+    async (assertion, after) => {
+      assertions = true;
+      warned.length = 0;
+      try {
+        const r = await token(form({ grant_type: JWT, assertion }));
+        expect(r.status).toBe(503);
+        expect(r.headers.get("retry-after")).toBe(after);
+        expect(await r.json()).toEqual({ error: "temporarily_unavailable" });
+        expect(warned).not.toContain("oauth.token_failed");
+      } finally {
+        assertions = false;
+      }
+    },
+  );
+
   it("a form field named __proto__ is a field like any other", async () => {
     await refused(
       await token(`grant_type=authorization_code&__proto__=x&constructor=y`),
@@ -365,11 +391,14 @@ describe("token endpoint", () => {
 });
 
 describe("a page whose step meets the user's tenant refusing this process", () => {
-  it.each(["format_too_new", "tenant_sealed"])(
+  it.each(["format_too_new", "tenant_sealed", "pool_importing"])(
     "%s: 503 with Retry-After, not 500; anything else still 500",
     async (code) => {
       warned.length = 0;
-      pageThrows = Object.assign(new Error("refused"), { code });
+      pageThrows =
+        code === "pool_importing"
+          ? new TenantPoolError("importing", "held")
+          : Object.assign(new Error("refused"), { code });
       try {
         const r = await fetch(`${base}${OAUTH_PATHS.deviceVerify}`);
         expect(r.status).toBe(503);

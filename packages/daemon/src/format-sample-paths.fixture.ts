@@ -10,6 +10,18 @@ import { resolve } from "node:path";
  */
 export const CURRENT_FORMAT = 5;
 
+/**
+ * The control database's format this version writes (the service's CONTROL_FORMAT, which this
+ * file does not import; format-sample-server.test.ts checks they agree). A server sample made
+ * with one past 1 is filed as `<format>/server-control-<control format>` (02-architecture §8
+ * «控制面库的升级»).
+ */
+export const CURRENT_CONTROL_FORMAT = 2;
+
+/** The directory name of a server sample made now, before any variant's suffix. */
+export const serverSampleName = (controlFormat: number): string =>
+  controlFormat > 1 ? `server-control-${controlFormat}` : "server";
+
 /** Where the samples are kept, from the repository root. */
 export const SAMPLES_DIR = "packages/test-backend/fixtures/storage-format";
 export const REPO = resolve(import.meta.dirname, "../../..");

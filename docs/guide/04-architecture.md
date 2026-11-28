@@ -32,7 +32,7 @@ The terms in the diagram (idempotent waiting, handles, control-plane storage, `o
 | **Operation contract** | A definition independent of the transport: which operations exist, what parameters each takes, what result it returns, what errors it reports | The shape of the parameters and the receipt of the `write` operation |
 | **Surface** | Carries the contract onto some concrete way of connecting | An agent calls `saveslot_write` through MCP; a person types `saveslot query` in a terminal |
 
-**The core is the first three: kernel + service layer + operation contract.** Surfaces can be added or removed: HTTP, MCP and CLI are all generated from the same contract and have equal standing, and adding an App or a developer SDK later is just one more surface. The correctness of saveslot does not depend on any one surface existing; all checks are in the kernel and the service layer.
+**The core is the first three: kernel + service layer + operation contract.** Surfaces can be added or removed: HTTP, MCP and CLI all implement the same contract and have equal standing, and adding an App or a developer SDK later is just one more surface. The correctness of saveslot does not depend on any one surface existing; all checks are in the kernel and the service layer.
 
 ## 2. Where the line between the kernel and the service layer falls
 
@@ -92,9 +92,11 @@ The rules the kernel holds are called **kernel invariants**. There are 14 of the
 
 A few notes:
 
-- **Judgement rules carry versions.** The kernel's mechanical judgements (is it a conflict, is it high-impact, does a row exist, and so on) have one **rule version** as a whole. Each slot's policy (chapter 3: a set of settings that says which schema changes take effect automatically and which value counts during a conflict; defaults are written when the slot is created, and the first version cannot change them) has a **policy version**. Both numbers are recorded in the head event of every operation. When a privacy deletion later has to recompute the judgement of an old write, it computes by the versions that write itself recorded. This way, after a kernel upgrade, an unrelated deletion does not change the result of an old judgement. The first version has only one rule version, but the number is recorded from the start, because it cannot be filled in afterwards.
+- **Judgement rules carry versions.** The kernel's mechanical judgements (is it a conflict, is it high-impact, does a row exist, and so on) have one **rule version** as a whole. Each slot's policy (chapter 3: a set of settings that says which schema changes take effect automatically and which value counts during a conflict; defaults are written when the slot is created, and the first version cannot change them) has a **policy version**. Both numbers are recorded in the head events of the operations that judge, in their `ctx` block (writes, resolving items, confirming and cancelling deletions; #25 in section 6 has one). When a privacy deletion later has to recompute the judgement of an old write, it computes by the versions that write itself recorded. This way, after a kernel upgrade, an unrelated deletion does not change the result of an old judgement. The first version has only one rule version, but the number is recorded from the start, because it cannot be filled in afterwards.
 - **The first version relaxes none of them.** A few have a narrower area of application because the feature is not turned on: K5 (the first version has no background jobs for large writes, so derived values are never behind, which is stricter than the full design), K8 (the first version does not do "a candidate with a higher source level takes effect automatically"; during a conflict it always keeps the current value), K10 (the correction-impact query in the first version does not cover reads of derived values), K11 (the first version has no "evidence deletion" and no deletion by row, so the rules that concern them are not triggered for now), K12 (the check of "replay the log from an empty database and compare row for row with the live tables" is called a **replay comparison**; the first version has no periodic background spot check, and the user has to run it manually).
 - Every invariant has a corresponding test; see chapter 12.
+
+> Three of them do not fully apply in 0.2.0: K6's "the switch is atomic and reads do not stop" holds only for switches that do not rebuild tables, because migrations that rebuild physical tables are not provided yet; K11 has no operation that can trigger it, because privacy deletion is not provided yet; and K12's replay comparison (`saveslot verify --replay`) is not wired in yet, so it cannot be run manually either. See [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md) section 7.
 
 ## 4. The modules inside the kernel
 
@@ -104,14 +106,17 @@ The kernel is divided inside into modules, arranged in layers. The lower, the mo
 |---|---|---|
 | L0 | `store` storage abstraction | Opens the storage of a tenant, opens transactions, guarantees that only one process writes at a time |
 | L1 | `log` log | Appends events, assigns sequence numbers, chains event headers, stores content blocks and computes checksums, clears content blocks as a deletion requires, verifies the whole log |
-| L1 | `audit` read audit | Buffering, flushing to disk and querying of read records; "the version each connection read most recently" (used as the fallback when `ver` is not passed) |
+| L1 | `audit` read audit | Flushing read records to disk (buffered first in local mode) and querying them; "the version each connection read most recently" (used as the fallback when `ver` is not passed) |
 | L1 | `flags` data flags | Stores and retrieves the flags on data, such as "disputed", "has a change awaiting confirmation", "flagged" |
+| L1 | `values` value arithmetic | Exact decimal arithmetic, unit conversion within one dimension, recomputing by precision and rounding mode. Pure computation |
 | L2 | `rules` rule engine | Parses read-only SQL and checks it against the allowlist, replaces table names and field names with internal physical names, computes how derived tables should be refreshed, estimates the cost of a write |
 | L2 | `time` time | The time types of tables, basic interval operations, querying by valid time |
+| L2 | `delta` value differences | The only implementation of "are these two values the same"; fetches a row's state at a version position; compares two states of the same row and says which fields, and which valid-time intervals, changed value. Reads' `changes` and writes' premises share it |
 | L3 | `judge` judgement | **Computes only, stores nothing.** Given the state of a row (or an entity) and a write, it computes the judgement result: whether the value changed, whether there is a conflict, where the default end point falls, whether it is high-impact, whether the row exists. It does not read the database and does not produce events. For the two ways it is used, see "Why judgement is its own module" below |
 | L3 | `derive` derivation generation | Given a batch of base data changes, computes which derived rows are affected and generates the derived write events |
 | L3 | `apply` apply | The only implementation that applies events to tables. It does only what the result recorded in the event says and does not judge again |
 | L4 | `schema` | Parsing and compiling of schema documents, change classification and impact preview, the migration process, the catalog |
+| L4 | `request` write requests | **Computes only, stores nothing.** Validates the shape, names, types, units and ranges of a write request, normalizes the values (unit conversion, rounding to precision, a uniform notation), and gives the normalized content the request key is computed from |
 | L4 | `pending` pending items | Generation, merging, refreshing and superseding of items; on resolve, checks the bound content |
 | L5 | `write` write pipeline | Validation and unit conversion, storing evidence as source data, checking `ver` and `sv`, deduplication, locating the target row by external key (chapter 5, section 3), validating the premises the write declares, fetching the current state of the target row and handing it to `judge` together with this write, generating write events; when this write changes the premises of other rows, generating premise change events |
 | L5 | `read` read | Simple queries, read-only SQL, history and reading at an instant, listing and searching source data, computing flags such as "premise changed" at read time, recording the read into `audit` |
@@ -119,7 +124,7 @@ The kernel is divided inside into modules, arranged in layers. The lower, the mo
 | L6 | `maintenance` maintenance plan | **Computes only, does nothing.** Given "now", it answers which background tasks are due. It opens no transaction, reads no clock and executes nothing |
 | L7 | `ops` kernel operation layer | The only entry point in the kernel for each operation in the contract, and the entry point for background tasks: opens the transaction, composes the modules above, assembles the receipt |
 
-There are also two modules, `jobs` (background jobs) and `sync` (multi-node synchronization), for which only a place is reserved; the first version does not implement them.
+There are also two modules, `jobs` (background jobs) and `sync` (multi-node synchronization), for which only a place is reserved; the first version does not implement them. `flags` and `maintenance` in the table are modules of the design; the kernel source code of 0.2.0 has no directory of their own for them yet.
 
 ### Why judgement is its own module
 
@@ -138,7 +143,7 @@ Making it a pure computation that "computes only, stores nothing" has two more b
 
 ### Dependency rules
 
-1. **A module may depend only on lower layers; modules in the same layer do not depend on each other.** This leaves the dependencies without cycles, so that when one module is changed it is clear who is affected.
+1. **A module may depend only on lower layers; modules in the same layer do not depend on each other.** This leaves the dependencies without cycles, so that when one module is changed it is clear who is affected. The one exception is that `request` depends on `schema` in the same layer: it takes only the unit vocabulary and the compiled field types, and calls neither compiling nor migration.
 2. **A module that generates events does not change tables directly; it only hands the events to `apply`.** `write`, `schema`, `pending`, `delete` and `derive` are responsible for "judge and write out the events", and `apply` is responsible for "change the tables according to the events". Chapter 3 explained why: the judgement is made only once and the result is recorded in the event, so that replay can obtain the same tables.
 3. **There is only one implementation of judgement**: everyone calls `judge` and none implements its own.
 4. **Transactions are opened by `ops`.** Lower-layer modules only receive a transaction that is already open and do not open one themselves.
@@ -150,7 +155,7 @@ These rules are checked automatically by a tool on every code commit (CI); a vio
 
 One operation often spans several modules, and these changes must either all succeed or all fail.
 
-Take A's write in step 3 of chapter 2, the one carrying an old `ver` (write number 37): `write` records the write head (#37), stores the evidence as source data (#38) and records the candidate write (#39); `pending` generates the conflict item (#40); `apply` applies them to the tables and puts the "disputed" flag on that row; and `audit` first has to flush the read records in the buffer to disk. If each module opened its own transaction, a crash midway could leave a half-finished state such as "has a candidate, no item". With one transaction opened by `ops` around all of it, this state cannot occur.
+Take A's write in step 3 of chapter 2, the one carrying an old `ver` (write number 37): `write` records the write head (#37), stores the evidence as source data (#38) and records the candidate write (#39); `pending` generates the conflict item (#40); `apply` applies them to the tables and puts the "disputed" flag on that row. If each module opened its own transaction, a crash midway could leave a half-finished state such as "has a candidate, no item". With one transaction opened by `ops` around all of it, this state cannot occur.
 
 It also solves the "cycle" between modules. A write produces items, and resolving an item has to execute a write: `pending` and `write` need each other. Dependencies can point in only one direction: `write` is in the upper layer and may call `pending` (that is how the conflict item was generated in the write above); the reverse is not allowed. So when resolving an item has to execute a write, `ops` orchestrates it: first call `pending` to check the content and record the resolution, then call `write` to execute. `pending` does not know that `write` exists.
 
@@ -183,13 +188,13 @@ Surface · MCP adapter      turns the tool call into the contract's write operat
 Service layer
   ① Identity: token → looked up in the control plane (tenant, principal = connection A)
   ② Permission: does A's scope include write; which slots A's credential is limited to
-  ③ Idempotency: compute the request key from "connection + task + request content"; if the same request is being processed, make the later one wait
+  ③ Idempotency: if the same request is being processed, make the later one wait (the request key is computed by the kernel; see write below)
   ④ Open this tenant's storage, build the calling context (visible range given by A's slot range)
   ▼
 Kernel · ops.write
+  → audit: in local mode, first flush the read records in the buffer in a transaction of their own (so that the fallback for ver is sure to see the read just made; in server mode the read records were written before the read was answered)
   open the transaction
-  → audit: flush the read records in the buffer first (so that the fallback for ver is sure to see the read just made)
-  → write: validate, deduplicate, store source data, fetch the current state of the lunch row
+  → write: validate and normalize the request, compute the request key from "connection + task + normalized request" and check it for a repeat, store source data, fetch the current state of the lunch row
   → judge: compute the judgement result of this write (amount differs from the version read → it is a change; ver is the current one → no conflict; not high-impact)
   → write: generate the write head and base write events from the result
   → derive: work out that the monthly total is affected, generate the derived write events
@@ -216,7 +221,7 @@ Kernel · ops.query
 Service layer → MCP adapter      render as text: every value carries its unit, flags are written at the end of the row, text fields are wrapped in the untrusted boundary
 ```
 
-A read produces no log event. Read records are first held in a memory buffer and flushed to disk a little later (section 7).
+A read produces no log event. In server mode its read records are written before it is answered; in local mode they are first held in a memory buffer and flushed to disk a little later (section 7).
 
 ### The control plane
 
@@ -240,8 +245,8 @@ When the service layer calls `ops`, besides the parameters of the operation itse
 | `trigger` | Present only for a background task: which task it is |
 | `task` | The task identifier the agent reports about itself; may be absent |
 | `visibility` | Which data this call can see: "all", or a list of slots. The user themselves and a connection with no limited range get "all"; when the credential is limited to some slots, it is those slots, and slots outside the range are, to it, the same as nonexistent. The shape of the interface leaves room for tables and fields; the first version uses only the slot level |
-| `request_key` | The request key of this operation, used for "exactly once" |
-| `idempotency_window` | How long a repeated request still counts as the same one |
+| `idempotency_window` | How long a repeated request still counts as the same one: for the request keys the kernel computes from the request content |
+| `idempotency_key_window` | The same, for idempotency keys the caller gives explicitly |
 | `now` | The current instant. Taken once by the service layer at the entry point; the kernel itself does not read the clock |
 | `confirmation` | The confirmation record when resolving an item |
 
@@ -251,7 +256,7 @@ Specification: [`../spec/02-architecture.md`](../spec/02-architecture.md) §4 "T
 
 ## 6. What an event looks like
 
-Chapter 2 described the log in one sentence. Here the events of **write #25 (the correction of lunch)** are laid out in their real shape. The full field-level definition is in the event format specification [`../spec/09-event-format.md`](../spec/09-event-format.md), which is frozen before the first public release and only grows after that; what follows is one instance of it.
+Chapter 2 described the log in one sentence. Here the events of **write #25 (the correction of lunch)** are laid out in their real shape. The full field-level definition is in the event format specification [`../spec/09-event-format.md`](../spec/09-event-format.md), which has been frozen since the first public release and only grows from then on; what follows is one instance of it.
 
 > Skipping hint: the first half of this section (the event header, the basic shape of content blocks, where `apply` puts things) needs only the first three chapters. The `span` blocks on state tables, the block dependency index, and the last subsection, "After the content is deleted", use concepts that chapters 7 and 8 develop; on a first read you can skip those places, go straight to section 7, and come back after chapter 8.
 
@@ -359,11 +364,13 @@ A correspondence between two names: the physical name of a business table carrie
 
 ### After the content is deleted
 
+> This subsection describes the design of privacy deletion, which is not provided yet in 0.2.0 ([`../spec/07-scope-v1.md`](../spec/07-scope-v1.md) section 7).
+
 Suppose `s_2` was later privacy-deleted and the deletion has come due (case one in chapter 2). The four events of this write become:
 
 - **Event headers**: all four are still there unchanged, so the chain is not broken.
 - **Data blocks that were emptied**: `text` of #26; `fields/f3/0`, `sources/f3/0` and `literal/f3/0` of #27; `ops/0/set/f3` and `request_key` of #25; `checksum` of #28. Each block leaves a mark "removed by #44" at its original place; #44 is the tombstone event.
-- **Why #28 is included**: the derived write stores a check value, computed from the base data it read, which includes that 54. The value used to compute it was deleted, so this check value must also be cleared, otherwise a guessed amount could be compared against it. By the same reasoning, the check values of the two later derived writes (#32 and #36) that recomputed the November total and read the 54 are also cleared. The other block of #28, `key` (the group key "2026-11"), stays: the month comes from the date in `s_1`, and `s_1` was not deleted. This is what "the check information of derived data is removed along with its inputs" means.
+- **Why #28 is included**: the derived write stores a check value, computed from the base data it read, which includes that 54. The value used to compute it was deleted, so this check value must also be cleared, otherwise a guessed amount could be compared against it. By the same reasoning, the check values of the two later derived writes (#32 and #36) that recomputed the November total and read the 54 are also cleared. #28 has no `key` block: a derived write registers a group's key in a `key` block only when the group first appears, and the group 2026-11 was registered at #24 (`{"values": ["2026-11-01"]}`). That `key` block of #24 stays: the month comes from the date in `s_1`, and `s_1` was not deleted. This is what "the check information of derived data is removed along with its inputs" means.
 - **Metadata blocks that remain**: `ctx`, `request` and `ops/0/target` of #25, `target` of #26, `target` of #27, `target` of #28.
 
 When replay later reaches #27, `apply` sees that `fields/f3/0` has been removed and treats this block as nonexistent.
@@ -388,14 +395,14 @@ Why this technology stack: PGlite, the database used in local mode, can run only
 
 In local mode, a tenant's storage is open in only one process at a time, with two safeguards:
 
-- **A lock.** A lock is taken when the tenant's storage is opened; another process that cannot get it cannot open the storage.
-- **An ownership number.** Each time the storage is opened, a number is incremented by 1 and recorded in the storage; after that every write transaction first checks this number. If it does not match, another process has taken over this tenant, and this process gives it up immediately. This guards against the case the lock does not, for example a process that was stuck for a long time and then recovers without knowing it has already been replaced.
+- **A lock.** When the tenant's storage is opened, an operating system file lock is taken on a lock file in the data directory; another process that cannot get it cannot open the storage. When the process dies, the operating system releases the lock, with no manual clean-up; the lock does not expire on a timeout.
+- **An owner file.** Each time the storage is opened, the process writes an owner file in the data directory, recording its own random token; after that every write transaction reads this file and checks the token at its start and again before it commits. If it does not match, another process has taken over this tenant, and this process gives it up immediately. This is the last line of defence, against the lock failing, for example when the lock file was deleted or replaced. The storage also has an ownership number, incremented by 1 and recorded at each opening and still checked; but on PGlite an old process reads the copy in its own cache and does not see the new value, so local mode goes by the owner file.
 
 In server mode, several processes may have one tenant open at once; no ownership is taken and there is no ownership number. Each write transaction first takes the tenant's lock in the database, so writes go one after another whichever process they land on. Each read and write transaction also first checks the storage format: when another version has upgraded it to a format this version does not know, the call is not done, and the caller tries again later.
 
 This is also why, in local mode, all agents must access data through the same saveslot service process: the command line tool and the MCP forwarding program never open the data directory directly, and always connect to that process.
 
-How exactly the lock is taken on the local machine has to be confirmed by an experiment (experiment 8 in chapter 12).
+This way of taking the lock was settled by the results of the single-writer lock experiment (experiment 8 in chapter 12).
 
 ### Writes within each tenant are serial
 
@@ -421,15 +428,21 @@ Server mode uses native PostgreSQL and does not have this limit, but the first v
 
 ### When read records are flushed to disk
 
-Reads are frequent, and writing to disk on every read is too expensive. So read records are kept in memory first and flushed to disk at these moments:
+The two modes differ.
 
-- **When any write transaction starts**, in the same transaction as that write. This guarantees that the `ver` fallback always sees the reads just made.
+**Server mode: written before the answer.** A read's records are written into the tenant's database before the request is answered, in a transaction that writes read records only: it does not take the lock writes take, so it does not wait on the tenant's writes. When the records cannot be written, the read gives no content and answers "busy for now, try again shortly": a read that was not recorded is not handed to the caller. So a process that exits unexpectedly loses no read it answered.
+
+**Local mode: kept in memory first** (reads are frequent, and writing to disk on every read is too expensive), and flushed to disk at these moments:
+
+- **Before any write transaction starts**, in a transaction of their own, before the operation's transaction opens. This guarantees that the `ver` fallback always sees the reads just made; when the operation is refused, this flush has still been committed.
 - **Before the tenant is closed.**
 - **Otherwise every few seconds** (initial value 5 seconds).
 
-So they are lost only when the process really crashes, and only the read records of the last few seconds that no write followed.
+So in local mode they are lost only when the process really crashes, and only the read records of the last few seconds that no write followed.
 
 ### No dependence on the process staying up
+
+> The parts of this subsection that concern deletion (physical erasure at expiry, what happens when it fails, re-applying deletions after a backup restore) describe the design: privacy deletion is not provided yet in 0.2.0 ([`../spec/07-scope-v1.md`](../spec/07-scope-v1.md) section 7).
 
 Some things must be done when their time comes, the most typical being the physical erasure 24 hours after a deletion is confirmed. saveslot does not assume the process is always running: **each time storage is opened, the tasks that have already come due are done first**, and only then does it serve requests.
 
@@ -440,7 +453,7 @@ If a due physical erasure fails (the disk is full, say), saveslot keeps serving 
 
 ### A confirmed write must not be lost
 
-A write for which the receipt says "saved" must still be there after a process crash or a power failure. By default, for speed, PGlite does not force data to be flushed to disk; "just turn that switch on" is for now only an assumption, and whether it really meets the bar has to be confirmed by an experiment. This is the experiment placed first in development, and if it does not meet the bar, the backend of local mode will be replaced by native PostgreSQL packaged together with saveslot (see chapter 12).
+A write for which the receipt says "saved" must still be there after a process crash or a power failure. On Node, PGlite by default does not flush data to disk. saveslot's approach: it turns off PGlite's no-flush option and has its flush requests really carried out by the operating system. Each time the storage is opened it also checks itself: it reads these settings back and confirms that the commit made while opening was flushed through the operating system, and refuses to open otherwise. Whether this meets the bar is confirmed by the durability experiment (experiment 1 in chapter 12); if it does not, the backend of local mode will be replaced by native PostgreSQL packaged together with saveslot.
 
 Specification: [`../spec/02-architecture.md`](../spec/02-architecture.md) §7.
 
@@ -456,7 +469,7 @@ What you get after opening is only a few actions:
 
 | Action | Meaning |
 |---|---|
-| Write transaction | Runs serially; at the start, local mode first checks the ownership number, server mode first takes the tenant's lock and checks the storage format |
+| Write transaction | Runs serially; local mode checks the token in the owner file at the start and before commit, server mode first takes the tenant's lock and checks the storage format |
 | Read transaction | Read-only |
 | Clean up leftovers | After a physical erasure, clears the places inside the database that may still hold plaintext |
 | Format version | The version number of saveslot's own internal tables |
@@ -479,7 +492,7 @@ The second interface holds **what must still be remembered after the tenant stor
 
 Why it is needed: suppose a user deleted a sentence, and later the database broke and was restored from an earlier backup. That backup contains the sentence, and has no record at all that it was ever deleted. If "what was deleted" were recorded only in the tenant storage, it would be turned back along with everything else. So this kind of information must be kept outside the tenant storage:
 
-- **The deletion register**: which deletions are confirmed, when they come due, and the addresses of the deleted content. Only addresses are recorded, not content.
+- **The deletion register**: which deletions are confirmed, when they come due, and the addresses of the deleted content. Only addresses are recorded, not content. (Privacy deletion is not provided yet in 0.2.0, so the deletion register comes into use only once it is; see [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md) section 7.)
 - **The highest sequence number**: up to which number the log of this tenant has been numbered.
 - **The restore count**: how many times this tenant has been restored from a backup.
 - **The "restore in progress" and "import in progress" marks.**

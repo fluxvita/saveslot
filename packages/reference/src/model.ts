@@ -327,6 +327,13 @@ export interface LogStep {
    * `not_found`, nothing of the row or entity is left and pending deletions are not the cause.
    */
   readonly notFound?: readonly string[];
+  /**
+   * A decision (`resolve`, `confirm`, `reject`) or an `undo` refused as `invalid_argument`
+   * (`pending_deletion_target`): pending deletions affect the row or entity (03-deletion «撤回与宽限期»:
+   * the replay with the current deleted set and the one without any pending deletion differ on
+   * it). The pending deletions touching its contributions, by operation number.
+   */
+  readonly pendingDeletionTarget?: readonly string[];
   /** Refused because the resolution was rejected when judged, and why. */
   readonly rejected?: RejectionReason;
   readonly state: Evaluation;

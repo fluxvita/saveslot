@@ -59,6 +59,14 @@ export {
   readableContentOf,
 } from "./store/readable-content.ts";
 export { failPremiseDetectionForTests } from "./write/detect-premises.ts";
+export {
+  createKeyCache,
+  entitiesByKey,
+  existingKeys,
+  keyOf,
+  tableKeys,
+} from "./write/keys.ts";
+export { entitiesByKeyWhole, existingKeysWhole, keyOfWhole } from "./write/keys-whole.fixture.ts";
 // The literal checker, for tests holding a write's literal blocks to it.
 export { checkLiteral, indexEvidence } from "./write/literal.ts";
 export {

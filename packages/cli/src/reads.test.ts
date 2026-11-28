@@ -306,6 +306,42 @@ describe("history (06 §4.7)", () => {
     const empty = render(asOfResult({ ...asOf, rows: [], total: 0 }), terminal);
     expect(empty).toContain("it did not exist yet");
   });
+
+  it("as of a point, an end a deletion removed: (deleted), and the result says what was left out", () => {
+    const base = {
+      mode: "as_of",
+      as_of: { seq: 10, recorded_at: "2026-11-10T04:31:00.000Z" },
+      sv: 1,
+      timezone: "Asia/Shanghai",
+      total: 1,
+      partially_deleted: true,
+    };
+    const row = {
+      table: "plan.budgets",
+      entity: "e_RA2ZPB5ZXRW16YEFMN2EEQAZ81",
+      ver: "h10.0",
+      historical: true,
+      values: { amount: "3000" },
+      valid_from: "2026-11-10",
+      marks: { partially_deleted: true },
+    };
+    const lines = render(asOfResult({ ...base, rows: [row] } as never), terminal);
+    expect(lines).toContain("「2026-11-10」 until (deleted)");
+    expect(lines).toContain(
+      "part of what was recorded then has since been deleted and is left out",
+    );
+    const { valid_from: _from, ...noStartRow } = row;
+    const noStart = render(
+      asOfResult({ ...base, rows: [{ ...noStartRow, valid_to: null }] } as never),
+      terminal,
+    );
+    expect(noStart).toContain("from (deleted)");
+    const empty = render(asOfResult({ ...base, rows: [], total: 0 } as never), terminal);
+    expect(empty).not.toContain("it did not exist yet");
+    expect(empty).toContain(
+      "part of what was recorded then has since been deleted and is left out",
+    );
+  });
 });
 
 const day = (from: string, to: string | null, last?: string) => ({

@@ -5,6 +5,7 @@ export * from "./call-records.ts";
 export * from "./caller-source.ts";
 export * from "./callers.ts";
 export * from "./calls.ts";
+export * from "./config-fingerprint.ts";
 export * from "./contract-error.ts";
 export * from "./control-files.ts";
 export * from "./control-plane.ts";

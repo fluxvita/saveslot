@@ -233,6 +233,24 @@ function periodOf(x: unknown): Part[] {
   return t`${timeOf(from)} until ${timeOf(to)}`;
 }
 
+/**
+ * A state row's stretch (05 §4.1): an end left out, as one a deletion removed is (04-contract
+ * `history` `as_of`: the key absent, the row marked `partially_deleted`), written "(deleted)", not
+ * read as open; with both ends there, as any period.
+ */
+function rowPeriodOf(row: R): Part[] {
+  const hasFrom = Object.hasOwn(row, "valid_from");
+  const hasTo = Object.hasOwn(row, "valid_to");
+  if (hasFrom && hasTo) return periodOf(row);
+  const from = hasFrom ? timeOf(row["valid_from"]) : t`(deleted)`;
+  if (hasTo && row["valid_to"] === null) return t`from ${from}`;
+  const last = row["valid_to_inclusive"];
+  if (!hasTo) return t`${from} until (deleted)`;
+  return last !== undefined
+    ? t`${from} to ${timeOf(last)} (inclusive)`
+    : t`${from} until ${timeOf(row["valid_to"])}`;
+}
+
 /** A row's or entity's reference: its table and ID. */
 function targetOf(x: unknown): Part[] {
   const r = obj(x);
@@ -359,7 +377,8 @@ function rowLine(row: R, historical = false, first = true): Line[] {
   if (first && isObj(row["entity_key"])) head.push(...t` ${namedValues(row["entity_key"])}`);
   if (row["key"] !== undefined) head.push(...t` ${namedValues(row["key"])}`);
   const cells: Part[][] = [];
-  if (Object.hasOwn(row, "valid_from")) cells.push(periodOf(row));
+  // A state row has a stretch, even with an end left out.
+  if (Object.hasOwn(row, "entity") && !Object.hasOwn(row, "key")) cells.push(rowPeriodOf(row));
   const values = valuesOf(row["values"]);
   if (values.length > 0) cells.push(values);
   // Someone else changed it last: the name, inside the untrusted boundary as every writer's is.
@@ -428,7 +447,7 @@ function columnsOf(rows: readonly unknown[]): Line[] {
   if (rows.length === 0) return [];
   const first = obj(rows[0]);
   const cells: Part[][] = [];
-  if (Object.hasOwn(first, "valid_from")) cells.push(t`period`);
+  if (Object.hasOwn(first, "entity") && !Object.hasOwn(first, "key")) cells.push(t`period`);
   for (const f of Object.keys(obj(first["values"]))) cells.push(fieldOf(f));
   return cells.length > 0 ? [t`Columns after the row's ID and ver: ${join(cells, t` | `)}`] : [];
 }
@@ -1128,7 +1147,13 @@ function history(r: R, now: Date): Line[] {
       t`As of ${op(at["seq"])} (${inZone(at["recorded_at"], r["timezone"])}) · schema v${count(r["sv"])}`,
       ...(rows.length > 0
         ? [...columnsOf(rows), ...rowsOf(rows, true)]
-        : [t`It did not exist yet.`]),
+        : r["partially_deleted"] === true
+          ? []
+          : [t`It did not exist yet.`]),
+      // Left out for what a deletion removed (04-contract `history` as_of): not "nothing then".
+      ...(r["partially_deleted"] === true
+        ? [t`Part of what was recorded then has since been deleted and is left out.`]
+        : []),
       ...pageOf(r, rows.length, () => t`rows`),
       ...remindersOf(r, now),
     ];
@@ -3048,6 +3073,9 @@ function ownNext(error: R): Part[] | undefined {
   }
   if (c === "handle_expired" && reason === "deletion_changed") {
     return t`A deletion was confirmed or cancelled since the first page: read again from the first page, without cursor.`;
+  }
+  if (c === "handle_expired" && reason === "format_changed") {
+    return t`The cursor is of an older format than this version of saveslot reads: read again from the first page, without cursor.`;
   }
   if (c === "handle_expired" && reason === "derived_changed") {
     return t`The derived table was refreshed since the first page: read again from the first page, without cursor.`;

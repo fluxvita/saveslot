@@ -17,7 +17,7 @@
 
 ## 上手
 
-需要 Node 24 系列的 24.22.1 及以上，或 26.12.1 及以上。
+需要 macOS 或使用 glibc 的 Linux，以及 Node 24 系列的 24.22.1 及以上，或 26.12.1 及以上。Alpine 这类 musl 发行版（包括 `node:alpine` 镜像）暂不支持。
 
 ```sh
 npm install -g @fluxvita/saveslot
