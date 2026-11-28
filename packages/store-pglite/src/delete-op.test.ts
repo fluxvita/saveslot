@@ -1655,3 +1655,155 @@ describe("the shapes this version refuses, before anything is appended", () => {
     T,
   );
 });
+
+describe("writes while a deletion is pending (03-deletion «撤回与宽限期»)", () => {
+  it(
+    "only an undo's evidence deleted: the replay is unchanged, the row is not affected, an undo of that undo goes ahead",
+    async () => {
+      const { row, second } = await lunch();
+      const [r0] = (await query(s.store, ctx(), { table: "lunches" })).rows as Any[];
+      const u = await w(
+        [{ table: "lunches", row, ver: r0.ver, revert: { undo: second.seq } }],
+        "undo the 35 please",
+      );
+      const { binding } = await previewDeletion(s.store, {
+        sources: [await sourceId("undo the 35 please")],
+      });
+      await confirm(binding);
+      const [r1] = (await query(s.store, ctx(), { table: "lunches" })).rows as Any[];
+      expect(r1.values.amount).toBe("45");
+      await w([{ table: "lunches", row, ver: r1.ver, revert: { undo: u.seq } }], "undo the undo");
+      const [r2] = (await query(s.store, ctx(), { table: "lunches" })).rows as Any[];
+      expect(r2.values.amount).toBe("35");
+    },
+    T,
+  );
+
+  it(
+    "only a revocation's evidence deleted: an undo of the revocation goes ahead, the row is back",
+    async () => {
+      const { row } = await lunch();
+      const [r0] = (await query(s.store, ctx(), { table: "lunches" })).rows as Any[];
+      const rv = await w(
+        [{ intent: "revoke", table: "lunches", row, ver: r0.ver }],
+        "drop that lunch",
+      );
+      const { binding } = await previewDeletion(s.store, {
+        sources: [await sourceId("drop that lunch")],
+      });
+      await confirm(binding);
+      expect((await query(s.store, ctx(), { table: "lunches" })).rows).toHaveLength(0);
+      await w([{ table: "lunches", row, revert: { undo: rv.seq } }], "bring it back");
+      const rows = (await query(s.store, ctx(), { table: "lunches" })).rows as Any[];
+      expect(rows.map((x) => x.values.amount)).toEqual(["35"]);
+    },
+    T,
+  );
+
+  it(
+    "a row removed whole by a pending deletion: an undo and a write on it are not_found first, naming the deletion",
+    async () => {
+      const r1 = await w(
+        [{ intent: "insert", table: "lunches", set: { amount: "45" } }],
+        "lunch was 45 at the deli",
+      );
+      const row = r1.ops[0].target.row as string;
+      const src = await sourceId("lunch was 45 at the deli");
+      const r2 = (await write(s.store, ctx(), {
+        sv: 1,
+        evidence: [{ kind: "source_ref", id: src }],
+        ops: [{ intent: "correct", table: "lunches", row, set: { amount: "35" } }],
+      } as never)) as Any;
+      const { binding } = await previewDeletion(s.store, { sources: [src] });
+      const d = await confirm(binding);
+      expect((await query(s.store, ctx(), { table: "lunches" })).rows).toHaveLength(0);
+      const at = await tail();
+      const notFound = {
+        code: "not_found",
+        reason: "row",
+        param: "ops/0",
+        deletions: [d.deletion.id],
+      };
+      const undo = await thrown(() =>
+        w([{ table: "lunches", row, revert: { undo: r2.seq } }], "undo the 35"),
+      );
+      expect({ code: undo?.code, ...undo?.detail }).toEqual(notFound);
+      const again = await thrown(() =>
+        w([{ intent: "correct", table: "lunches", row, set: { amount: "30" } }], "30 then"),
+      );
+      expect({ code: again?.code, ...again?.detail }).toEqual(notFound);
+      expect(await tail()).toBe(at);
+    },
+    T,
+  );
+
+  it(
+    "a write to an entity whose span block a pending deletion lists: refused as not implemented, nothing appended",
+    async () => {
+      // #3 has no end: it ends at the next change, #2's start, so its span rests on #2. Deleting
+      // #2's words lists that span block, left out of the entity's read; #3's value block stays.
+      const a = await w(
+        [
+          {
+            intent: "insert",
+            table: "budget",
+            valid_from: "2026-10-01",
+            set: { amount: "5000" },
+          },
+        ],
+        "5000 from october",
+      );
+      const entity = a.ops[0].target.entity as string;
+      const b = await w(
+        [
+          {
+            intent: "update",
+            table: "budget",
+            entity,
+            ver: a.ops[0].ver,
+            valid_from: "2026-11-20",
+            set: { amount: "4100" },
+          },
+        ],
+        "4100 from the 20th",
+      );
+      await w(
+        [
+          {
+            intent: "update",
+            table: "budget",
+            entity,
+            ver: b.ops[0].ver,
+            valid_from: "2026-11-10",
+            set: { amount: "3000" },
+          },
+        ],
+        "3000 from the 10th",
+      );
+      const { binding } = await previewDeletion(s.store, {
+        sources: [await sourceId("4100 from the 20th")],
+      });
+      await confirm(binding);
+      const [cur] = (await query(s.store, ctx(), { table: "budget" })).rows as Any[];
+      const at = await tail();
+      const e = await thrown(() =>
+        w(
+          [
+            {
+              intent: "update",
+              table: "budget",
+              entity,
+              ver: cur.ver,
+              valid_from: "2026-12-01",
+              set: { amount: "2000" },
+            },
+          ],
+          "2000 from december",
+        ),
+      );
+      expect([e?.code, e?.detail?.reason]).toEqual(["internal", "not_implemented"]);
+      expect(await tail()).toBe(at);
+    },
+    T,
+  );
+});

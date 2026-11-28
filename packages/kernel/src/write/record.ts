@@ -1133,6 +1133,17 @@ export function decodeRecords(ctx: RowContext, events: readonly StoredEvent[]): 
         const span = b[`span/${f}/${k}`] as
           | { valid?: unknown; seen_valid?: unknown; deps?: unknown[] }
           | undefined;
+        // A state table's field item has its interval in its span block. One missing is a block a
+        // pending deletion lists, left out of the row's read (an end resting on what it deletes),
+        // with the item's other blocks still there: judging the row with it is not in this
+        // version, as for a row a deletion touched (below), nothing appended.
+        if (isState && span === undefined) {
+          throw new WriteError(
+            "internal",
+            `decodeRecords: the interval of ${p} (seq ${event}) is not readable: judging a row a pending deletion affects is not implemented`,
+            { reason: "not_implemented" },
+          );
+        }
         const sources = (b[`sources/${f}/${k}`] ?? []) as { carried?: unknown }[];
         const carried = sources.filter((s) => s.carried !== undefined).map((s) => refIn(s.carried));
         const content: ItemContent =

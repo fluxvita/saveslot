@@ -1179,9 +1179,13 @@ export async function loadRow(tx: Tx, given: RowContext, param: string): Promise
     given.restores !== undefined ? given : { ...given, restores: await restoreHistory(tx) };
   const id = ("row" in ctx.target ? ctx.target.row : ctx.target.entity) as string;
   if ((await rowTable(tx, id)) !== ctx.table) {
+    // Removed whole by deletions still pending: every one touching its contributions, by operation
+    // (04-contract-types `not_found` `deletions`).
+    const blocked = (await readPendingTargets(tx)).on(ctx.table, id);
     throw new WriteError("not_found", "no such row or entity", {
       reason: "row" in ctx.target ? "row" : "entity",
       param,
+      ...(blocked !== undefined ? { deletions: [...blocked.deletions] } : {}),
     });
   }
   const events = await rowEvents(tx, ctx.table, id);
@@ -2111,7 +2115,9 @@ async function writeIn(
           : (o.target as { entity: EntityId }).entity);
     // An `undo` of a row or entity a pending deletion affects (04-contract «宽限期内不能撤回受影响的行
     // 上的写入»): refused, the whole request with it; after the deletion runs or is cancelled, as usual.
-    if (o.kind === "undo" && !isNew) {
+    // A row or entity pending deletions removed whole is `not_found` first, as for any write to it
+    // (03-deletion «撤回与宽限期»): it no longer exists for the caller (`loadRow` below).
+    if (o.kind === "undo" && !isNew && (await rowTable(tx, id)) === table.id) {
       pendingTargets ??= await readPendingTargets(tx);
       const blocked = pendingTargets.on(table.id, id);
       if (blocked !== undefined) {
