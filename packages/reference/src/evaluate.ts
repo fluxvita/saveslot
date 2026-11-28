@@ -2077,6 +2077,9 @@ class Replay {
     for (const f of takenFields.sort()) {
       const input = takenOp?.kind === "write" ? takenOp.fields[f] : undefined;
       if (input === undefined) continue;
+      // A field the taken write gave as a no-op when written had no item: nothing of it to take,
+      // and no same-valued candidate stands in for it (as on a field unit, `takeCandidate`).
+      if (takenOp?.kind === "write" && this.wroteNoop(takenOp, f)) continue;
       const v = tok(input.value);
       const same = cands.filter(
         (x) => x.target === f && x.content.kind === "value" && tok(x.content.value) === v,
