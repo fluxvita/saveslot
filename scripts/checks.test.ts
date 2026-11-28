@@ -238,8 +238,8 @@ describe("English documents", () => {
         reason: "no English edition (docs/spec/03-data-model/01-objects.md)",
       },
     ]);
-    // Each exception says why and until when.
-    for (const n of NOT_YET) expect(n.why.length > 0 && n.until.length > 0).toBe(true);
+    // Each exception says why, and when an English edition is due or that none is scheduled.
+    for (const n of NOT_YET) expect(n.why.length > 0 && n.schedule.length > 0).toBe(true);
   });
 
   it("dates files by their last commit", () => {

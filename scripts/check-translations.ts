@@ -44,19 +44,19 @@ const TRANSLATED = [
 ];
 
 /**
- * Chinese directories whose English edition is not required yet. Each entry says why and until
- * when; remove it once its English files are in.
+ * Chinese directories whose English edition is not required. Each entry says why, and when an
+ * English edition is due or that none is scheduled; remove it once its English files are in.
  */
-export const NOT_YET: readonly { dir: string; why: string; until: string }[] = [
+export const NOT_YET: readonly { dir: string; why: string; schedule: string }[] = [
   {
     dir: "docs/zh-CN/process/",
-    why: "decision records, walkthroughs and experiment notes; the spec and guide came first",
-    until: "a week after 0.1.0",
+    why: "decision records, walkthroughs and experiment notes: how the design was reached, read by the maintainers; the spec and guide hold the outcome in both editions",
+    schedule: "not scheduled",
   },
   {
     dir: "docs/zh-CN/research/",
-    why: "technical research behind the spec; the spec and guide came first",
-    until: "a week after 0.1.0",
+    why: "technical research behind the spec, read by the maintainers; the spec holds its conclusions in both editions",
+    schedule: "not scheduled",
   },
 ];
 
@@ -302,6 +302,6 @@ if (import.meta.main) {
   }
   const english = listMarkdownFiles(root).filter((f) => TRANSLATED.some((d) => f.startsWith(d)));
   console.log(
-    `Editions OK: ${english.length} documents in both editions, each linking the other; English not required yet: ${NOT_YET.map((n) => `${n.dir} (until ${n.until})`).join(", ")}.`,
+    `Editions OK: ${english.length} documents in both editions, each linking the other; English not required: ${NOT_YET.map((n) => `${n.dir} (${n.schedule})`).join(", ")}.`,
   );
 }
