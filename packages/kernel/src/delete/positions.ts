@@ -34,6 +34,7 @@
 import type { JsonValue, Seq } from "@fluxvita/saveslot-contract-core";
 import type { BlockAddress, Restatement, Target } from "../judge/index.ts";
 import type { ReadTx } from "../store/ports.ts";
+import { rawContentOf } from "../store/readable-content.ts";
 import { type BaseCitations, cites } from "./taken.ts";
 
 /** A row of `block_deps` whose block is present: block `path` of `seq` rests on a contribution. */
@@ -301,7 +302,7 @@ export async function readPositionIndex(
   const srcSet = new Set(sources);
   const sourceBlocks = (
     await tx.query<{ seq: unknown; path: string }>(
-      `SELECT c.seq, c.path FROM events e JOIN content c ON c.seq = e.seq
+      `SELECT c.seq, c.path FROM events e JOIN ${rawContentOf("$1")} c ON c.seq = e.seq
        WHERE e.type = 'source.recorded' AND e.seq = ANY($1)
          AND c.path IN ('text', 'file', 'request', 'stated_at') AND c.body IS NOT NULL`,
       [sources as never],
@@ -312,7 +313,7 @@ export async function readPositionIndex(
   const eventPaths = group(
     (
       await tx.query<{ seq: unknown; path: string }>(
-        `SELECT seq, path FROM content WHERE seq = ANY($1) AND body IS NOT NULL
+        `SELECT seq, path FROM ${rawContentOf("$1")} c WHERE body IS NOT NULL
          ORDER BY seq, path COLLATE "C"`,
         [deletedEvents as never],
       )
@@ -355,7 +356,7 @@ export async function readPositionIndex(
       `SELECT c.seq, c.path,
          CASE WHEN c.path LIKE 'ops/%/premises/%' OR c.path LIKE 'ops/%/premise_valid/%'
            OR c.path LIKE 'ops/%/target' OR c.path = 'request' THEN c.body ELSE NULL END AS body
-       FROM events e JOIN content c ON c.seq = e.seq
+       FROM events e JOIN ${rawContentOf("$1")} c ON c.seq = e.seq
        WHERE e.seq = ANY($1) AND e.seq = e.op AND c.body IS NOT NULL
        ORDER BY c.seq, c.path COLLATE "C"`,
       [ops as never],
@@ -441,7 +442,7 @@ export async function readDeletionPositions(
   const out = new Map<Seq, BlockAddress[]>();
   if (seqs.length === 0) return out;
   const r = await tx.query<{ seq: unknown; body: string | null }>(
-    `SELECT c.seq, c.body FROM events e JOIN content c ON c.seq = e.seq AND c.path = 'positions'
+    `SELECT c.seq, c.body FROM events e JOIN ${rawContentOf("$1")} c ON c.seq = e.seq AND c.path = 'positions'
      WHERE e.type = 'deletion.confirmed' AND e.seq = ANY($1) AND c.body IS NOT NULL`,
     [[...seqs] as never],
   );

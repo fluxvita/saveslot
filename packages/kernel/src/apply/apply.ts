@@ -37,6 +37,7 @@ import { readEvents } from "../log/log.ts";
 import { type DerivedRow, evaluateRule, evaluating, RuleEvaluationError } from "../rules/index.ts";
 import { isKnownLiteralChecker, isKnownRulesetVersion } from "../rules/version.ts";
 import type { ReadTx, SqlValue, Tx } from "../store/ports.ts";
+import { rawContentOf } from "../store/readable-content.ts";
 import { type RestorePoint, restorePoint } from "../store/restore-point.ts";
 import type { ValidParam } from "../time/index.ts";
 import { confirmationHash, confirmedChecksums } from "./confirmation.ts";
@@ -769,7 +770,7 @@ async function readDeletion(
     );
     const seqs = evs.rows.map((x) => Number(x.seq));
     const blocks = await tx.query<{ seq: unknown; path: string; body: string }>(
-      "SELECT seq, path, body FROM content WHERE seq = ANY($1) AND body IS NOT NULL",
+      `SELECT seq, path, body FROM ${rawContentOf("$1")} c WHERE body IS NOT NULL`,
       [seqs] as never,
     );
     const bySeq = new Map<number, Record<string, JsonValue>>();

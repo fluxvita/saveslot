@@ -9,6 +9,7 @@
 
 import type { Instant, ItemId, Seq } from "@fluxvita/saveslot-contract-core";
 import type { ReadTx } from "../store/ports.ts";
+import { rawContentOf } from "../store/readable-content.ts";
 
 /** What blocks a row or entity: the pending deletions affecting it, by operation, and the latest due. */
 export interface PendingBlock {
@@ -32,7 +33,7 @@ export async function readPendingTargets(tx: ReadTx): Promise<PendingTargets> {
   if (pending.rows.length === 0) return NONE;
   const own = pending.rows.map((d) => Number(d.confirmed_seq));
   const blocks = await tx.query<{ seq: unknown; path: string; body: string }>(
-    `SELECT seq, path, body FROM content WHERE seq = ANY($1) AND body IS NOT NULL
+    `SELECT seq, path, body FROM ${rawContentOf("$1")} c WHERE body IS NOT NULL
        AND (path = 'positions' OR path LIKE 'restated/%' OR path LIKE 'results/%/target')`,
     [own] as never,
   );

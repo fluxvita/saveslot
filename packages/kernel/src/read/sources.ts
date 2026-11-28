@@ -48,7 +48,7 @@ import {
   parseDateTime,
 } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
-import { READABLE_CONTENT } from "../store/readable-content.ts";
+import { readableContentOf } from "../store/readable-content.ts";
 import { isCorrection } from "./correction.ts";
 import { digest, limitOf, positionOf } from "./page.ts";
 import { encodePosition, type KeySpec } from "./rows.ts";
@@ -158,8 +158,8 @@ async function contentOf(
   const out = new Map<number, Map<string, string>>();
   if (seqs.length === 0) return out;
   const r = await tx.query<{ seq: unknown; path: string; body: string | null }>(
-    `SELECT seq, path, body FROM ${READABLE_CONTENT} c
-     WHERE seq = ANY($1) AND path IN ('text', 'file', 'request', 'stated_at')`,
+    `SELECT seq, path, body FROM ${readableContentOf("$1")} c
+     WHERE path IN ('text', 'file', 'request', 'stated_at')`,
     [[...seqs]] as never,
   );
   for (const x of r.rows) {

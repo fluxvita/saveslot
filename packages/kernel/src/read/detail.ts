@@ -34,7 +34,7 @@ import type { ReadRow } from "../audit/index.ts";
 import { cellsOfRows, cellValue, type StateCell, sourceItemsOfRows } from "../delta/sources.ts";
 import { decodeColumns as decode } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
-import { READABLE_CONTENT } from "../store/readable-content.ts";
+import { readableContentOf } from "../store/readable-content.ts";
 import { dateInZone, valueOut } from "../time/index.ts";
 import { type ShownRow, spansMeet } from "./rows.ts";
 import { rowFacts } from "./select.ts";
@@ -144,8 +144,8 @@ export async function rowDetails(
   if (wanted.length > 0) {
     const blocks = wanted.map(blockOf);
     const r = await tx.query<{ seq: unknown; path: string; body: string }>(
-      `SELECT c.seq, c.path, c.body FROM ${READABLE_CONTENT} c
-       WHERE c.seq = ANY($1) AND c.path = ANY($2) AND c.removed_by IS NULL AND c.body IS NOT NULL`,
+      `SELECT c.seq, c.path, c.body FROM ${readableContentOf("$1")} c
+       WHERE c.path = ANY($2) AND c.removed_by IS NULL AND c.body IS NOT NULL`,
       [[...new Set(blocks.map((b) => b.seq))], [...new Set(blocks.map((b) => b.path))]] as never,
     );
     for (const x of r.rows) {

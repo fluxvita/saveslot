@@ -12,7 +12,7 @@ import type {
   Seq,
 } from "@fluxvita/saveslot-contract-core";
 import type { ReadTx } from "../store/ports.ts";
-import { READABLE_CONTENT } from "../store/readable-content.ts";
+import { readableContentOf } from "../store/readable-content.ts";
 import type { VisibleSlot } from "./slots.ts";
 import type { TimelinePremise } from "./types.ts";
 
@@ -62,8 +62,8 @@ export async function declaringOps(
   }
   if (mine.length === 0) return out;
   const blocks = await tx.query<{ seq: unknown; path: string; body: string | null }>(
-    `SELECT seq, path, body FROM ${READABLE_CONTENT} c WHERE seq = ANY($1)
-       AND (path ~ '^ops/[0-9]+/premises/[0-9]+$' OR path ~ '^ops/[0-9]+/premises_cleared$')`,
+    `SELECT seq, path, body FROM ${readableContentOf("$1")} c
+       WHERE (path ~ '^ops/[0-9]+/premises/[0-9]+$' OR path ~ '^ops/[0-9]+/premises_cleared$')`,
     [[...new Set(mine.map((m) => m.op))]] as never,
   );
   const states = await tx.query<{

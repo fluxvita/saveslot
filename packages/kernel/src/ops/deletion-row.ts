@@ -20,6 +20,7 @@ import { readCitations, takenAway } from "../delete/taken.ts";
 import type { CancellationRecord, DeletionRecord, OpRecord, Restatement } from "../judge/index.ts";
 import { type GivenBlock, givenByRecords, type LatestGiven, overlay } from "../judge/restate.ts";
 import type { ReadTx } from "../store/ports.ts";
+import { rawContentOf } from "../store/readable-content.ts";
 import {
   decodeDeletionRecords,
   decodeRecords,
@@ -53,7 +54,7 @@ export async function priorDeletions(tx: ReadTx, slot: string): Promise<PriorLog
   if (heads.rows.length === 0) return { deletions: [], events: [] };
   const seqs = heads.rows.map((h) => Number(h.seq));
   const blocks = await tx.query<{ seq: unknown; path: string; body: string | null }>(
-    "SELECT seq, path, body FROM content WHERE seq = ANY($1) AND body IS NOT NULL",
+    `SELECT seq, path, body FROM ${rawContentOf("$1")} c WHERE body IS NOT NULL`,
     [seqs] as never,
   );
   const by = new Map<number, Record<string, unknown>>();

@@ -31,6 +31,40 @@ function code(text: string): string {
     .replace(/\/\/[^\n]*/g, "");
 }
 
+/**
+ * The string and template literals of `c` (comments already taken out), each with where it starts.
+ * A template's `${…}` parts are kept in its text, nested literals and braces included.
+ */
+function literals(c: string): { at: number; text: string }[] {
+  const out: { at: number; text: string }[] = [];
+  let i = 0;
+  while (i < c.length) {
+    const q = c[i];
+    if (q !== "`" && q !== '"' && q !== "'") {
+      i++;
+      continue;
+    }
+    const at = i;
+    i++;
+    let depth = 0;
+    while (i < c.length) {
+      const ch = c[i];
+      if (ch === "\\") i += 2;
+      else if (q === "`" && ch === "$" && c[i + 1] === "{") {
+        depth++;
+        i += 2;
+      } else if (depth > 0 && ch === "}") {
+        depth--;
+        i++;
+      } else if (depth === 0 && ch === q) break;
+      else i++;
+    }
+    out.push({ at, text: c.slice(at, i + 1) });
+    i++;
+  }
+  return out;
+}
+
 const META = "metadata blocks only, which no deletion lists";
 
 /**
@@ -60,6 +94,12 @@ const PENDING_REPLAYS: readonly string[] = [
 const RAW_READ =
   /(?<!DELETE\s+)\b(?:FROM|JOIN)\s+(?:ONLY\s+)?(?:"?public"?\s*\.\s*)?"?content"?(?!\w)/gi;
 
+/**
+ * A use of `rawContentOf` (store/readable-content.ts): `content` itself, limited to some events'
+ * blocks. A direct read like the others, written as a call.
+ */
+const RAW_HELPER = /\brawContentOf\(/g;
+
 /** A top-level declaration: the reader a direct read belongs to is the last one before it. */
 const DECL = /^(?:export\s+)?(?:async\s+)?(?:function\*?\s+(\w+)|(?:const|let|class)\s+(\w+))/gm;
 
@@ -68,7 +108,7 @@ function rawReads(text: string): { reader: string; line: number; text: string }[
   const lines = text.split("\n");
   const c = code(text);
   const decls = [...c.matchAll(DECL)].map((m) => ({ at: m.index, name: m[1] ?? m[2] ?? "" }));
-  return [...c.matchAll(RAW_READ)].map((m) => {
+  return [...c.matchAll(RAW_READ), ...c.matchAll(RAW_HELPER)].map((m) => {
     const line = c.slice(0, m.index).split("\n").length;
     const reader = decls.filter((d) => d.at < m.index).at(-1)?.name ?? "(top level)";
     return { reader, line, text: (lines[line - 1] ?? "").trim() };
@@ -83,8 +123,8 @@ const ALLOWED: Record<string, { readonly why: string; readonly readers: Record<s
   {
     // Must see pending blocks.
     "store/readable-content.ts": {
-      why: "the definition every other reader goes through; and which block gave a version cell its value (cellWithheld): a restatement's identity (event, field, k) only, never its value, and whether a block was cleared (removed_by), both of blocks a deletion may list",
-      readers: { READABLE_CONTENT: 1, cellWithheld: 2 },
+      why: "the definition every other reader goes through; rawContentOf, the definition of a direct read limited to some events (each use counted where it is); and which block gave a version cell its value (cellWithheld): a restatement's identity (event, field, k) only, never its value, and whether a block was cleared (removed_by), both of blocks a deletion may list",
+      readers: { READABLE_CONTENT: 1, rawContentOf: 1, cellWithheld: 2 },
     },
     "apply/apply.ts": {
       why: "apply: a deletion's and a cancellation's own rows and the content they restore; covered events' paths (whose bodies it does not use); else metadata",
@@ -221,6 +261,28 @@ describe("the kernel reads the log's content through the one definition that hid
       }
     }
     expect(problems).toEqual([]);
+  });
+
+  it("reads some events' blocks by `content`'s key, one event at a time, not by `seq = ANY`", () => {
+    // `content` is analyzed from a small sample, so the planner's estimate of the blocks a list of
+    // events has can be off by orders of magnitude, and with a long list it scans the whole table
+    // (store/readable-content.ts `readableContentOf`). An SQL literal reading `content`, itself or
+    // through READABLE_CONTENT, with a `seq = ANY` condition, is such a read.
+    const problems: string[] = [];
+    for (const f of files) {
+      const c = code(readFileSync(f, "utf8"));
+      for (const lit of literals(c)) {
+        const reads = RAW_READ.test(lit.text) || /\$\{\s*READABLE_CONTENT\s*\}/.test(lit.text);
+        RAW_READ.lastIndex = 0;
+        if (reads && /\bseq\s*=\s*ANY\b/i.test(lit.text)) {
+          problems.push(`${relative(SRC, f)}:${c.slice(0, lit.at).split("\n").length}`);
+        }
+      }
+    }
+    expect(
+      problems,
+      "use readableContentOf (or rawContentOf, a direct read) from store/readable-content.ts",
+    ).toEqual([]);
   });
 
   it("only a deletion's or a cancellation's replay asks rowEvents for pending blocks", () => {

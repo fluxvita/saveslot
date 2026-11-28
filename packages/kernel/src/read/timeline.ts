@@ -15,7 +15,7 @@ import type { ReadEntry } from "../audit/index.ts";
 import { actorsNow } from "../pending/index.ts";
 import { get, has, isObj, type Obj } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
-import { cellWithheld, READABLE_CONTENT, withholdingIn } from "../store/readable-content.ts";
+import { cellWithheld, readableContentOf, withholdingIn } from "../store/readable-content.ts";
 import { valueOut } from "../time/index.ts";
 import { isCorrection } from "./correction.ts";
 import {
@@ -76,8 +76,8 @@ async function baseEvents(tx: ReadTx, table: string, id: string): Promise<BaseEv
     }>(
       // In the log's order: `before` takes the first block of a field that matches, so the
       // order the database scans them in must not decide it.
-      `SELECT seq, path, body, removed_by, pending_by FROM ${READABLE_CONTENT} c
-       WHERE seq = ANY($1) ORDER BY seq, path COLLATE "C"`,
+      `SELECT seq, path, body, removed_by, pending_by FROM ${readableContentOf("$1")} c
+       ORDER BY seq, path COLLATE "C"`,
       [seqs] as never,
     );
     for (const b of r.rows) {
@@ -349,8 +349,8 @@ export async function timelineInTx(
   const texts = new Map<number, string>();
   if (expand && sourceSeqs.size > 0) {
     const r = await tx.query<{ seq: unknown; path: string; body: string | null }>(
-      `SELECT seq, path, body FROM ${READABLE_CONTENT} c
-       WHERE seq = ANY($1) AND path IN ('text', 'file') AND body IS NOT NULL`,
+      `SELECT seq, path, body FROM ${readableContentOf("$1")} c
+       WHERE path IN ('text', 'file') AND body IS NOT NULL`,
       [[...sourceSeqs]] as never,
     );
     for (const x of r.rows) {
