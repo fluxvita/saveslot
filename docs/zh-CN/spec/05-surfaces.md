@@ -977,6 +977,7 @@ MCP 端点（Streamable HTTP）挂在 `/mcp`，适配器只有这一份实现；
 | `GET`、`POST /oauth/device/verify` | 设备码的验证页：用户在已登录的浏览器里输入终端上显示的代码，批准或拒绝 |
 | `POST /oauth/revoke` | 吊销令牌（RFC 7009） |
 
+- **用户的租户此刻不可用**（服务器模式）：token 端点（`/oauth/token`、`/oauth/revoke`）与授权页、设备码验证页要用到用户的租户时，遇到下面这些情况，token 端点回 `503`、错误码 `temporarily_unavailable`，页面回 `503`，都带 `Retry-After`，不回 `500`：租户正在导入或正在恢复；这个进程的租户连接已满，或租户库此刻连不上；租户存储的格式比这个版本新（[`02-architecture.md`](02-architecture.md) §7「锁与格式核对」）；导入换入期间写入撞上封存；外部登录第一次见到的用户，它的租户等建库等不到。这些都是稍后重试就可能成的情形，与契约里的 `unavailable` 同源。只有授权码兑换（`grant_type=authorization_code`）例外：被拒时这个授权码已经用掉，同一个码再兑换报 `invalid_grant`，客户端要重新发起授权。
 - **授权页的默认值**：用户最多做选择和一次同意（06-cli 第 1 节的设计要求）。名字预填（取客户端登记的名称）；scope 预选 `saveslot.read saveslot.write`；不改就直接点一次"授权"。
   - **第一版授权页不选 slot 范围**：经远程授权得到的连接实例，slot 范围一律是全部（含以后新建的）。要一个只碰某几个 slot 的凭证（典型的是连接器），由用户会话签发静态令牌：`saveslot connect http --profile <名字> --slots …`（06-cli 3.2）。授权页上选范围、客户端声明它要的 slot 是后续（open-questions）。
   - slot 范围**不编码进 scope 字符串**：受保护资源元数据照旧只列四个 scope。
