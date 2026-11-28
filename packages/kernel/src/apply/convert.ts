@@ -36,10 +36,15 @@ export type FieldMap =
   | { readonly op: "drop" }
   | { readonly op: "convert"; readonly from: NumberShape; readonly to: NumberShape };
 
-/** A table between two versions: each field of the old version, and the fields the new one adds. */
+/**
+ * A table between two versions: each field of the old version, the fields the new one adds, and
+ * the fields it keeps whose constraint this switch tightens with a constant `backfill` (07
+ * «收紧约束»: the constant goes where a value, converted, still breaks the new constraint).
+ */
 export interface TableMap {
   readonly fields: ReadonlyMap<FieldId, FieldMap>;
   readonly added: readonly { readonly field: FieldId; readonly backfill?: ConstBackfill }[];
+  readonly tightened: readonly { readonly field: FieldId; readonly backfill: ConstBackfill }[];
 }
 
 const KEEP: FieldMap = { op: "keep" };
@@ -66,8 +71,39 @@ function fieldMapOf(from: CompiledBaseField, to: CompiledBaseField): FieldMap {
   return { op: "convert", from: a, to: b };
 }
 
-/** The map of a base table from one version's definition to the next (fields matched by ID). */
-export function tableMapOf(from: CompiledBaseTable, to: CompiledBaseTable): TableMap {
+/**
+ * The fields of table `table` whose constraint a version tightens, from its `schema.compiled`
+ * `changes` (09 §5.5). A compiled field keeps the `backfill` an earlier version gave it, so whether
+ * this switch fills a kept field is read from the changes, not from the field.
+ */
+export function tightenedOf(
+  changes: readonly {
+    readonly change: string;
+    readonly target: Readonly<Record<string, unknown>>;
+  }[],
+  table: string,
+): ReadonlySet<FieldId> {
+  return new Set(
+    changes.flatMap((c) =>
+      c.change === "tighten_constraint" &&
+      c.target["table"] === table &&
+      typeof c.target["field"] === "string"
+        ? [c.target["field"] as FieldId]
+        : [],
+    ),
+  );
+}
+
+/**
+ * The map of a base table from one version's definition to the next (fields matched by ID).
+ * `tightened`: the kept fields whose constraint the switch tightens ({@link tightenedOf}); each one
+ * with a constant `backfill` in `to` is listed with it.
+ */
+export function tableMapOf(
+  from: CompiledBaseTable,
+  to: CompiledBaseTable,
+  tightened: ReadonlySet<FieldId> = new Set(),
+): TableMap {
   const next = new Map(to.fields.map((f) => [f.id, f] as const));
   const before = new Set(from.fields.map((f) => f.id));
   const fields = new Map<FieldId, FieldMap>();
@@ -82,7 +118,12 @@ export function tableMapOf(from: CompiledBaseTable, to: CompiledBaseTable): Tabl
         ? { field: g.id, backfill: g.backfill }
         : { field: g.id },
     );
-  return { fields, added };
+  const filled = to.fields.flatMap((g) =>
+    before.has(g.id) && tightened.has(g.id) && g.backfill !== undefined && "const" in g.backfill
+      ? [{ field: g.id, backfill: g.backfill }]
+      : [],
+  );
+  return { fields, added, tightened: filled };
 }
 
 /** One value through a field's map. Only a present value is converted; `null` stays `null`. */
