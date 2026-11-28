@@ -68,6 +68,7 @@ import {
 import { type DoctorOptions, doctor } from "./doctor.ts";
 import { initBackend } from "./init-backend.ts";
 import { health, upgradeOf } from "./local-request.ts";
+import { nodeOptions } from "./low-memory.ts";
 import { daemonVersion, main } from "./main.ts";
 import { runBridge } from "./mcp-bridge.ts";
 import { CLOCK_BEHIND_MS, clockBehind, looksSynced, withSession } from "./probes.ts";
@@ -384,8 +385,9 @@ async function startService(
     const conditions = bin.endsWith(".ts") ? ["--conditions=source"] : [];
     // A bridge runs with a connection's token; the service takes no token and keeps none.
     // The service writes its own lines to the log and rotates it (./log-file.ts); the descriptor
-    // given as stdout and stderr keeps what Node itself writes on a crash.
-    const args = [...conditions, bin, ...serviceArgs(home, o)];
+    // given as stdout and stderr keeps what Node itself writes on a crash. Node's own options
+    // first: `service.low_memory` (./low-memory.ts) can only be given there.
+    const args = [...nodeOptions(config.lowMemory), ...conditions, bin, ...serviceArgs(home, o)];
     child = spawn(process.execPath, args, {
       detached: true,
       stdio: ["ignore", log, log],
@@ -575,6 +577,7 @@ export async function status(
   io.out(
     TEXTS.status({
       lock: h.writer_lock === "held",
+      ...(typeof h.low_memory === "boolean" ? { lowMemory: h.low_memory } : {}),
       behindMs,
       // The time as parsed, written again: not the string as the service sent it.
       logEnd:
@@ -657,6 +660,8 @@ async function configSet(home: string, args: readonly string[], io: CommandIO): 
   if (key === "mcp.autostart") io.out(TEXTS.configTakesEffectBridge);
   else if ((await health(socketFile(home))) !== undefined) io.out(TEXTS.configTakesEffectRestart);
   else io.out(TEXTS.configTakesEffectStart);
+  // The start-at-login job has the setting in its own command line.
+  if (key === "service.low_memory") io.out(TEXTS.configTakesEffectAutostart);
   return 0;
 }
 
@@ -777,13 +782,17 @@ function realSystem(): System {
   };
 }
 
-/** The service's command line as `start` spawns it, in the foreground and supervised. */
-function supervisedArgv(home: string): string[] {
+/**
+ * The service's command line as `start` spawns it, in the foreground and supervised. The
+ * low-memory setting is written as it is now: changing it later takes `service install` again.
+ */
+function supervisedArgv(home: string, lowMemory: boolean): string[] {
   const bin = binPath();
   const conditions = bin.endsWith(".ts") ? ["--conditions=source"] : [];
   return [
     // A path that stays when Node is upgraded, when this Node has one (./autostart.ts).
     stableNode(process.execPath),
+    ...nodeOptions(lowMemory),
     ...conditions,
     bin,
     "--home",
@@ -816,7 +825,13 @@ export async function autostartCommand(
     }
     throw e;
   }
-  return installAutostart({ argv: supervisedArgv(home), log: logFile(home) }, io, sys);
+  const config = await checkedConfig(home, io);
+  if (config === undefined) return 5;
+  return installAutostart(
+    { argv: supervisedArgv(home, config.lowMemory), log: logFile(home) },
+    io,
+    sys,
+  );
 }
 
 /**

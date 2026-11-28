@@ -122,6 +122,8 @@ export const TEXTS = {
     readonly socket: string;
     readonly pending: number | undefined;
     readonly lock: boolean;
+    /** Whether the service runs with the low-memory setting (service.low_memory), when it says. */
+    readonly lowMemory?: boolean;
     /** How far this computer's clock is behind the log's end, when it is by more than the limit. */
     readonly behindMs: number | undefined;
     readonly logEnd: string | undefined;
@@ -143,6 +145,13 @@ export const TEXTS = {
       `  version   ${s.version} (this saveslot: ${s.mine})`,
       `  pid       ${s.pid}, since ${s.since}`,
       ...(s.lock ? [`  lock      the home's single-writer lock, held by pid ${s.pid}`] : []),
+      ...(s.lowMemory !== undefined
+        ? [
+            s.lowMemory
+              ? "  memory    low (service.low_memory on: V8's baseline compiler only)"
+              : "  memory    standard (service.low_memory off)",
+          ]
+        : []),
       `  home      ${s.home}`,
       `  data      ${s.data ?? "unknown"}`,
       `  socket    ${s.socket}`,
@@ -444,6 +453,18 @@ export const TEXTS = {
   configTakesEffectRestart:
     "The saveslot service running reads it when it starts: saveslot stop, then saveslot start.",
   configTakesEffectStart: "The saveslot service reads it when it starts.",
+  doctorMemory: (low: boolean) =>
+    low
+      ? "low (service.low_memory on: V8's baseline compiler only)"
+      : "standard (service.low_memory off)",
+  doctorMemoryDiffers: (running: boolean, wanted: boolean) =>
+    `the service runs with service.low_memory ${running ? "on" : "off"}; config.toml has it ${wanted ? "on" : "off"}`,
+  doctorMemoryFix: "It takes effect at the next start: saveslot stop, then saveslot start.",
+  doctorJobMemoryDiffers: (file: string, job: boolean, wanted: boolean) =>
+    `${file} starts the service with service.low_memory ${job ? "on" : "off"}; config.toml has it ${wanted ? "on" : "off"}`,
+  doctorJobMemoryFix: "Run saveslot service install again to write the job anew.",
+  configTakesEffectAutostart:
+    "If the service starts at login (saveslot service install), run saveslot service install again for it to apply there.",
   configUnknownKey: (key: string) => `error: ${key} is not a key saveslot knows`,
 
   // `saveslot mcp`: stderr gets event names and reason codes only; the error texts go to the host

@@ -26,6 +26,11 @@ export interface HealthBody {
    */
   readonly writer_lock?: "held";
   /**
+   * Whether the answering process runs with V8's baseline compiler only (the local service's
+   * `service.low_memory`, 06 §4.2): read off its own Node options. Given by the local service.
+   */
+  readonly low_memory?: boolean;
+  /**
    * The test clock (02-architecture §11 «评测对实现的要求»), only when the service was started with
    * one: its current moment and the moment it started at. Never present in normal operation.
    */

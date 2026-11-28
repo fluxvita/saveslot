@@ -23,6 +23,7 @@ import {
   AUTOSTART_LABEL,
   installAutostart,
   type Job,
+  jobProgram,
   launchdPlist,
   STABLE_NODE_DIRS,
   type System,
@@ -254,6 +255,19 @@ describe("service install elsewhere, and the command", () => {
     }
     // This Node, by a path that stays when it is upgraded when it has one.
     expect(plist).toContain(`<string>${stableNode(process.execPath)}</string>`);
+    // service.low_memory as config.toml has it at install (its default, on), before the entry;
+    // doctor reads it back.
+    expect(plist).toContain("<string>--liftoff-only</string>");
+    expect((await jobProgram(sys))?.lowMemory).toBe(true);
+    // Off, and installed again: the job's command line without it.
+    writeFileSync(join(home, "config.toml"), "[service]\nlow_memory = false\n", { mode: 0o600 });
+    expect(await autostartCommand(home, ["install"], io().io, sys)).toBe(0);
+    const again = readFileSync(
+      join(userHome, "Library", "LaunchAgents", `${AUTOSTART_LABEL}.plist`),
+      "utf8",
+    );
+    expect(again).not.toContain("--liftoff-only");
+    expect((await jobProgram(sys))?.lowMemory).toBe(false);
   }, 60_000);
 
   it("serviceCommand takes the system it is given", async () => {

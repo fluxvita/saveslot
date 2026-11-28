@@ -22,6 +22,7 @@ import {
   sessionFile,
 } from "@fluxvita/saveslot-service";
 import { autostartFile, jobProgram, type System } from "./autostart.ts";
+import { readConfig } from "./config.ts";
 import { health } from "./local-request.ts";
 import { daemonVersion } from "./main.ts";
 import { clockBehind, looksSynced, withSession } from "./probes.ts";
@@ -153,6 +154,12 @@ export async function findings(
 ): Promise<Finding[]> {
   const out: Finding[] = [];
   const add = (f: Finding) => out.push(f);
+  // `service.low_memory` as config.toml has it; unknown when the file is refused (that is the
+  // start's to say, with the key).
+  const wanted = await readConfig(home).then(
+    (c) => c.lowMemory,
+    () => undefined,
+  );
 
   // The home and its private directories.
   const homeWrong = await modeProblem(home, 0o700);
@@ -295,6 +302,20 @@ export async function findings(
             fix: TEXTS.doctorLockFix,
           },
     );
+    // The low-memory setting (./low-memory.ts): as the service was started, against config.toml
+    // now. A reminder only: the service works either way.
+    if (typeof h.low_memory === "boolean") {
+      add(
+        wanted === undefined || wanted === h.low_memory
+          ? { verdict: "pass", item: "memory", says: TEXTS.doctorMemory(h.low_memory) }
+          : {
+              verdict: "remind",
+              item: "memory",
+              says: TEXTS.doctorMemoryDiffers(h.low_memory, wanted),
+              fix: TEXTS.doctorMemoryFix,
+            },
+      );
+    }
   }
 
   // A start-at-login job, when there is one: its program still there.
@@ -336,6 +357,15 @@ export async function findings(
             }
           : { verdict: "pass", item: "start at login", says: job.file },
     );
+    // Its command line has the low-memory setting as it was at `service install`.
+    if (gone.length === 0 && wanted !== undefined && job.lowMemory !== wanted) {
+      add({
+        verdict: "remind",
+        item: "start at login",
+        says: TEXTS.doctorJobMemoryDiffers(job.file, job.lowMemory, wanted),
+        fix: TEXTS.doctorJobMemoryFix,
+      });
+    }
   } else if (autostartFile(sys) !== undefined) {
     // No job: nothing to check; said, so that its absence is not read as a pass.
     add({ verdict: "skipped", item: "start at login", says: TEXTS.doctorNoJob });

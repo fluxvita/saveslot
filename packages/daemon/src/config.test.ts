@@ -58,6 +58,7 @@ describe("parsing config.toml", () => {
       { key: "http.loopback", value: false, source: "default", used: false },
       { key: "mcp.autostart", value: true, source: "default", used: true },
       { key: "upgrade.backup", value: true, source: "default", used: true },
+      { key: "service.low_memory", value: true, source: "default", used: true },
     ]);
   });
 
@@ -217,6 +218,7 @@ describe("the configuration of a home", () => {
         "http.loopback = false  (default; not in use in this version)",
         "mcp.autostart = false  (config.toml)",
         "upgrade.backup = true  (default)",
+        "service.low_memory = true  (default)",
       ]);
       const b = io();
       expect(await configCommand(home, ["get", "mcp.autostart"], b.io)).toBe(0);
@@ -262,6 +264,27 @@ describe("the configuration of a home", () => {
     } finally {
       rmSync(configFile(home), { force: true });
     }
+  });
+
+  it("config set service.low_memory: written, read back off; the start-at-login job named", async () => {
+    try {
+      const a = io();
+      expect(await configCommand(home, ["set", "service.low_memory", "off"], a.io)).toBe(0);
+      expect(a.out).toEqual([
+        "service.low_memory = false  (written to config.toml)",
+        TEXTS.configTakesEffectStart,
+        TEXTS.configTakesEffectAutostart,
+      ]);
+      expect(readFileSync(configFile(home), "utf8")).toBe("[service]\nlow_memory = false\n");
+      expect((await readConfig(home)).lowMemory).toBe(false);
+      // A value that is not a boolean: usage, nothing written.
+      const b = io();
+      expect(await configCommand(home, ["set", "service.low_memory", "half"], b.io)).toBe(2);
+      expect((await readConfig(home)).lowMemory).toBe(false);
+    } finally {
+      rmSync(configFile(home), { force: true });
+    }
+    expect((await readConfig(home)).lowMemory).toBe(true);
   });
 
   it("config set: comments in the file are said to be dropped", async () => {

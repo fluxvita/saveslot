@@ -265,7 +265,19 @@ describe("doctor with the service", () => {
       expect(out.join("\n")).toMatch(
         /remind {2}clock: this computer's clock is (9|10) minutes behind/,
       );
-      expect(out.at(-1)).toBe(TEXTS.doctorSummary(0, 1));
+      // This service runs in the test's process, without Node's option, and config.toml is at
+      // its default (on): a reminder that it takes effect at the next start.
+      expect(out).toContain(
+        TEXTS.doctorLine("remind", "memory", TEXTS.doctorMemoryDiffers(false, true)),
+      );
+      expect(out).toContain(TEXTS.doctorFix(TEXTS.doctorMemoryFix));
+      expect(out.at(-1)).toBe(TEXTS.doctorSummary(0, 2));
+      // With config.toml saying off, as this process runs: it passes.
+      writeFileSync(join(home, "config.toml"), "[service]\nlow_memory = false\n", { mode: 0o600 });
+      expect(by(await findings(home, system()), "memory")[0]).toMatchObject({
+        verdict: "pass",
+        says: TEXTS.doctorMemory(false),
+      });
     } finally {
       await s.stop();
     }

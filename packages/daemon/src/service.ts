@@ -82,6 +82,7 @@ import {
   type PgliteBackendOptions,
   PgliteStoreError,
 } from "@fluxvita/saveslot-store-pglite";
+import { runsLowMemory } from "./low-memory.ts";
 import { redactTokens } from "./mcp-record.ts";
 import { nodeSupported } from "./runtime.ts";
 
@@ -578,6 +579,8 @@ export async function runService(o: RunServiceOptions): Promise<RunningService> 
         : {}),
       // Taken above, before listening: whoever answers here holds it.
       writer_lock: "held",
+      // As this process was started, whatever config.toml says now (./low-memory.ts).
+      low_memory: runsLowMemory(),
       ...(evalStart !== undefined
         ? {
             eval_clock: {

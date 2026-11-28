@@ -23,6 +23,7 @@
 import { realpathSync } from "node:fs";
 import { mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { runsLowMemory } from "./low-memory.ts";
 import { TEXTS } from "./texts.ts";
 
 /** The launchd label, and the systemd unit's name. */
@@ -264,12 +265,16 @@ const ununit = (s: string) => s.replace(/\\(.)/g, "$1").replaceAll("%%", "%").re
 
 /**
  * The job's file and the programs its command line runs (Node, and the service's entry: the first
- * argument after Node that is not an option), as written there; undefined when there is no file.
+ * argument after Node that is not an option), as written there, and whether Node's options before
+ * the entry turn the low-memory setting on; undefined when there is no file.
  * A file of another form gives no paths, and its check passes on nothing: `install` writes it anew.
  */
 export async function jobProgram(
   sys: System,
-): Promise<{ readonly file: string; readonly paths: readonly string[] } | undefined> {
+): Promise<
+  | { readonly file: string; readonly paths: readonly string[]; readonly lowMemory: boolean }
+  | undefined
+> {
   const file = autostartFile(sys);
   if (file === undefined) return undefined;
   let text: string;
@@ -287,6 +292,12 @@ export async function jobProgram(
     argv = [...line.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => ununit(m[1] as string));
   }
   const [node, ...rest] = argv;
-  const entry = rest.find((a) => !a.startsWith("-"));
-  return { file, paths: [node, entry].filter((p): p is string => p !== undefined) };
+  const at = rest.findIndex((a) => !a.startsWith("-"));
+  const entry = at === -1 ? undefined : rest[at];
+  return {
+    file,
+    paths: [node, entry].filter((p): p is string => p !== undefined),
+    // Node's own options are those before the entry (./low-memory.ts).
+    lowMemory: runsLowMemory(at === -1 ? rest : rest.slice(0, at)),
+  };
 }

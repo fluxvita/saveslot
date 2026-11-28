@@ -455,6 +455,8 @@ describe("start, status, stop", () => {
     expect(first.code).toBe(0);
     const ready = await health(socketFile(h));
     expect(ready?.state).toBe("ready");
+    // service.low_memory at its default: the process was started with Node's option.
+    expect(ready?.low_memory).toBe(true);
     const pid = ready?.pid as number;
     expect(first.out).toContain(`pid ${pid}`);
     expect(Number(readFileSync(pidFile(h), "utf8"))).toBe(pid);
@@ -469,6 +471,9 @@ describe("start, status, stop", () => {
     expect(st.out).toContain("ready");
     expect(st.out).toContain("pending   0");
     expect(st.out).toContain(`  lock      the home's single-writer lock, held by pid ${pid}\n`);
+    expect(st.out).toContain(
+      "  memory    low (service.low_memory on: V8's baseline compiler only)\n",
+    );
     expect(st.out).not.toContain("warning");
 
     const stopped = await run("stop", h);
@@ -505,6 +510,16 @@ describe("start, status, stop", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+
+  it("with service.low_memory off, the service starts without Node's option, and status says so", async () => {
+    const h = await copied();
+    writeFileSync(join(h, "config.toml"), "[service]\nlow_memory = false\n", { mode: 0o600 });
+    expect((await run("start", h)).code).toBe(0);
+    expect((await health(socketFile(h)))?.low_memory).toBe(false);
+    const st = await run("status", h);
+    expect(st.out).toContain("  memory    standard (service.low_memory off)\n");
+    expect((await run("stop", h)).code).toBe(0);
   });
 
   it("status gives the data directory the home records", async () => {

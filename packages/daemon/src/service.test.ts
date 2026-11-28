@@ -151,8 +151,21 @@ describe("the service process", () => {
     const h = home();
     const a = start(h);
     const ready = await until(h, ["ready"], a);
-    expect(Object.keys(ready).sort()).toEqual(["pid", "since", "state", "version", "writer_lock"]);
-    expect(ready).toMatchObject({ state: "ready", pid: a.proc.pid, version: daemonVersion() });
+    expect(Object.keys(ready).sort()).toEqual([
+      "low_memory",
+      "pid",
+      "since",
+      "state",
+      "version",
+      "writer_lock",
+    ]);
+    // Spawned here without Node's option (`saveslot start` adds it: commands.test.ts).
+    expect(ready).toMatchObject({
+      state: "ready",
+      pid: a.proc.pid,
+      version: daemonVersion(),
+      low_memory: false,
+    });
     expect(readFileSync(pidFile(h), "utf8")).toBe(`${a.proc.pid}\n`);
     expect(statSync(join(h, "run")).mode & 0o777).toBe(0o700);
     expect(statSync(socketFile(h)).mode & 0o777).toBe(0o600);
@@ -697,6 +710,7 @@ describe("the service in process", () => {
       const body = (await health(h))?.body;
       expect(body).toMatchObject({ state: "ready", writer_lock: "held" });
       expect(Object.keys(body ?? {}).sort()).toEqual([
+        "low_memory",
         "pid",
         "since",
         "state",
