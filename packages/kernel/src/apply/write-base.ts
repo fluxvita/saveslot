@@ -350,9 +350,15 @@ export function settleRowChanges(
    * identity being what it covers and who gives it, not the value.
    */
   renewed: ReadonlySet<string> = new Set(),
-  /** Fields a schema switch dropped whose items the row still has (`SettleTable.gone`). */
-  gone: readonly FieldId[] = [],
 ): { settled: Settled; changes: Change[] } {
+  // Items on fields the table no longer has (a schema switch dropped them): they still decide
+  // whether the row or entity exists, on every path that settles it (`SettleTable.gone`).
+  const own = new Set<string>(t.fields.map((f) => f.id));
+  const gone = [
+    ...new Set(
+      items.flatMap((x) => (x.target === "existence" || own.has(x.target) ? [] : [x.target])),
+    ),
+  ];
   const shape: SettleTable = { ...settleTable(t), gone };
   const isState = shape.kind === "state";
   const changes: Change[] = [];

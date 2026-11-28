@@ -117,9 +117,9 @@ const ctx = () =>
 // biome-ignore lint/suspicious/noExplicitAny: results read as JSON
 type Any = any;
 let n = 0;
-const w = (op: Record<string, unknown>): Promise<Any> =>
+const w = (op: Record<string, unknown>, sv = 1): Promise<Any> =>
   write(s.store, ctx(), {
-    sv: 1,
+    sv,
     evidence: [{ kind: "user_message", text: `said ${++n}` }],
     idempotency_key: `k-${n}`,
     ops: [op],
@@ -698,6 +698,213 @@ describe("a switch rebuilding tables", () => {
       expect(plan.map((r: Any) => [r.valid_from, r.valid_to, r.values])).toEqual([
         ["2026-10-01", "2026-11-01", { a: "a1", k: null }],
         ["2026-11-01", "2026-12-01", { a: null, k: null }],
+      ]);
+      await replaysTheSame();
+    },
+    T,
+  );
+  /** The plan's entity: a1 over [10-01, 11-01), b1 over [10-15, 12-01); then b dropped. */
+  async function planWithoutB() {
+    const b1 = await w({
+      table: "plan",
+      intent: "insert",
+      valid_from: "2026-10-01",
+      valid_to: "2026-11-01",
+      set: { a: "a1" },
+    });
+    const e = b1.ops[0].target.entity as string;
+    await w({
+      table: "plan",
+      intent: "update",
+      entity: e,
+      ver: b1.ops[0].ver,
+      valid_from: "2026-10-15",
+      valid_to: "2026-12-01",
+      set: { b: "b1" },
+    });
+    const d = await draftFrom(1, [{ ...PLAN, fields: [TXT("a"), K(1)], drop_fields: ["b"] }]);
+    const t = d.compiled.tables.find((x: Any) => x.name === "plan");
+    const [a, k] = ["a", "k"].map((x) => t.fields.find((f: Any) => f.name === x).id);
+    await migrate(d, 1, `m_${"5".repeat(16)}`, [t.id], {
+      [`tables/${t.id}`]: check([
+        {
+          id: e,
+          valid: { from: "2026-10-01", to: "2026-11-01" },
+          fields: { [a]: "a1", [k]: null },
+        },
+        {
+          id: e,
+          valid: { from: "2026-11-01", to: "2026-12-01" },
+          fields: { [a]: null, [k]: null },
+        },
+      ]),
+    });
+    return e;
+  }
+  const planRows = async () =>
+    (
+      await query(s.store, ctx(), { table: "plan", valid_during: ["2026-01-01", null] } as never)
+    ).rows.map((r: Any) => [r.valid_from, r.valid_to, r.values.a]);
+  const planVer = async () =>
+    (
+      (await query(s.store, ctx(), {
+        table: "plan",
+        valid_during: ["2026-01-01", null],
+      } as never)) as Any
+    ).rows[0].ver as string;
+
+  it(
+    "after a drop, a write elsewhere on the entity keeps the stretch whose only value was the dropped field",
+    async () => {
+      const e = await planWithoutB();
+      const r = await w(
+        {
+          table: "plan",
+          intent: "update",
+          entity: e,
+          ver: await planVer(),
+          valid_from: "2026-10-01",
+          valid_to: "2026-10-05",
+          set: { a: "z" },
+        },
+        2,
+      );
+      expect(r.ops[0].fields.a[0].result).toBe("applied");
+      expect(await planRows()).toEqual([
+        ["2026-10-01", "2026-10-05", "z"],
+        ["2026-10-05", "2026-11-01", "a1"],
+        ["2026-11-01", "2026-12-01", null],
+      ]);
+      await replaysTheSame();
+    },
+    T,
+  );
+
+  it(
+    "after a drop, a revocation inside that stretch leaves the rest of it; undoing it brings the whole back",
+    async () => {
+      const e = await planWithoutB();
+      const rv = await w(
+        {
+          table: "plan",
+          intent: "revoke",
+          entity: e,
+          ver: await planVer(),
+          valid_from: "2026-11-10",
+          valid_to: "2026-11-20",
+        },
+        2,
+      );
+      expect(await planRows()).toEqual([
+        ["2026-10-01", "2026-11-01", "a1"],
+        ["2026-11-01", "2026-11-10", null],
+        ["2026-11-20", "2026-12-01", null],
+      ]);
+      await w(
+        {
+          table: "plan",
+          intent: "update",
+          entity: e,
+          ver: rv.ops[0].ver,
+          revert: { undo: rv.seq },
+        },
+        2,
+      );
+      expect(await planRows()).toEqual([
+        ["2026-10-01", "2026-11-01", "a1"],
+        ["2026-11-01", "2026-12-01", null],
+      ]);
+      await replaysTheSame();
+    },
+    T,
+  );
+
+  it(
+    "after a drop, revoking the row whose only value was the dropped field, then undoing it: the row is back",
+    async () => {
+      const r1 = await w({ table: "notes", intent: "insert", set: { b: "only-b" } });
+      const id1 = r1.ops[0].target.row as string;
+      const d = await draftFrom(1, [{ ...NOTES, fields: [TXT("a"), K(1)], drop_fields: ["b"] }]);
+      const t = d.compiled.tables.find((x: Any) => x.name === "notes");
+      const [a, k] = ["a", "k"].map((x) => t.fields.find((f: Any) => f.name === x).id);
+      await migrate(d, 1, `m_${"6".repeat(16)}`, [t.id], {
+        [`tables/${t.id}`]: check([{ id: id1, fields: { [a]: null, [k]: null } }]),
+      });
+      const ver = (await rows("notes"))[0].ver as string;
+      const rv = await w({ table: "notes", intent: "revoke", row: id1, ver }, 2);
+      expect(await rows("notes")).toEqual([]);
+      await w(
+        {
+          table: "notes",
+          intent: "update",
+          row: id1,
+          ver: rv.ops[0].ver,
+          revert: { undo: rv.seq },
+        },
+        2,
+      );
+      expect((await rows("notes")).map((r: Any) => [r.row, r.values])).toEqual([
+        [id1, { a: null, k: null }],
+      ]);
+      const count = await read(
+        async (tx) =>
+          (
+            await tx.query<Any>("SELECT row_count::int AS n FROM counts WHERE table_id = $1", [
+              t.id,
+            ])
+          ).rows[0].n,
+      );
+      expect(count).toBe(1);
+      await replaysTheSame();
+    },
+    T,
+  );
+
+  it(
+    "a constant recorded on part of a converted cell (a stretch a deletion took away): the cell is cut there",
+    async () => {
+      const h = await history();
+      // Version 2: the amount at least 95, with a constant. Its value from 11-01 on (90.5) breaks
+      // it; the fill is recorded from 11-15 on only, as if the block for [11-01, 11-15) were gone.
+      const B2 = {
+        ...BUDGET,
+        fields: [{ ...BUDGET.fields[0], min: 95, backfill: { const: "95" } }, BUDGET.fields[1]],
+      };
+      const d = await draftFrom(1, [B2]);
+      const t2 = d.compiled.tables.find((x: Any) => x.id === "t2");
+      const [amount, note] = ["amount", "note"].map(
+        (x) => t2.fields.find((f: Any) => f.name === x).id,
+      );
+      await migrate(d, 1, `m_${"8".repeat(16)}`, ["t2"], {
+        "tables/t2": check([
+          {
+            id: h.entity,
+            valid: { from: "2026-10-01", to: "2026-11-01" },
+            fields: { [amount]: "100.25", [note]: null },
+          },
+          {
+            id: h.entity,
+            valid: { from: "2026-11-01", to: "2026-11-15" },
+            fields: { [amount]: "90.5", [note]: null },
+          },
+          {
+            id: h.entity,
+            valid: { from: "2026-11-15" },
+            fields: { [amount]: "95", [note]: "tight" },
+          },
+        ]),
+        [`backfill/t2/${amount}/0`]: {
+          entity: h.entity,
+          valid: { from: "2026-11-15" },
+          deps: [{ event: h.b1.seq + 2, existence: 0 }],
+        },
+      });
+      expect(
+        (await rows("budget")).map((r: Any) => [r.valid_from, r.valid_to, r.values.amount]),
+      ).toEqual([
+        ["2026-10-01", "2026-11-01", "100.25"],
+        ["2026-11-01", "2026-11-15", "90.5"],
+        ["2026-11-15", null, "95"],
       ]);
       await replaysTheSame();
     },
