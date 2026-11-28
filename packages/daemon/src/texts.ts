@@ -255,14 +255,22 @@ export const TEXTS = {
     usage:
       "usage: saveslot server init [--user <name> [--password-file <path>]] | start | restore --tenant <tenant> | --user <name> | user add|list|disable|enable|passwd",
     userUsage:
-      "usage: saveslot server user add <name> [--password-file <path>] | list | disable <name> | enable <name> | passwd <name> [--password-file <path>]",
+      "usage: saveslot server user add <name> [--password-file <path>] | list | disable <name> | enable <name> | passwd <name> [--password-file <path>]; with the external login: disable|enable --subject <account ID> [--issuer <issuer>]",
     userTakesName: (sub: string) => `saveslot server user ${sub} takes one account name`,
     passwordFileOnce: "--password-file takes one path, once",
     initPasswordFileWithoutUser:
       "--password-file is for the first user's password: give --user <name> with it",
     initUserOnce: "--user takes one name, once",
     userExternal:
-      "error: the external login manages the accounts (SAVESLOT_IDENTITY_* are set); saveslot server user and server init --user are for the built-in local accounts. Nothing was done",
+      "error: the external login manages the accounts (SAVESLOT_IDENTITY_* are set); saveslot server init --user and every saveslot server user subcommand but disable and enable (by --subject) are for the built-in local accounts. Nothing was done",
+    userSubjectLocal:
+      "--subject and --issuer name an account of the external login, which is not configured (SAVESLOT_IDENTITY_* are not set); name a local account instead",
+    externalDisabled: (issuer: string, subject: string) =>
+      `Disabled the account ${subject} of ${issuer}: every credential of its tenant is refused until it is enabled again; nothing was revoked`,
+    externalEnabled: (issuer: string, subject: string) =>
+      `Enabled the account ${subject} of ${issuer}: its credentials authenticate again as they were`,
+    externalUnknown: (issuer: string, subject: string) =>
+      `error: there is no account ${subject} of ${issuer} (it has not signed in here yet). Nothing was done`,
     noPasswordSource:
       "error: there is no terminal to ask the password on; give --password-file <path>. Nothing was done",
     passwordFileRefused: (

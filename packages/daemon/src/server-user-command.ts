@@ -11,10 +11,13 @@
 //   sessions in the same transaction (and refreshes of sessions granted until now); its connections
 //   keep authenticating.
 //
-// Only for the local accounts: with the external login configured, every subcommand is refused
-// before the control database is opened. The password is read before it is opened, too
-// (./server-password.ts). They do not take the server-running lock: the server reads these tables
-// on each request, so they work while it runs.
+// With the external login configured, the accounts are the platform's: only `disable` and
+// `enable` work, on an account named by its subject (the account ID the platform gives) and the
+// configured issuer (`--subject <sub> [--issuer <iss>]`), through `disableExternalUser` /
+// `enableExternalUser`; every other subcommand, and a name, is refused before the control database
+// is opened. `--subject` without the external login is a usage error. The password is read before
+// the database is opened, too (./server-password.ts). They do not take the server-running lock: the
+// server reads these tables on each request, so they work while it runs.
 //
 // Exit codes (06 §6.2): 2 for a usage error or a password file refused; 4 for an account that is
 // not there; 5 for a configuration refused, the external login configured, the tables missing or of
@@ -25,12 +28,16 @@ import { parseArgs } from "node:util";
 import {
   addLocalUser,
   ControlPlaneError,
+  disableExternalUser,
   disableLocalUser,
+  ExternalLoginError,
+  enableExternalUser,
   enableLocalUser,
   type LocalAccounts,
   LocalAccountsError,
   listLocalUsers,
   openControlPlane,
+  openExternalLogin,
   openLocalAccounts,
   type ServerControlPlane,
   setLocalPassword,
@@ -53,6 +60,11 @@ import { TEXTS } from "./texts.ts";
 export type UserTarget =
   | { readonly sub: "add" | "passwd"; readonly name: string; readonly passwordFile?: string }
   | { readonly sub: "disable" | "enable"; readonly name: string }
+  /** An account of the external login, by its subject and issuer (the configured one if none). */
+  | {
+      readonly sub: "disable" | "enable";
+      readonly external: { readonly subject: string; readonly issuer?: string };
+    }
   | { readonly sub: "list" };
 
 const USER_SUBCOMMANDS = ["add", "list", "disable", "enable", "passwd"] as const;
@@ -68,13 +80,21 @@ export function userTarget(
     return 2;
   }
   const takesPassword = sub === "add" || sub === "passwd";
-  let values: { "password-file"?: string[] | undefined };
+  let values: {
+    "password-file"?: string[] | undefined;
+    subject?: string[] | undefined;
+    issuer?: string[] | undefined;
+  };
   let positionals: string[];
   try {
     ({ values, positionals } = parseArgs({
       args,
       // Collected, so that one given twice is refused rather than the last one taken (06 §6.2).
-      options: { "password-file": { type: "string", multiple: true } },
+      options: {
+        "password-file": { type: "string", multiple: true },
+        subject: { type: "string", multiple: true },
+        issuer: { type: "string", multiple: true },
+      },
       strict: true,
       allowPositionals: true,
     }));
@@ -90,6 +110,30 @@ export function userTarget(
   if (files.length > 1 || files[0] === "") {
     io.err(TEXTS.usage(TEXTS.server.passwordFileOnce));
     return 2;
+  }
+  // An external account: --subject, once, with --issuer at most once; disable and enable only.
+  const subjects = values.subject ?? [];
+  const issuers = values.issuer ?? [];
+  if (subjects.length > 0 || issuers.length > 0) {
+    const external = sub === "disable" || sub === "enable";
+    if (
+      !external ||
+      positionals.length > 0 ||
+      subjects.length !== 1 ||
+      subjects[0] === "" ||
+      issuers.length > 1 ||
+      issuers[0] === ""
+    ) {
+      io.err(TEXTS.usage(TEXTS.server.userUsage));
+      return 2;
+    }
+    return {
+      sub,
+      external: {
+        subject: subjects[0] as string,
+        ...(issuers[0] !== undefined ? { issuer: issuers[0] } : {}),
+      },
+    };
   }
   if (sub === "list") {
     if (positionals.length > 0) {
@@ -233,10 +277,18 @@ export async function serverUser(
   target: UserTarget,
   io: ServerRestoreIO,
 ): Promise<number> {
-  // The accounts are the external platform's: refused before anything is opened or asked.
+  // The accounts are the external platform's: only disable and enable by subject; anything else
+  // refused before anything is opened or asked.
   if (config.identity !== undefined) {
-    io.err(TEXTS.server.userExternal);
-    return 5;
+    if (!("external" in target)) {
+      io.err(TEXTS.server.userExternal);
+      return 5;
+    }
+    return externalUser(config, config.identity.issuer, target, io);
+  }
+  if ("external" in target) {
+    io.err(TEXTS.usage(TEXTS.server.userSubjectLocal));
+    return 2;
   }
   let password: string | undefined;
   if (target.sub === "add" || target.sub === "passwd") {
@@ -311,6 +363,62 @@ export async function serverUser(
         return accountRefused(e, "name" in target ? target.name : "", io);
       throw e;
     }
+  } finally {
+    await db.close();
+  }
+}
+
+/**
+ * `user disable|enable --subject <sub> [--issuer <iss>]` with the external login configured: the
+ * account's state only (02-architecture §12 «扩展点» `userState`); nothing revoked, nothing written
+ * to its log. Exit codes as for the local accounts: 4 for an account not there, 5 for the external
+ * login's tables missing or of another format, 7 for the control database out of reach.
+ */
+async function externalUser(
+  config: ServerConfig,
+  configured: string,
+  target: Extract<UserTarget, { external: unknown }>,
+  io: ServerRestoreIO,
+): Promise<number> {
+  const account = {
+    issuer: target.external.issuer ?? configured,
+    subject: target.external.subject,
+  };
+  let db: ControlDatabase;
+  try {
+    db = await (io.openControl ?? ((at) => openControlDatabase(at.cell, at.database)))(
+      config.control,
+    );
+  } catch {
+    io.err(TEXTS.server.controlUnreachable);
+    return 7;
+  }
+  try {
+    const logins = await openExternalLogin(db);
+    if (target.sub === "disable") await disableExternalUser(logins, account);
+    else await enableExternalUser(logins, account);
+    io.out(
+      target.sub === "disable"
+        ? TEXTS.server.externalDisabled(account.issuer, account.subject)
+        : TEXTS.server.externalEnabled(account.issuer, account.subject),
+    );
+    return 0;
+  } catch (e) {
+    if (!(e instanceof ExternalLoginError)) throw e;
+    if (e.code === "unknown_user") {
+      io.err(TEXTS.server.externalUnknown(account.issuer, account.subject));
+      return 4;
+    }
+    if (e.code === "external_not_initialized" || e.code === "external_format_mismatch") {
+      io.err(
+        TEXTS.server.startRefused(
+          "external",
+          e.code === "external_format_mismatch" ? "format" : "not_initialized",
+        ),
+      );
+      return 5;
+    }
+    throw e;
   } finally {
     await db.close();
   }

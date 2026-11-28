@@ -18,7 +18,10 @@ import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  ExternalIdentity,
   LocalIdentity,
+  openControlPlane,
+  openExternalLogin,
   openLocalAccounts,
   type TenantPoolOptions,
   type UserId,
@@ -27,7 +30,13 @@ import {
 } from "@fluxvita/saveslot-service";
 import type { ControlDatabase } from "@fluxvita/saveslot-store-postgres";
 import { afterAll, describe, expect, it } from "vitest";
-import { TEST_KEY } from "../../service/src/external-assertion.fixture.ts";
+import {
+  GOOD_HEADER,
+  goodClaims,
+  signAssertion,
+  TEST_ISSUER,
+  TEST_KEY,
+} from "../../service/src/external-assertion.fixture.ts";
 import { testBackend } from "../../test-backend/src/index.fixture.ts";
 import { type RunningServer, runServer } from "./run-server.ts";
 import { serverCommand } from "./server-commands.ts";
@@ -605,6 +614,139 @@ describe("with the external login configured", () => {
       }
       expect(d.opened()).toBe(0);
       expect(t.asked).toEqual([]);
+    },
+    T,
+  );
+});
+
+describe("with the external login configured: disable and enable an account by its subject", () => {
+  /** A deployment on the external login, and an account of it signed in once: its user session. */
+  async function signedIn(sub: string) {
+    const d = await deployment({ init: false });
+    const ext = { ...d.env, ...externalEnv() };
+    expect((await d.run(["init"], { env: ext })).code).toBe(0);
+    const config = readServerConfig(ext);
+    // The account's first assertion makes its user and tenant, as the platform's sign-in does.
+    const platform = new ExternalIdentity({
+      logins: await openExternalLogin(d.db),
+      config: {
+        issuer: TEST_ISSUER,
+        loginUrl: "https://platform.example/login",
+        keys: [TEST_KEY.public],
+        audience: config.publicUrl,
+      },
+      control: await openControlPlane(d.db),
+      backend: d.backend,
+      cell: config.cellName,
+      cells: new Set([config.cellName]),
+    });
+    const made = await platform.acceptAssertion(
+      signAssertion(GOOD_HEADER, {
+        ...goodClaims(Date.now(), { purpose: "session", sub }),
+        aud: config.publicUrl,
+      }),
+      "198.51.100.7",
+    );
+    if (made === undefined) throw new Error("the assertion made no user");
+    const session = await d.store.write((tx) =>
+      writeUserSession(tx, made.user, { expiresAt: "2099-01-01T00:00:00.000Z" }),
+    );
+    const s = await runServer({
+      config: {
+        ...config,
+        listen: { host: "127.0.0.1", port: 0 },
+        trustedProxies: [],
+        allowedOrigins: [],
+      },
+      version: "0.0.0-test",
+      openControl: async () => d.db,
+      backend: d.backend,
+    });
+    const run = (argv: string[]) => d.run(argv, { env: ext });
+    return { d, s, session, run };
+  }
+
+  it(
+    "disabled: its credentials refused as account_disabled; again: no change; enabled: as they were",
+    async () => {
+      const { s, session, run } = await signedIn("acct_alex");
+      try {
+        expect((await slots(s, session)).status).toBe(200);
+        const off = await run(["user", "disable", "--subject", "acct_alex"]);
+        expect(off.code).toBe(0);
+        expect(off.out).toContain(`Disabled the account acct_alex of ${TEST_ISSUER}`);
+        expect(off.out).toContain("nothing was revoked");
+        expect((await run(["user", "disable", "--subject", "acct_alex"])).code).toBe(0);
+        const refused = await slots(s, session);
+        expect(refused.status).toBe(401);
+        expect(refused.body).toContain("account_disabled");
+        // The issuer given as configured: the same account.
+        const on = await run(["user", "enable", "--subject", "acct_alex", "--issuer", TEST_ISSUER]);
+        expect(on.code).toBe(0);
+        expect(on.out).toContain("authenticate again");
+        expect((await run(["user", "enable", "--subject", "acct_alex"])).code).toBe(0);
+        expect((await slots(s, session)).status).toBe(200);
+      } finally {
+        await s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "an account that is not there (another subject, or another issuer): 4, nothing changed",
+    async () => {
+      const { s, session, run } = await signedIn("acct_blair");
+      try {
+        for (const argv of [
+          ["user", "disable", "--subject", "acct_nobody"],
+          ["user", "disable", "--subject", "acct_blair", "--issuer", "https://other.example"],
+        ]) {
+          const r = await run(argv);
+          expect(r.code).toBe(4);
+          expect(r.err).toContain("there is no account");
+        }
+        expect((await slots(s, session)).status).toBe(200);
+      } finally {
+        await s.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "its tables not made (no server init): 5",
+    async () => {
+      const d = await deployment({ init: false });
+      const r = await d.run(["user", "disable", "--subject", "acct_alex"], {
+        env: { ...d.env, ...externalEnv() },
+      });
+      expect(r.code).toBe(5);
+      expect(r.err).toContain("external login tables are not there");
+    },
+    T,
+  );
+
+  it(
+    "--subject and --issuer: usage errors (2) where they do not fit, before the database is opened",
+    async () => {
+      const d = await deployment();
+      const ext = { ...d.env, ...externalEnv() };
+      for (const [argv, env] of [
+        // Without the external login.
+        [["user", "disable", "--subject", "acct_alex"], d.env],
+        // Another subcommand, a name besides, twice, empty, or an issuer alone.
+        [["user", "add", "--subject", "acct_alex"], ext],
+        [["user", "disable", "alex", "--subject", "acct_alex"], ext],
+        [["user", "disable", "--subject", "a", "--subject", "b"], ext],
+        [["user", "disable", "--subject", ""], ext],
+        [["user", "disable", "--issuer", TEST_ISSUER], ext],
+      ] as const) {
+        const before = d.opened();
+        const r = await d.run([...argv], { env });
+        expect(r.code, argv.join(" ")).toBe(2);
+        expect(d.opened()).toBe(before);
+      }
     },
     T,
   );
