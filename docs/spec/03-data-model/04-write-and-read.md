@@ -477,7 +477,7 @@ Beyond the tables, fields, types, descriptions and derivation rules the "Catalog
 | Information | Example | What it is for |
 |---|---|---|
 | Relations between data | runs is the source of weekly_mileage; the category of a spending row refers to the budget table | The Agent knows how to query across tables; schema definitions are required to **declare relations between tables** (foreign keys / references) |
-| Data profile | Row count, time range (earliest 2026-03, latest 11-08), sample field values | Before writing a query, judge "whether there is any, and how much" |
+| Data profile | Row count, time range (earliest 2026-03, latest 11-08); the first version gives no value examples of fields ([`../04-contract-types.md`](../04-contract-types.md) 0.2) | Before writing a query, judge "whether there is any, and how much" |
 | Units and semantics | distance in miles; date is a calendar day in Asia/Shanghai | Avoids misunderstanding the data |
 
 ### Findable: two tiers of query
@@ -548,7 +548,7 @@ Each call carries a visible scope, given by the service layer according to the c
 
   | Object | Rule |
   |---|---|
-  | Catalog | Lists only the slots and tables in the scope; the profile, sample values and relations between tables involve only tables in the scope. The complete schema document (the `schema` tier of `catalog`, including a read with `draft`) is given only when every table of the slot is in the scope, otherwise it is the same as when the slot does not exist |
+  | Catalog | Lists only the slots and tables in the scope; the profile and relations between tables involve only tables in the scope. The complete schema document (the `schema` tier of `catalog`, including a read with `draft`) is given only when every table of the slot is in the scope, otherwise it is the same as when the slot does not exist |
   | `query`, `history` (including `timeline`, `as_of`, `changes`) | The target table must be in the scope. When `changes` gives no target it is "the changes of one table", and that table must be in the scope |
   | Restricted SQL | Every table referenced in the syntax tree must be in the scope, otherwise `sql_rejected` (`unknown_name`); it may reference tables of several slots in the scope (see "Findable"). The aggregate flag counts only rows in the scope |
   | Pending items, `resolve` | An item belongs to a slot and is filtered by slot; an item ID outside the scope reports `not_found`. The hints in the result count only what is in the scope. A `schema_change` item and the draft of a slot (a `catalog` read with `draft`) concern the schema of the whole slot, and are visible only when every table of this slot is in the scope, otherwise it is the same as when they do not exist |

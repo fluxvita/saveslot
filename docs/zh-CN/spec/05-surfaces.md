@@ -8,7 +8,7 @@
 
 ## 本文是什么
 
-**HTTP 与 MCP 都是契约的外化面，由同一套契约生成**（OpenAPI；MCP 的 `inputSchema`），地位相同。`server` 里的 HTTP 与 MCP 两个适配器都只调服务层，MCP 适配器不经 HTTP 端点（architecture §2、§11）。
+**HTTP 与 MCP 都是同一套契约的外化面**，地位相同：HTTP 的路由与 MCP 的 `inputSchema` 都照契约的类型手写，不由契约生成（architecture §6）。`server` 里的 HTTP 与 MCP 两个适配器都只调服务层，MCP 适配器不经 HTTP 端点（architecture §2、§11）。
 "HTTP 是网络上的基础协议"只是部署层面的说法：远程 MCP 本身也跑在 HTTP 上。
 
 本文只写外化面自己的规则：工具与端点怎么对应到操作、文本怎么渲染、标记与报错的措辞、注解、状态码、请求头、只在某个面上才有的限制。**只有内核能判断的规则一律引用 data-model，不在这里写。**
@@ -52,7 +52,7 @@ MCP 按最差宿主设计（positioning「saveslot 管什么，不管什么」�
 |---|---|---|
 | `write` 的 op 级 `acknowledge` | **不暴露** | 高影响按写入结果判断，模型在写入之前看不到会被覆盖的段；一律走"待确认 → `saveslot_resolve`"，回执把被覆盖的段写清楚，方便模型转述给用户后再确认 |
 | 证据段上的 `level` | **不暴露**，级别只由证据 `kind` 推出 | 级别只在字面命中时参与裁决，覆盖它在 MCP 侧几乎没有作用 |
-| `history`、`sources` 的模式 | `history` 的 `inputSchema` 用 `oneOf` 按 `mode` 区分；不支持 `oneOf` 的客户端退化成扁平的可选参数表。`sources` 的 `mode` 是一个平的参数，`q`、`id` 是可选参数，哪个模式用哪个写在各参数的说明里 | 模式与参数配错是最常见的参数错误；配错时报错给出该模式完整的示例。`sources` 的三种模式各只多一两个参数，平的参数表已经说得清 |
+| `history`、`sources` 的模式 | `history` 的 `inputSchema` 用 `oneOf` 按 `mode` 区分；不支持 `oneOf` 的客户端退化成扁平的可选参数表。`sources` 的 `mode` 是一个平的参数，`q`、`id` 是可选参数，哪个模式用哪个写在各参数的说明里 | 模式与参数配错是最常见的参数错误；配错时报错给出该模式完整的示例。`sources` 的三种模式各自只有几个参数，平的参数表已经说得清 |
 | `sql` 的 `cursor` | 不暴露；按结果预算截断，提示缩小条件 | 聚合结果翻页的意义不大 |
 | `deletion_preview` 的 `{confirm}`（按已有的 `dc_` 重出预览） | **不暴露** | 它是给"拿到别人生成的 `dc_`"的调用方用的；Agent 的 `dc_` 是自己预览得到的，要再看一遍就重新预览 |
 | 写操作的 `idempotency_key` | **暴露**，可选 | 重放文本让模型"确实是新的一条就带 idempotency_key 重新提交"，需要这个参数 |
@@ -77,7 +77,7 @@ MCP 按最差宿主设计（positioning「saveslot 管什么，不管什么」�
   - **长的值**：文本里每个不可信片段（字段值、名字、单位、别名、回显的参数等）与 JSON 原文里的每个字符串，超过 2,000 个字符时只显示前 2,000 个，并由服务的措辞注明总长，以及这一版经 MCP 只读得到前 2,000 个字符、完整的值要经 CLI 或 HTTP 读。存下的数据不截：截短的只是给模型读的文本。
   - **已知限制**：经 MCP 读不全一个超过 2,000 个字符的值。要不要给 MCP 加分段读，由评测（1d 一类）的结果决定（08-open-questions）。
   - **不可分页的读结果**超出预算时不截断，报 `too_large`（`result_budget`），附缩小的办法：`level: "schema"` 的文档、单个事项的详情、删除预览里 `rows` 之外的列表（这些列表本身各有 50 条的上限）。读操作什么都没落账，报错后缩小范围重读即可。
-  - **已经落账的操作不报 `too_large`**（`write`、`resolve`、`delete`、`schema_draft` 的回执）：操作已经生效，报错会让调用方以为没写，重发又命中同一个请求键、得到同一个错误。回执必给：操作号、每个 op 的目标与新 `ver`、生成的事项 ID 一定在；连这些都放不下时（op 极多、实体键很长），先只列放得下的前几个 op、其余计数（`ops_omitted`），再放不下就不列 op、只列放得下的前几个事项、其余计数（`pending_omitted`），操作号始终保留，其余由 `history` 查看；超出预算的部分（逐字段结果、`derived[]`、`affected_reads`、`premise_affected.rows`、各列表的后几条；`delete` 的逐行结果只留目标与新 `ver`；`schema_draft` 的逐项改动与回填后的文档全文）截短，结果带 `omitted[]` 列明省掉了什么，文本写明"回执已截短，写入已生效，可用 `history` 查看全部"。
+  - **已经落账的操作不报 `too_large`**（`write`、`resolve`、`delete`、`schema_draft` 的回执）：操作已经生效，报错会让调用方以为没写，重发又命中同一个请求键、得到同一个错误。回执必给：操作号、每个 op 的目标与新 `ver`、生成的事项 ID 一定在；`write` 的回执（含 `resolve` 里带的那份）连这些都放不下时（op 极多、实体键很长），先只列放得下的前几个 op、其余计数（`ops_omitted`），再放不下就不列 op、只列放得下的前几个事项、其余计数（`pending_omitted`），有操作号时操作号保留（原请求已被删除的重放没有操作号），其余由 `history` 查看；超出预算的部分（逐字段结果、`derived[]`、`affected_reads`、`premise_affected.rows`、各列表的后几条；`delete` 的逐行结果只留目标与新 `ver`；`schema_draft` 的逐项改动与回填后的文档全文）截短，结果带 `omitted[]` 列明省掉了什么，文本写明"回执已截短，写入已生效，可用 `history` 查看全部"。
   - `saveslot_sql` 没有 `cursor`：超出时显示前若干行；有 `total` 时写明总数，没有时写明"还有更多"，都附"请加条件或聚合"。
 
 ## 4. 文本的渲染
@@ -981,7 +981,7 @@ MCP 端点（Streamable HTTP）挂在 `/mcp`，适配器只有这一份实现；
 - **授权页的默认值**：用户最多做选择和一次同意（06-cli 第 1 节的设计要求）。名字预填（取客户端登记的名称）；scope 预选 `saveslot.read saveslot.write`；不改就直接点一次"授权"。
   - **第一版授权页不选 slot 范围**：经远程授权得到的连接实例，slot 范围一律是全部（含以后新建的）。要一个只碰某几个 slot 的凭证（典型的是连接器），由用户会话签发静态令牌：`saveslot connect http --profile <名字> --slots …`（06-cli 3.2）。授权页上选范围、客户端声明它要的 slot 是后续（open-questions）。
   - slot 范围**不编码进 scope 字符串**：受保护资源元数据照旧只列四个 scope。
-- **已知例外：只有网页界面的宿主**（如 Claude 网页端、ChatGPT）。添加自定义连接器要在宿主的界面里点若干步、手动填地址，saveslot 一侧消不掉。saveslot 能做的是在登录后的页面与 `saveslot connect <宿主> --profile cloud` 里给出要填的地址；长期是进入各家的连接器目录，那时才是"添加 + 授权"。
+- **已知例外：只有网页界面的宿主**（如 Claude 网页端、ChatGPT）。添加自定义连接器要在宿主的界面里点若干步、手动填地址，saveslot 一侧消不掉。saveslot 能做的是在登录后的页面与 `saveslot connect generic --profile cloud` 里给出要填的地址（`connect` 没有这些宿主的名字）；长期是进入各家的连接器目录，那时才是"添加 + 授权"。
 - **一次授权 = 一个连接实例**：授权完成时登记进日志，名字与 scope 由用户在授权页上定，slot 范围是全部；scope 必须包含 `saveslot.read`。刷新令牌换来的仍是同一个连接实例。step-up 重新授权得到的是一个新的连接实例，原连接实例的 scope 不变（contract 第 12 节）。
 - **授权完成**指授权码兑换成功：连接实例在那一刻登记进日志（`principal.registered` 的 `via` 为 `oauth`，`client` 为客户端 ID），不是用户点"授权"的那一刻。授权码没被兑换就没有连接实例，名字也不会被一次没完成的授权占住；点"授权"之后、兑换之前名字被别人占了的，兑换失败（`invalid_grant`）。兑换时再核一遍授权码记下的 scope：含 `saveslot.read`、不超出请求里的 scope（请求没给时不超出默认的两个）。
 - **授权页、验证页与它们的错误页的响应头**与本地账户的登录页同一套（见下「本地账户的登录页」末条：不加载外部内容、不能被嵌入、不缓存、`Referrer-Policy: same-origin`），只有两处不同：允许页面自带的样式与写在页面里的图片（`style-src 'unsafe-inline'; img-src data:`，仍不从别处加载任何东西）；**授权页的 `form-action` 多列一项——这次请求的回调地址的来源**。同意或拒绝之后服务器把浏览器重定向到回调地址，而浏览器（Chrome）对表单提交之后的重定向同样按 `form-action` 检查，只写 `'self'` 时这次跳转被拦下，客户端永远收不到授权码。列的是已经和客户端登记的回调地址逐字比对过的那个地址的来源，每页按本次请求算：`http` / `https` 的回调写 `scheme://host[:port]`，自定义 scheme 的回调（如 `com.example.app:/callback`）只写 `scheme:`；不把回调地址原样写进响应头。验证页与登录页不跳出本服务，仍只写 `'self'`。带着授权码或错误的那次重定向不带引用来源（`Referrer-Policy: no-referrer`）。
