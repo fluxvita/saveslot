@@ -283,12 +283,12 @@ P4b 是第一版之后的第一个增量。是否紧接着做，在 P4 结束、
 
 | 方面 | 提供什么 |
 |---|---|
-| 写入 | 四种意图（新增、变更、纠错、撤销）；按冲突单元的 `ver` 与冲突判定、候选与冲突事项；状态类表的区间、默认终点与无值区间；高影响写入进待确认；回退与撤回某次写入；幂等；证据与字段级来源、字面命中；按来源键写入（转移键除外）；相近键提示（`similar_keys`）；写入的前提 |
-| 读取 | 数据目录、`query`、`sql`、派生表；`history` 的 `timeline`、`as_of`、`changes`；源数据；待处理事项；读取记录与 `ver` 的兜底；`query` 与 `history` 的 `as_of` 上的 `detail: "detailed"`（派生表上报 `not_in_this_version`） |
-| 待处理事项 | 冲突、待确认、schema 变更三类事项的查看与解决 |
+| 写入 | 四种意图（新增、变更、纠错、撤销）；按冲突单元的 `ver` 与冲突判定、候选与冲突事项；状态类表的区间、默认终点与无值区间；高影响写入进待确认；回退与撤回某次写入；幂等；证据与字段级来源、字面命中；按来源键写入（转移键除外）；相近键提示（`similar_keys`）；疑似重复（`duplicate_keys` → 已标记事项）；写入的前提 |
+| 读取 | 数据目录、`query`、`sql`、派生表（这一版的派生规则只读一张基础表）；`history` 的 `timeline`、`as_of`、`changes`；源数据；待处理事项；读取记录与 `ver` 的兜底；`query` 与 `history` 的 `as_of` 上的 `detail: "detailed"`（派生表上报 `not_in_this_version`） |
+| 待处理事项 | 冲突、待确认、已标记、schema 变更四类事项的查看与解决 |
 | schema | 新建 slot；改已有 slot 时只动数据目录的变更（改名、改说明与别名、放宽约束、新增表、删表等）；从未被写入的表上的结构改动；移除空 slot |
 | 日志 | 事件头链与校验和的校验（`saveslot verify`）；导出与导出的口令加密；导入到空租户 |
-| 接入面 | MCP 的九个工具（`saveslot_catalog`、`saveslot_query`、`saveslot_sql`、`saveslot_history`、`saveslot_sources`、`saveslot_pending`、`saveslot_write`、`saveslot_resolve`、`saveslot_schema_draft`）、HTTP、CLI |
+| 接入面 | MCP 的九个工具（`saveslot_catalog`、`saveslot_query`、`saveslot_sql`、`saveslot_history`、`saveslot_sources`、`saveslot_pending`、`saveslot_write`、`saveslot_resolve`、`saveslot_schema_draft`）、HTTP、CLI。MCP 这一版还不收：op 自己的 `evidence`、`evidence_by_field`、`as`、`source_ref` 证据段、已标记事项的两种处理（`keep`、`revoke`）与 `detail: "detailed"`；这些 HTTP 与 CLI 收 |
 | 服务器模式 | 账户与登录、OAuth 授权、远程 MCP、导入、`saveslot server` 的运维命令 |
 | 部署与运维 | 服务器模式：一个进程同时打开的租户上限与空闲关闭（`SAVESLOT_TENANT_CONNECTIONS`、`SAVESLOT_TENANT_IDLE`）、就绪探针 `/ready` 与三步停机、调用记录（`SAVESLOT_CALL_RECORDS`）。两种模式：打开时原地升级存储格式（目前还没有升级的步骤），本机模式在升级之前先备份。`query` 在多数情形下只读出要返回的那一页（分页下推到存储） |
 
