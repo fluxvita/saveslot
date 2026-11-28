@@ -113,7 +113,9 @@ describe("saveslot pending", () => {
     expect(r.code).toBe(0);
     const lines = r.out.split("\n");
     expect(lines[0]).toMatch(
-      new RegExp(`^${item} conflict · ledger\\.expenses r_\\w+ · open · open 0 min · version iv_`),
+      new RegExp(
+        `^${item} conflict · ledger\\.expenses r_\\w+ · open · opened 0 min ago · version iv_`,
+      ),
     );
     expect(lines.some((l) => /^ {2}in effect: .*amount 54 「CNY」/.test(l))).toBe(true);
     expect(
