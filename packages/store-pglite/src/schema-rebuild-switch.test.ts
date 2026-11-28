@@ -269,6 +269,53 @@ const switched = (slot: string, draft: string, blocks: Record<string, unknown>) 
   },
 });
 
+/** A draft changing the slot from version `base`, pending: its draft ID and compiled definition. */
+async function draftFrom(base: number, tables: unknown[]) {
+  await schemaDraft(s.store, ctx(), {
+    document: { slot: "home", base_version: base, timezone: "UTC", tables },
+  });
+  return read(async (tx) => {
+    const r = await tx.query<{ draft_id: string; slot_id: string; body: string }>(
+      `SELECT v.draft_id, v.slot_id, c.body FROM schema_versions v
+       JOIN content c ON c.seq = v.compiled_seq AND c.path = 'compiled'
+       WHERE v.sv = $1 AND v.state = 'pending'`,
+      [base + 1],
+    );
+    const x = r.rows[0] as { draft_id: string; slot_id: string; body: string };
+    return { draft: x.draft_id, slot: x.slot_id, compiled: JSON.parse(x.body) as Any };
+  });
+}
+
+/** Version `from` to `from + 1` through migration `id`: started, then switched with `blocks`. */
+async function migrate(
+  d: { draft: string; slot: string },
+  from: number,
+  id: string,
+  rebuilt: string[],
+  blocks: Record<string, unknown>,
+) {
+  await s.store.write((tx) =>
+    startMigrationForTests(tx, { slot: d.slot, from, to: from + 1, id, actor: USER, now: now() }),
+  );
+  return append([
+    {
+      type: "schema.switched",
+      slot: d.slot,
+      trigger: "migration",
+      blocks: {
+        target: {
+          draft_id: d.draft,
+          from_version: from,
+          to_version: from + 1,
+          migration_id: id,
+          rebuilt_tables: rebuilt,
+        },
+        ...blocks,
+      },
+    },
+  ]);
+}
+
 describe("a switch rebuilding tables", () => {
   it(
     "converts, drops, adds and fills: the new tables, the rows' ver, the version table's history; replayed the same",
@@ -421,6 +468,115 @@ describe("a switch rebuilding tables", () => {
         async (tx) => (await tx.query<Any>("SELECT current_sv FROM slots")).rows[0].current_sv,
       );
       expect(Number(sv)).toBe(1);
+    },
+    T,
+  );
+  it(
+    "two switches: the first's constant converted by the second, which tightens a field it converts, with a constant",
+    async () => {
+      const h = await history();
+      // Version 2: a limit added, required, with a constant of two decimals.
+      const LIMIT = {
+        name: "limit",
+        type: "decimal",
+        required: true,
+        description: "at most",
+        scale: 2,
+      };
+      const B2 = {
+        ...BUDGET,
+        fields: [...BUDGET.fields, { ...LIMIT, backfill: { const: "12.34" } }],
+      };
+      const d2 = await draftFrom(1, [B2]);
+      const t2v2 = d2.compiled.tables.find((t: Any) => t.id === "t2");
+      const id = (t: Any, name: string) => t.fields.find((f: Any) => f.name === name).id;
+      const [amount, note, limit] = ["amount", "note", "limit"].map((x) => id(t2v2, x));
+      const row = (a: string, nt: string | null, l: string) => ({
+        [amount]: a,
+        [note]: nt,
+        [limit]: l,
+      });
+      const stretches = [
+        { from: "2026-10-01", to: "2026-11-01" },
+        { from: "2026-11-01", to: "2026-11-15" },
+        { from: "2026-11-15" },
+      ];
+      const dep = [{ event: h.b1.seq + 2, existence: 0 }];
+      await migrate(d2, 1, `m_${"1".repeat(16)}`, ["t2"], {
+        "tables/t2": check(
+          [
+            row("100.25", null, "12.34"),
+            row("90.5", null, "12.34"),
+            row("90.5", "tight", "12.34"),
+          ].map((fields, i) => ({ id: h.entity, valid: stretches[i] as never, fields })),
+        ),
+        [`backfill/t2/${limit}/0`]: { entity: h.entity, valid: { from: "2026-10-01" }, deps: dep },
+      });
+      const v2 = await rows("budget");
+
+      // Version 3: the limit and the amount to fewer decimals; the amount at least 95, filled with 95
+      // where its value, rounded, is below it (from 11-01 on: 90.5 rounds to 91).
+      const B3 = {
+        ...BUDGET,
+        fields: [
+          { ...BUDGET.fields[0], scale: 0, min: 95, backfill: { const: "95" } },
+          BUDGET.fields[1],
+          { ...LIMIT, scale: 1 },
+        ],
+      };
+      const d3 = await draftFrom(2, [B3]);
+      expect(d3.compiled.tables.find((t: Any) => t.id === "t2").physical.table).toBe("t_t2_v3");
+      await migrate(d3, 2, `m_${"2".repeat(16)}`, ["t2"], {
+        "tables/t2": check(
+          [row("100", null, "12.3"), row("95", null, "12.3"), row("95", "tight", "12.3")].map(
+            (fields, i) => ({ id: h.entity, valid: stretches[i] as never, fields }),
+          ),
+        ),
+        [`backfill/t2/${amount}/0`]: { entity: h.entity, valid: { from: "2026-11-01" }, deps: dep },
+      });
+      const v3 = await rows("budget");
+      expect(v3.map((r: Any) => [r.valid_from, r.valid_to, r.values])).toEqual([
+        ["2026-10-01", "2026-11-01", { amount: "100", note: null, limit: "12.3" }],
+        ["2026-11-01", "2026-11-15", { amount: "95", note: null, limit: "12.3" }],
+        ["2026-11-15", null, { amount: "95", note: "tight", limit: "12.3" }],
+      ]);
+      // Neither switch changes a ver.
+      expect(v3.map((r: Any) => r.ver)).toEqual(v2.map((r: Any) => r.ver));
+      // The constants: the limit's of version 2 (converted, still of that switch), the amount's of 3.
+      const consts = await read(
+        async (tx) =>
+          (
+            await tx.query<Any>(
+              "SELECT field_id, schema_const_sv FROM base_sources WHERE source_kind = 'schema_const' ORDER BY 2",
+            )
+          ).rows,
+      );
+      expect(consts).toEqual([
+        { field_id: limit, schema_const_sv: 2 },
+        { field_id: amount, schema_const_sv: 3 },
+      ]);
+      // The amount's converted cell from 11-01 closed at the second switch, the constant's opened.
+      const amountCells = await read(
+        async (tx) =>
+          (
+            await tx.query<Any>(
+              `SELECT valid_from::text AS vf, f_${amount}::text AS v, rec_to IS NULL AS open, intent
+               FROM "t_t2_v3__ver" WHERE field_id = $1 ORDER BY rec_from, valid_from`,
+              [amount],
+            )
+          ).rows,
+      );
+      expect(amountCells.filter((c: Any) => c.open)).toEqual([
+        { vf: "2026-10-01", v: "100", open: true, intent: "update" },
+        { vf: "2026-11-01", v: "95", open: true, intent: "schema_switch" },
+      ]);
+      expect(amountCells).toContainEqual({
+        vf: "2026-11-01",
+        v: "91",
+        open: false,
+        intent: "update",
+      });
+      await replaysTheSame();
     },
     T,
   );
