@@ -140,6 +140,8 @@ interface Interval {
   valid_to: BizTime | null;        // null = 一直延续
   valid_to_inclusive?: DateStr;    // 只在 date 粒度且 valid_to 非 null 时给：区间里的最后一天
 }
+/** history 的 changes 条目的区间：同 Interval，但一端出自仍待执行的删除去掉的内容时那个键缺着（缺着不是 null，null 是开口；valid_to_inclusive 随 valid_to 一起缺），这一条标 partially_deleted。 */
+interface ChangeInterval { valid_from?: BizTime | null; valid_to?: BizTime | null; valid_to_inclusive?: DateStr }
 ```
 
 ### 1.4 值
@@ -775,7 +777,7 @@ interface ChangesResult extends CommonResult, PageResult {
     intent: VersionIntent;       // 含 deletion、deletion_cancelled：由删除确认或撤回产生的版本
     target: TargetRef;
     /** 只列值实际变了的字段。事件类表、无时间表：每个字段一个对象。状态类表：每个字段是按区间排好的数组，每段各有区间（与 timeline 的 TimelineField[] 同形）。"*" 是这一行 / 这一段是否存在，撤销或撤销的撤回改变它时给。 */
-    fields: Record<FieldName | "*", ChangedField | Array<ChangedField & { valid: Interval }>>;
+    fields: Record<FieldName | "*", ChangedField | Array<ChangedField & { valid: ChangeInterval }>>;
     /** 某个字段的 before 或 after 出自一项已被删除去掉的贡献（宽限期内或已执行）：那一侧不给（data-model「删除 · 版本表」）。 */
     partially_deleted?: true;
   }>;

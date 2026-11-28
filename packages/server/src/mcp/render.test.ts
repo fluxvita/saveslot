@@ -941,6 +941,34 @@ describe("a read's column names (05 §6 saveslot_query)", () => {
   });
 });
 
+describe("a changes entry with an end a deletion removed (05 §6 `changes`)", () => {
+  it("writes the end left out as (deleted), not as open", () => {
+    const x = renderResult("saveslot_history", {
+      mode: "changes",
+      target: { table: "plan.budgets" },
+      timezone: "Asia/Shanghai",
+      since: 41,
+      until: 57,
+      total: 1,
+      changes: [
+        {
+          seq: 57,
+          recorded_at: "2026-11-10T06:00:00.000Z",
+          actor: { kind: "user", id: `u_${"2".repeat(26)}`, name: "me" },
+          intent: "update",
+          target: { table: "plan.budgets", entity: "e_RA2ZPB5ZXRW16YEFMN2EEQAZ81" },
+          partially_deleted: true,
+          fields: {
+            amount: [{ before: "100", after: "150", valid: { valid_to: null } }],
+          },
+        },
+      ],
+    } as R);
+    expect(x).toContain("from (deleted)");
+    expect(x).not.toContain("all time");
+  });
+});
+
 describe("a timeline item a deletion removed (05 §6 `timeline`)", () => {
   it("is marked removed by a deletion, without its value", () => {
     const h = sample("history");

@@ -17,6 +17,7 @@ import type {
 import type {
   Actor,
   BizTime,
+  ChangeInterval,
   CommonParams,
   CommonResult,
   Cursor,
@@ -499,7 +500,7 @@ export interface ChangesResult extends CommonResult, PageResult {
     actor: Actor;
     intent: VersionIntent;
     target: TargetRef;
-    fields: Record<FieldName | "*", ChangedField | Array<ChangedField & { valid: Interval }>>;
+    fields: Record<FieldName | "*", ChangedField | Array<ChangedField & { valid: ChangeInterval }>>;
   }>;
 }
 

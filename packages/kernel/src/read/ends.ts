@@ -112,6 +112,28 @@ function rowEndWithheld(
   return votes.length > 0 && votes.every((x) => x);
 }
 
+/**
+ * Whether one target's end at P is withheld in a change (`changes`: the state after an operation
+ * and before it, in that order): the side after decides where it has an end of `target` at P, as
+ * the stretch is what the operation wrote there; else the side before (a deletion or a revoke took
+ * the value away, and the end was the removed one's). With neither, P is given. `target` is a
+ * field ID or `existence`; a revoke's gap is counted as in `vote`.
+ */
+export function targetEndWithheld(
+  sides: readonly (readonly EndCell[])[],
+  target: string,
+  p: string | null,
+  start: boolean,
+): boolean {
+  for (const cells of sides) {
+    const revokes = cells.filter((c) => c.field_id === "existence" && c.revoked === true);
+    const mine = target === "existence" ? revokes : cells.filter((c) => c.field_id === target);
+    const v = vote(mine, revokes, p, start);
+    if (v !== undefined) return v;
+  }
+  return false;
+}
+
 /** For each stretch, whether its start and its end are withheld. */
 export function stretchEnds(
   t: CompiledBaseTable,

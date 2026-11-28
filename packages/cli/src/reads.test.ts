@@ -404,6 +404,30 @@ describe("history changes (06 §4.7)", () => {
     ]);
   });
 
+  it("an end of a stretch a deletion removed: (deleted), not open", () => {
+    const one = {
+      ...CHANGES,
+      total: 1,
+      changes: [
+        {
+          ...(CHANGES as unknown as { changes: Record<string, unknown>[] }).changes[0],
+          partially_deleted: true,
+          fields: {
+            amount: [
+              {
+                before: { value: "100", unit: "CNY" },
+                after: { value: "150", unit: "CNY" },
+                valid: { valid_from: "2026-11-10" },
+              },
+            ],
+          },
+        },
+      ],
+    };
+    const line = render(changesResult(one as never), terminal).split("\n")[1] as string;
+    expect(line).toContain("(「2026-11-10」 until (deleted))");
+  });
+
   it("an event table's fields are objects; a quantity's number is outside, its unit inside", () => {
     const one = {
       ...CHANGES,

@@ -90,6 +90,17 @@ export interface Interval {
   readonly valid_to_inclusive?: DateStr;
 }
 
+/**
+ * A `changes` entry's interval (04-contract-types `ChangeInterval`): as `Interval`, but an end that
+ * came from content a deletion still pending removed is left out (not null, which is open), and
+ * `valid_to_inclusive` with `valid_to`; the entry is marked `partially_deleted` then.
+ */
+export interface ChangeInterval {
+  readonly valid_from?: BizPoint | null;
+  readonly valid_to?: BizPoint | null;
+  readonly valid_to_inclusive?: DateStr;
+}
+
 /** §3 `Marks`, the part this version gives. */
 export interface Marks {
   readonly disputed?: readonly {
@@ -384,7 +395,7 @@ export interface ChangeEntry {
    * for existing), given when a revoke or its taking back changes it.
    */
   readonly fields: Readonly<
-    Record<string, ChangedField | readonly (ChangedField & { readonly valid: Interval })[]>
+    Record<string, ChangedField | readonly (ChangedField & { readonly valid: ChangeInterval })[]>
   >;
   /**
    * A side of a field here was given by a contribution a deletion removed (03-data-model/
