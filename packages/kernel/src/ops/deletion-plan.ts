@@ -50,6 +50,7 @@ import {
   type JsonValue,
   type Seq,
 } from "@fluxvita/saveslot-contract-core";
+import { slotVersions as shapesOf } from "../apply/shapes.ts";
 import { positionsOf, readPositionIndex } from "../delete/positions.ts";
 import { type BaseCitations, readCitations, takenAway } from "../delete/taken.ts";
 import { JudgeError } from "../judge/errors.ts";
@@ -75,6 +76,8 @@ export type RefusedKind =
   | "external_key"
   | "premise"
   | "schema_const"
+  /** A row written before a schema switch that rebuilt its table: the replay does not model it. */
+  | "schema_switch"
   | "derived"
   | "item_numbered_anew"
   | "pending_items_touched"
@@ -287,6 +290,34 @@ async function holdsSchemaConst(tx: ReadTx, id: string): Promise<boolean> {
   return r.rows.length > 0;
 }
 
+/**
+ * Whether row `id` of table `table` has an item written before a schema switch that rebuilt the
+ * table: its replay would read old shapes and recompute existence without the fields the switch
+ * dropped, which the deletion's replay does not model yet.
+ */
+async function crossesRebuild(
+  tx: ReadTx,
+  slot: string,
+  table: string,
+  id: string,
+): Promise<boolean> {
+  const versions = await shapesOf(tx, slot);
+  let prev: string | undefined;
+  for (const v of versions) {
+    const t = v.compiled.tables.find((x) => x.id === table);
+    const phys = t?.kind === "base" ? t.physical.table : undefined;
+    if (prev !== undefined && phys !== undefined && phys !== prev) {
+      const r = await tx.query<{ n: unknown }>(
+        "SELECT 1 AS n FROM base_sources WHERE row_id = $1 AND event_seq < $2 LIMIT 1",
+        [id, v.switchedSeq],
+      );
+      if (r.rows.length > 0) return true;
+    }
+    prev = phys;
+  }
+  return false;
+}
+
 const lastOf = (events: readonly StoredEvent[]): Seq =>
   events.reduce((m, e) => Math.max(m, e.header.seq), 0) as Seq;
 
@@ -369,6 +400,11 @@ export async function planDeletionOf(
     }
     if (await holdsSchemaConst(tx, id)) {
       throw refuse("schema_const", "on a row holding a schema constant", { row: id });
+    }
+    if (await crossesRebuild(tx, slot, tableId, id)) {
+      throw refuse("schema_switch", "on a row written before a switch that rebuilt its table", {
+        row: id,
+      });
     }
     // Whether the table may be referred to, by every version the slot has had: the replay refuses a
     // revoke a candidate or a no-op when written that takes effect, on such a table
