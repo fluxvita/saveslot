@@ -6,7 +6,7 @@
 //   `{"error": …}`), `--limit` / `--cursor` (paging, for the commands that page),
 //   `--untrusted-tags auto|always|never` (06 §6.4), `--profile <name>` (the profile this command
 //   uses; `saveslot profile use` sets the default; a name not of the form is a usage error, 2).
-//   `--home` is for tests and development, not in the help text.
+//   `--home <dir>`: the home, default `~/.saveslot` (06 §4).
 // - The credential: `SAVESLOT_TOKEN` when set, otherwise the user session (the client's rules).
 // - The socket: the home's, `run/saveslot.sock` (06 §8.1); no variable or option changes it.
 // - Human text on stdout; errors, with the next step, on stderr (06 §6.3).
