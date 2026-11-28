@@ -680,6 +680,40 @@ describe("a request reads a table's keys once; one entity's key alone", () => {
   );
 });
 
+describe("a request's keys are read table by table", () => {
+  it(
+    "by key to one table, then by a key another table holds: that table's entity, nothing created",
+    async () => {
+      const lim = (level: string, extra: Record<string, unknown> = {}) => ({
+        intent: "update",
+        table: "limits",
+        entity_key: { region: "north", level },
+        set: { amount: "1" },
+        valid_from: "2026-10-01",
+        ...extra,
+      });
+      await one(budget("food", { amount: "1" }));
+      const held = await one(lim("1"));
+      const entity = held.ops[0]?.target.entity as string;
+      const before = await entities("t4");
+      // The budgets' keys are read first in this request; the limits' key must be looked up among
+      // the limits' own.
+      const r = await send({
+        sv: 1,
+        ops: [
+          budget("drink", { amount: "1" }),
+          lim("1", { ver: held.ops[0]?.ver, set: { amount: "2" } }),
+        ],
+      });
+      expect(r.refused).toBeUndefined();
+      expect(r.ops[1]?.created_entity).toBeUndefined();
+      expect(r.ops[1]?.target.entity).toBe(entity);
+      expect(await entities("t4")).toBe(before);
+    },
+    T,
+  );
+});
+
 describe("the key of an entity comes from the event that created it", () => {
   it(
     "created and revoked by key in one request: a later write by the key is the same entity",
