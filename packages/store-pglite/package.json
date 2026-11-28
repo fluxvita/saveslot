@@ -1,6 +1,6 @@
 {
   "name": "@fluxvita/saveslot-store-pglite",
-  "version": "0.1.0",
+  "version": "0.2.0-rc.0",
   "description": "PGlite storage backend for the saveslot kernel.",
   "license": "Apache-2.0",
   "repository": {

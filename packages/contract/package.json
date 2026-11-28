@@ -1,6 +1,6 @@
 {
   "name": "@fluxvita/saveslot-contract",
-  "version": "0.1.0",
+  "version": "0.2.0-rc.0",
   "description": "The external operation contract of saveslot: operation definitions, surface-only fields and errors.",
   "license": "Apache-2.0",
   "repository": {
