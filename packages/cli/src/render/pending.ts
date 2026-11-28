@@ -179,7 +179,7 @@ export function pendingDetail(r: PendingDetailResult, now: Date): Line[] {
   const x = r as unknown as R;
   const type = x["type"];
   const out: Line[] = [
-    t`${idOf(x["id"])} ${codeOf(type, TYPES)} · ${itemTarget(x["target"], x["slot"])} · ${codeOf(x["status"], STATUSES)} · open ${openFor(x["opened_at"], now)} · version ${idOf(x["item_ver"])}`,
+    t`${idOf(x["id"])} ${codeOf(type, TYPES)} · ${itemTarget(x["target"], x["slot"])} · ${codeOf(x["status"], STATUSES)} · opened ${openFor(x["opened_at"], now)} ago · version ${idOf(x["item_ver"])}`,
     t`  opened by ${actorOf(x["opened_by"])}, ${time(String(x["opened_at"] ?? ""))} · reason ${codeOf(x["reason"], REASONS)}`,
   ];
   if (type === "awaiting_confirmation") {
