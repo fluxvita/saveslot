@@ -125,6 +125,31 @@ describe("blocks of some events, read by content's key", () => {
   );
 
   it(
+    "a condition on the block, given to the lookup, is applied inside it, with the same rows",
+    async () => {
+      for (const [by, plain] of [
+        [readableContentOf("$1", "x.path = 'target'"), `${READABLE_CONTENT}`],
+        [rawContentOf("$1", "x.path IN ('head', 'fields/f1/0')"), "content"],
+      ] as const) {
+        const where = by.includes("'target'")
+          ? "path = 'target'"
+          : "path IN ('head', 'fields/f1/0')";
+        const keyed = `SELECT * FROM ${by} c ORDER BY seq, path COLLATE "C"`;
+        const p = await plan(keyed, [SEQS]);
+        expect(p).not.toMatch(/Seq Scan on content/);
+        expect(p).toMatch(/Index Cond: \(\(seq = u\.seq\) AND \(path/);
+        expect(await rows(keyed, [SEQS])).toEqual(
+          await rows(
+            `SELECT * FROM ${plain} c WHERE seq = ANY($1) AND ${where} ORDER BY seq, path COLLATE "C"`,
+            [SEQS],
+          ),
+        );
+      }
+    },
+    T,
+  );
+
+  it(
     "an empty list reads nothing",
     async () => {
       expect(await rows(BLOCKS_OF_EVENTS_SQL, [[]])).toEqual([]);
