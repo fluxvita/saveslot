@@ -364,7 +364,7 @@ describe.each(TABLES)("writing by entity_key: $table", (t: Keyed) => {
       { kind: "pair", a: 0, b: 0, way: 0, vouch: false },
     ];
     // The same with evidence pointed at for the value written again: a corroboration, which makes
-    // no version either (04-contract §2 `ver`: 同值佐证不改变它).
+    // no version either (04-contract §2 `ver`: "a same-value corroboration" does not change it).
     const vouchThenAlike: Step[] = noopThenAlike.map((x) =>
       x.kind === "pair" ? { ...x, vouch: true } : x,
     );

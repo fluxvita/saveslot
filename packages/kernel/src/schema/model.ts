@@ -41,7 +41,8 @@ export type SchemaDetailCode =
   | "rule_sql_rejected"
   | "nondeterministic_function"
   | "unit_inference_failed"
-  // A change to an existing slot (04-contract «schema_draft» 四个与数据有关的编译明细码).
+  // A change to an existing slot (04-contract «schema_draft», «编译明细码»: the four that concern
+  // data).
   | "still_referenced"
   | "backfill_const_required"
   | "backfill_both_forms"
@@ -55,7 +56,10 @@ export type SchemaDetailCode =
   // A new table or field named what another of the same draft is renamed away from.
   | "name_renamed_away";
 
-/** The rules of an alias (07 «schema 文档格式» 别名), in the order a finding takes the first broken. */
+/**
+ * The rules of an alias (07 «schema 文档格式 · 别名»), in the order a finding takes the first
+ * broken.
+ */
 export type AliasRule =
   | "count"
   | "length"

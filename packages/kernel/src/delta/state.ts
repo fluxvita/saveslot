@@ -19,7 +19,7 @@ import type { EntitySegment, Presence, Range, SourceKey, TargetState } from "./t
 /** What a state is built with. */
 export interface StateOptions {
   readonly decode: Decode;
-  /** The 出处项 of a field cell; without it every source is empty. */
+  /** The origin items of a field cell; without it every source is empty. */
   readonly sourceOf?: (field: FieldId, cell: StateCell) => SourceKey;
 }
 
@@ -107,11 +107,12 @@ export function stateFromCells(
  * The state of a row or entity at version position `ver` (an operation number, that operation
  * included): the cells in effect then, as `targetDelta` compares them. The values are stable: cells
  * before an operation are closed by later ones, never changed, so they read the same at any later
- * time. The 出处项 are not: the sources table is read as it is now, so a corroboration or a
+ * time. The origin items are not: the sources table is read as it is now, so a corroboration or a
  * registration of being reverted made later shows in the set of an earlier position.
  *
- * With `sources`, each field's source is its 出处项 set, which costs one more query, against the
- * sources table; without it every source is empty, and a comparison gives no `source_only`.
+ * With `sources`, each field's source is its set of origin items, which costs one more query,
+ * against the sources table; without it every source is empty, and a comparison gives no
+ * `source_only`.
  *
  * The caller answers for the table and the row (a row that is not in the table reads as `absent`,
  * with no error) and for `decode`, which must be the decoding that matches `selectOf`'s columns

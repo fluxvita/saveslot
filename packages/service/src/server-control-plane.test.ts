@@ -20,11 +20,13 @@ import { secondConnection } from "../../test-backend/src/second-connection.fixtu
 import {
   CONTROL_FORMAT,
   ControlPlaneError,
+  type ControlUpgradeEvent,
   DATABASE_NAME,
   INIT_LOCK,
   initControlPlane,
   openControlPlane,
   type ServerControlPlane,
+  upgradeControlPlane,
 } from "./server-control-plane.ts";
 
 const T = 120_000;
@@ -103,7 +105,11 @@ describe("initControlPlane", () => {
     async () => {
       const { db } = await database();
       await initControlPlane(db);
-      await db.write((tx) => tx.query("UPDATE control_meta SET value = '2' WHERE key = 'format'"));
+      await db.write((tx) =>
+        tx.query("UPDATE control_meta SET value = $1 WHERE key = 'format'", [
+          String(CONTROL_FORMAT + 1),
+        ]),
+      );
       await expect(initControlPlane(db)).rejects.toMatchObject({
         name: ControlPlaneError.name,
         code: "control_format_mismatch",
@@ -125,6 +131,95 @@ describe("initControlPlane", () => {
       await initControlPlane(db);
       const cp = await openControlPlane(db);
       expect(await cp.tenant(TENANT)).toBeUndefined();
+    },
+    T,
+  );
+});
+
+/** Turns a control database of this version back into format 1, as 0.1.0 made it. */
+async function asFormat1(db: TenantStore): Promise<void> {
+  await db.write((tx) =>
+    tx.exec(
+      "ALTER TABLE tenants DROP COLUMN import_holder; UPDATE control_meta SET value = '1' WHERE key = 'format'",
+    ),
+  );
+}
+
+const formatIn = async (db: TenantStore): Promise<string | undefined> =>
+  (
+    await db.read((tx) =>
+      tx.query<{ value: string }>("SELECT value FROM control_meta WHERE key = 'format'"),
+    )
+  ).rows[0]?.value;
+
+const hasHolder = async (db: TenantStore): Promise<boolean> =>
+  (
+    await db.read((tx) =>
+      tx.query(
+        "SELECT 1 FROM information_schema.columns WHERE table_name = 'tenants' AND column_name = 'import_holder'",
+      ),
+    )
+  ).rows.length === 1;
+
+describe("the control database's upgrade (02-architecture §8 «控制面库的升级»)", () => {
+  it(
+    "format 1 is refused as to be upgraded first, unless upgrading; upgraded, its rows are kept and it is format 2",
+    async () => {
+      const { db } = await database();
+      await initControlPlane(db);
+      await db.write((tx) =>
+        tx.query(
+          "INSERT INTO tenants (id, owner, cell, database, state) VALUES ($1, $2, 'a', 'db1', 'active')",
+          [TENANT, USER],
+        ),
+      );
+      await asFormat1(db);
+      await expect(initControlPlane(db)).rejects.toMatchObject({ code: "control_format_old" });
+      await expect(openControlPlane(db)).rejects.toMatchObject({ code: "control_format_old" });
+      expect(await formatIn(db)).toBe("1");
+      const told: ControlUpgradeEvent[] = [];
+      const cp = await initControlPlane(db, { upgrade: true, onEvent: (e) => told.push(e) });
+      expect(told).toEqual([
+        { event: "control_upgrading", from: 1, to: 2 },
+        { event: "control_upgrade_step", step: "1->2" },
+        { event: "control_upgraded", from: 1, to: 2 },
+      ]);
+      expect(await formatIn(db)).toBe(String(CONTROL_FORMAT));
+      expect(await hasHolder(db)).toBe(true);
+      expect((await cp.tenant(TENANT))?.owner).toBe(USER);
+      // Nothing to do the second time: nothing told.
+      told.length = 0;
+      await initControlPlane(db, { upgrade: true, onEvent: (e) => told.push(e) });
+      expect(told).toEqual([]);
+      await openControlPlane(db);
+    },
+    T,
+  );
+
+  it(
+    "a step that fails: control_upgrade_failed with the step and the SQLSTATE, the format left as it was; a format it does not take is refused",
+    async () => {
+      const { db } = await database();
+      await initControlPlane(db);
+      // Format 1 recorded, the column there already: the step's statement fails (42701).
+      await db.write((tx) => tx.query("UPDATE control_meta SET value = '1' WHERE key = 'format'"));
+      const e = await upgradeControlPlane(db).catch((x: unknown) => x);
+      expect(e).toBeInstanceOf(ControlPlaneError);
+      expect(e).toMatchObject({ code: "control_upgrade_failed", step: "1->2" });
+      if (TEST_BACKEND === "postgres") expect(e).toMatchObject({ sqlState: "42701" });
+      expect((e as Error).message).not.toContain("import_holder");
+      expect(await formatIn(db)).toBe("1");
+      // Newer than this version's, or not a number: left alone, refused by the check.
+      for (const v of [String(CONTROL_FORMAT + 1), "0", "x"]) {
+        await db.write((tx) =>
+          tx.query("UPDATE control_meta SET value = $1 WHERE key = 'format'", [v]),
+        );
+        await upgradeControlPlane(db);
+        expect(await formatIn(db)).toBe(v);
+        await expect(initControlPlane(db, { upgrade: true })).rejects.toMatchObject({
+          code: "control_format_mismatch",
+        });
+      }
     },
     T,
   );
@@ -633,6 +728,31 @@ describe.runIf(TEST_BACKEND === "postgres")("two connections to one control data
         await other.close();
         await init?.catch(() => {});
         await waiter.close();
+      }
+    },
+    T,
+  );
+
+  it(
+    "upgrading format 1 at the same time: each step once, both succeed",
+    async () => {
+      for (let round = 0; round < 5; round++) {
+        const { db, dir } = await database();
+        await initControlPlane(db);
+        await asFormat1(db);
+        const [a, b] = await Promise.all([secondConnection(dir), secondConnection(dir)]);
+        try {
+          // A step done twice would fail: its column is there after the first.
+          const results = await Promise.allSettled([
+            initControlPlane(a, { upgrade: true }),
+            initControlPlane(b, { upgrade: true }),
+          ]);
+          expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled"]);
+          expect(await formatIn(db)).toBe(String(CONTROL_FORMAT));
+        } finally {
+          await a.close();
+          await b.close();
+        }
       }
     },
     T,

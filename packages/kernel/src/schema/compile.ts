@@ -4,12 +4,12 @@
 // Pure: the slot ID and the next free table and rule numbers come from the caller. The result is
 // the definition of version 1 and the changes (`create_slot`, then `add_table` or
 // `add_derived_table` per table); every change of a new slot applies directly, so the outcome is
-// `applied` (07 «改动分类与迁移手段» slot 新建 row).
+// `applied` (07 «改动分类与迁移手段», the row creating a slot).
 //
-// Derived tables (07 «文档结构» 派生表 row; 06-derived.md): each rule is compiled by the restricted
-// SQL compiler (../rules) against the slot's compiled base tables, after the document's own rules
-// pass; the derived fields' types, units and precision are what it infers. A document with a
-// derived table needs the parser loaded (`loadRsql()`); one without does not.
+// Derived tables (07 «文档结构 · 派生表» row; 06-derived.md): each rule is compiled by the
+// restricted SQL compiler (../rules) against the slot's compiled base tables, after the document's
+// own rules pass; the derived fields' types, units and precision are what it infers. A document
+// with a derived table needs the parser loaded (`loadRsql()`); one without does not.
 //
 // Errors, in this order, so the most telling one wins: a key v1 does not support
 // (`not_in_this_version`); something in v1 not compiled yet (`not_implemented`: changing a slot,

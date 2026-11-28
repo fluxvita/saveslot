@@ -1,5 +1,5 @@
 // The tenant-creation entry and the connection operations on PGlite, and K12 for what apply
-// maintains so far (02-architecture §3 "日志是唯一事实来源", §11 «测试矩阵»): replaying the log
+// maintains so far (02-architecture §3 «日志是唯一事实来源», §11 «测试矩阵»): replaying the log
 // into an empty storage gives the same materialized tables. Fictional IDs and names.
 
 import { mkdtempSync, rmSync } from "node:fs";

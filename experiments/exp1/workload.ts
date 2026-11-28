@@ -1,4 +1,4 @@
-// Experiment 1 workload and checks (pre-dev-w0-experiments 实验 1).
+// Experiment 1 workload and checks (pre-dev-w0-experiments, experiment 1).
 //
 // One transaction, shaped like a saveslot write: insert an "event header" row with a monotonic n
 // and the previous row's hash, insert a ~1 KB "content" row with a checksum, update one row of a

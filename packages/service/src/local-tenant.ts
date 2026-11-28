@@ -1,5 +1,6 @@
 // The local mode's one tenant, opened when the service starts and kept open while it runs
-// (docs/zh-CN/spec/02-architecture.md §5 控制面存储, §7 进程模型, §8 租户存储与锚点存储).
+// (docs/zh-CN/spec/02-architecture.md §5 «控制面存储», §7 process model, §8 tenant storage and anchor
+// storage).
 //
 // Opening: read `control/tenant.json` for the tenant ID, drop a `log.reconcile` scratch storage a
 // crash left (`<home>/tmp/reconcile/<tenant>`), open the anchor store (`control/anchor.json`)

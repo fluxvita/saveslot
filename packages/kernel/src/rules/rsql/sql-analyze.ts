@@ -49,7 +49,7 @@ export type { ResolvedColumn, ResolvedTable };
 
 import type { SqlType } from "./whitelist.ts";
 
-/** ASCII case folding: names are unique without ASCII case (11 «名字» 大小写与引号). */
+/** ASCII case folding: names are unique without ASCII case (11 «名字 · 大小写与引号»). */
 const fold = (s: string) => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
 
 // --- what the caller gives ----------------------------------------------------------------------
@@ -67,7 +67,7 @@ export interface FormerNames {
 /**
  * A slot the caller can see, as `visibleSlots()` (../../read/slots.ts) gives it, with the tables it
  * can see in it: derived tables are in `tables`; whether one is visible follows from its
- * dependencies (11 «名字» 可见范围).
+ * dependencies (11 «名字 · 可见范围»).
  */
 export interface SqlSlot {
   readonly slot: string;
@@ -1660,7 +1660,7 @@ function outTy(t: Ty): Ty {
 
 /**
  * The tables of a slot the caller can see: the tables it names, with a derived table only if
- * everything it depends on is visible too (11 «名字» 可见范围).
+ * everything it depends on is visible too (11 «名字 · 可见范围»).
  */
 function visibleOf(s: SqlSlot): readonly CompiledTable[] {
   const ids = new Set(s.tables.filter((t) => t.kind === "base").map((t) => t.id as string));

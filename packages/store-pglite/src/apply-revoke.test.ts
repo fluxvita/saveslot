@@ -1,5 +1,5 @@
 // apply of revokes and their undo on storage (09-event-format §5.7; 04-write-and-read «已撤销的行仍
-// 占着它的键»; 02-architecture §8 版本表; 01-objects «版本标记»). An event or timeless table's
+// 占着它的键»; 02-architecture §8 «版本表»; 01-objects «版本标记»). An event or timeless table's
 // revoke changes only existence: the row keeps its values and field cells, and the version table
 // gets an `existence` cell marked revoked; undoing it gives an `existence` cell from the restore
 // and reopens no field cell. A state table's whole revoke leaves the entity no business row and an

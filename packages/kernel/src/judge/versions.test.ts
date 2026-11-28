@@ -1,6 +1,6 @@
-// Direct unit tests of `givesVersion` and `cellsOf` (02-architecture §8 版本表; 04-contract §2 `ver`):
-// each edge case where what is read stays the same (or has no value) while a version-table cell
-// either changes or stays as it was.
+// Direct unit tests of `givesVersion` and `cellsOf` (02-architecture §8 «版本表»; 04-contract §2
+// `ver`): each edge case where what is read stays the same (or has no value) while a version-table
+// cell either changes or stays as it was.
 
 import type { BizPoint, FieldId } from "@fluxvita/saveslot-contract-core";
 import { EVENT } from "@fluxvita/saveslot-reference/testing";

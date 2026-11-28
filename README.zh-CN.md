@@ -17,7 +17,7 @@
 
 ## 上手
 
-需要 Node 24 系列的 24.22.1 及以上，或 26.12.1 及以上。
+需要 macOS 或使用 glibc 的 Linux，以及 Node 24 系列的 24.22.1 及以上，或 26.12.1 及以上。Alpine 这类 musl 发行版（包括 `node:alpine` 镜像）暂不支持。
 
 ```sh
 npm install -g @fluxvita/saveslot
@@ -73,7 +73,7 @@ Agent 经 MCP 连 saveslot：本机经 `saveslot mcp`，服务器模式走远程
 
 ## 状态
 
-**0.1** 是第一个发布版本，有本机模式和服务器模式（云托管或自部署）。saveslot 还在 1.0 之前：小版本之间接口可能变化。设计里有些部分 0.1 还没有提供，见 [0.1.0 提供哪些](docs/zh-CN/spec/07-scope-v1.md#7-010-提供哪些)。
+目前的版本是 **0.2**，有本机模式和服务器模式（云托管或自部署）。saveslot 还在 1.0 之前：小版本之间接口可能变化。设计里有些部分 0.2 还没有提供，见 [0.2.0 提供哪些](docs/zh-CN/spec/07-scope-v1.md#7-020-提供哪些)。
 
 ## 文档
 
@@ -85,6 +85,8 @@ Agent 经 MCP 连 saveslot：本机经 `saveslot mcp`，服务器模式走远程
 | [`docs/zh-CN/spec/`](docs/zh-CN/spec/README.md) | **规格**：每条规则的完整定义，给实现与审查用，按需查。目录与阅读顺序见 [`docs/zh-CN/spec/README.md`](docs/zh-CN/spec/README.md) |
 
 讲解与规格不一致时以规格为准。
+
+要把 Agent 或程序接到 saveslot 上，从[接入指南](docs/zh-CN/integration/README.md)开始。
 
 ## 求助与参与
 

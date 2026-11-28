@@ -1,12 +1,13 @@
-// `similarKeys` over a stubbed store (10-types-and-units «相近的键»: 比较范围是最近写入的 5,000 个实体):
-// the 5,000th most recently written entity is compared, the 5,001st is not; what is read of the
-// store is read once a request (`SimilarCache`). The store's three reads are answered by their SQL:
-// the keys (`row_origins` with `content`), the latest write (`__ver`), the entities with a value.
+// `similarKeys` over a stubbed store (10-types-and-units «相近的键 · 比较范围»: "only the 5,000
+// most recently written are compared"): the 5,000th most recently written entity is compared, the
+// 5,001st is not; what is read of the store is read once a request (`KeyCache`). The store's
+// three reads are answered by their SQL: the keys (`row_origins` with `content`), the latest write
+// (`__ver`), the entities with a value.
 
 import type { CompiledBaseTable, EntityId, FieldId } from "@fluxvita/saveslot-contract-core";
 import { describe, expect, it } from "vitest";
 import type { ReadTx } from "../store/ports.ts";
-import { createSimilarCache, SIMILAR_SCOPE, similarKeys } from "./keys.ts";
+import { createKeyCache, SIMILAR_SCOPE, similarKeys } from "./keys.ts";
 
 const TABLE = {
   id: "t2",
@@ -51,11 +52,11 @@ describe("similarKeys: the scope and the cache", () => {
   it("the 5,000th most recently written is compared; one written after it puts it beyond", async () => {
     expect(SIMILAR_SCOPE).toBe(5000);
     const at = stubStore(["Q4推广", ...others(SIMILAR_SCOPE - 1)]);
-    expect(await similarKeys(at.tx, TABLE, fresh, [], createSimilarCache())).toEqual([
+    expect(await similarKeys(at.tx, TABLE, fresh, [], createKeyCache())).toEqual([
       { key: "Q4推广", match: "fold" },
     ]);
     const beyond = stubStore(["Q4推广", ...others(SIMILAR_SCOPE)]);
-    expect(await similarKeys(beyond.tx, TABLE, fresh, [], createSimilarCache())).toEqual([]);
+    expect(await similarKeys(beyond.tx, TABLE, fresh, [], createKeyCache())).toEqual([]);
   });
 
   it("this request's entities come first and push the oldest stored one out", async () => {
@@ -67,12 +68,12 @@ describe("similarKeys: the scope and the cache", () => {
         revoked: false,
       },
     ];
-    expect(await similarKeys(st.tx, TABLE, fresh, here, createSimilarCache())).toEqual([]);
+    expect(await similarKeys(st.tx, TABLE, fresh, here, createKeyCache())).toEqual([]);
   });
 
   it("the store is read once a request: a second comparison reads nothing", async () => {
     const st = stubStore(["Q4推广", "办公用品"]);
-    const cache = createSimilarCache();
+    const cache = createKeyCache();
     await similarKeys(st.tx, TABLE, fresh, [], cache);
     const first = st.reads.n;
     expect(await similarKeys(st.tx, TABLE, { f1: "办公 用品" } as never, [], cache)).toEqual([

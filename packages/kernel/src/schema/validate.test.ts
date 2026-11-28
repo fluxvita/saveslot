@@ -156,7 +156,7 @@ describe("descriptions", () => {
   });
 });
 
-describe("aliases (07 «schema 文档格式» 别名)", () => {
+describe("aliases (07 «schema 文档格式 · 别名»)", () => {
   const tableAliases = (t: number, aliases: unknown) =>
     edit((d) => (d.tables[t].aliases = aliases));
   // `expenses` is table 0, its `note` field 3; `accounts` is table 1 (`name`, `limit`).
@@ -334,7 +334,7 @@ describe("aliases (07 «schema 文档格式» 别名)", () => {
     });
   });
 
-  // The old names of the last 10 schema versions count as names in the scope too (07 别名); a new
+  // The old names of the last 10 schema versions count as names in the scope too (07 «别名»); a new
   // slot has none, so only a change to an existing slot can show it.
   it.todo(
     "a table alias equal to a table's old name within 10 versions (waits on P4: change a slot)",
@@ -345,8 +345,9 @@ describe("aliases (07 «schema 文档格式» 别名)", () => {
   it.todo(
     "an alias equal to a name older than 10 versions is allowed (waits on P4: change a slot)",
   );
-  // Changing the aliases of an existing table or field is the change `change_aliases` (07 改动码),
-  // auto-applied as `description`; only a change to an existing slot can show it.
+  // Changing the aliases of an existing table or field is the change code `change_aliases`
+  // (07 «改动分类与迁移手段»), auto-applied as `description`; only a change to an existing slot can
+  // show it.
   it.todo(
     "change_aliases: adding, removing or replacing aliases of an existing table or field is one change, auto-applied (waits on P4: change a slot)",
   );

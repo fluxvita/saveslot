@@ -555,12 +555,13 @@ function planRows(
           `${row.rowId} ${s.field} on ${ivKey(s.valid)}: the result is not what the row settles to`,
         );
     }
-    // And the other way (§5.9 "没列到的段保持原样"): outside every stretch listed of a field and
-    // outside the result's gaps, each piece of the field is given by the same item (or by none,
-    // with or without saying the entity has no value) before and after. By pieces, not by cells: a
-    // field's cells are cut where the row's segments are, which other fields move. A value changing
-    // with its giver the same is a restated item's, and so listed. An event or timeless row that
-    // does not exist once settled has its fields' values kept but not spoken of: not looked at.
+    // And the other way (§5.9 "A segment that is not listed stays as it is"): outside every
+    // stretch listed of a field and outside the result's gaps, each piece of the field is given by
+    // the same item (or by none, with or without saying the entity has no value) before and after.
+    // By pieces, not by cells: a field's cells are cut where the row's segments are, which other
+    // fields move. A value changing with its giver the same is a restated item's, and so listed. An
+    // event or timeless row that does not exist once settled has its fields' values kept but not
+    // spoken of: not looked at.
     const existsNow = isState ? settled.rows.length > 0 : settled.rows.some((x) => !x.revoked);
     if (isState || existsNow) {
       const fields = new Set<string>([

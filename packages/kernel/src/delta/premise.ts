@@ -1,7 +1,7 @@
 // Whether a premise's target differs, on what the premise declared, between the version it saw and
-// another state (docs/zh-CN/spec/03-data-model/02-integrity-and-records.md «写入的前提»: 一条声明有什么,
-// 什么算前提变了). The detection (whether a mark is taken off), the marks of a read and the state of
-// a declaration made late all ask this one question.
+// another state (docs/zh-CN/spec/03-data-model/02-integrity-and-records.md «写入的前提»:
+// «一条声明有什么», «什么算前提变了»). The detection (whether a mark is taken off), the marks of a
+// read and the state of a declaration made late all ask this one question.
 
 import type { FieldId } from "@fluxvita/saveslot-contract-core";
 import { targetDelta } from "./delta.ts";

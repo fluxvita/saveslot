@@ -1,7 +1,7 @@
-// The server mode's open tenants, in one process (docs/zh-CN/spec/02-architecture.md §5, §7 进程模型,
-// §8): a tenant's storage is opened when a request first needs it, through the control plane's
-// routing, and kept open while it is used; closed when it has gone unused for a while, after its
-// buffered reads are written and its high water moved up to the log's end (§8).
+// The server mode's open tenants, in one process (docs/zh-CN/spec/02-architecture.md §5, §7 process
+// model, §8): a tenant's storage is opened when a request first needs it, through the control
+// plane's routing, and kept open while it is used; closed when it has gone unused for a while,
+// after its buffered reads are written and its high water moved up to the log's end (§8).
 //
 // A tenant is lent, never handed over: `use` runs a function with the open tenant and does not close
 // it meanwhile. `exclusive` waits for the uses in progress, holds new ones back, closes the tenant

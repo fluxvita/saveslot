@@ -940,7 +940,7 @@ describe("reasons and counts at their edges", () => {
   );
 });
 
-describe("the cover is of 出处项, carried references followed to their end", () => {
+describe("the cover is of origin items, carried references followed to their end", () => {
   it(
     "a restatement after an undo covers the item the write-back carries, not the write-back",
     async () => {

@@ -4,7 +4,7 @@ English · [简体中文](../zh-CN/spec/09-event-format.md)
 
 > The field-level definition of every kind of event in the log. The implementation of `log` and `apply` follows this document; it is also the format description of an exported file: without any saveslot code, this document alone should be enough to read an exported log.
 > The rules themselves (when each kind of event is produced, how judgement is done) are in [`03-data-model/`](03-data-model/README.md); the layering and the invariants are in [`02-architecture.md`](02-architecture.md). This document only defines "what an event writes, and how".
-> **Freeze rule**: this document is frozen before the local mode is first released publicly, and after that it only grows, never changes (§1.6). Logs produced during development before the freeze are not promised to be compatible ([`07-scope-v1.md`](07-scope-v1.md), "The freeze point of the event format"). Undecided items that appear before the freeze are registered in [`08-open-questions.md`](08-open-questions.md).
+> **Freeze rule**: this document has been frozen since the first public release, and from then on it only grows, never changes (§1.6). Logs produced during development before the freeze are not promised to be compatible ([`07-scope-v1.md`](07-scope-v1.md), "The freeze point of the event format"). Undecided items that appear after that are registered in [`08-open-questions.md`](08-open-questions.md).
 
 ## 1. Scope and conventions
 

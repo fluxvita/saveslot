@@ -489,8 +489,11 @@ describe("appendix D", () => {
   describe("D.5: a candidate put back after its item was resolved in the grace period", () => {
     // pre-dev-w6-final-fixes appendix D.5. L in effect; two candidates; the deletion removes
     // candidate 1; the item is resolved in the grace period; the deletion is cancelled. The
-    // original item stays resolved; candidate 1 is judged on the state at the cancellation
-    // (03-deletion «撤回与宽限期»).
+    // original item stays resolved; candidate 1 is judged on the state at the cancellation.
+    // That is the rule the decision record grace-period-no-decisions.md sets aside for a later
+    // version; the first version refuses the grace-period decision (03-deletion «撤回与宽限期»),
+    // so these run with `graceDecisions: "allowed"`. The first version's refusal of this
+    // resolution is a fixed case of log.test.ts.
     const head = (c1: string, c1Explicit: boolean): Op[] => [
       put(10, 11, "9", ["s11"], "10-01", "open"),
       put(12, 13, "9.5", ["s13"], "10-01", "open"),
@@ -512,7 +515,7 @@ describe("appendix D", () => {
         },
         cancel(24, "pi_a"),
       ];
-      const ev = evaluateLog(BUDGETS, log).final;
+      const ev = evaluateLog(BUDGETS, log, { graceDecisions: "allowed" }).final;
       expect(itemsClosed(ev, 15)).toEqual(['f2/0 candidate [10-01, inf) "10"']);
       expect(itemsClosed(ev, 17)).toEqual(['f2/0 candidate [10-01, inf) "8" (closed)']);
       expect(tl(ev)).toEqual(['[10-01, inf) "9.5"']);
@@ -533,7 +536,7 @@ describe("appendix D", () => {
         },
         cancel(24, "pi_a"),
       ];
-      const ev = evaluateLog(BUDGETS, log).final;
+      const ev = evaluateLog(BUDGETS, log, { graceDecisions: "allowed" }).final;
       expect(itemsClosed(ev, 15)).toEqual(['f2/0 corroborated [10-01, inf) "8"']);
       expect(tl(ev)).toEqual(['[10-01, inf) "8"']);
     });

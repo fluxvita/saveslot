@@ -17,7 +17,7 @@ English · [简体中文](README.zh-CN.md)
 
 ## Get started
 
-You need Node 24.22.1 or later on the 24 line, or 26.12.1 or later.
+You need macOS or a Linux with glibc, and Node 24.22.1 or later on the 24 line, or 26.12.1 or later. musl distributions such as Alpine, `node:alpine` images included, are not supported yet.
 
 ```sh
 npm install -g @fluxvita/saveslot
@@ -73,7 +73,7 @@ Agents reach saveslot over MCP: locally through `saveslot mcp`, and in server mo
 
 ## Status
 
-**0.1** is the first release, with a local mode and a server mode (hosted or self-hosted). saveslot is before 1.0: interfaces may change between minor versions. Some parts of the design are not in 0.1 yet; see [what 0.1.0 provides](docs/spec/07-scope-v1.md#7-what-010-provides).
+The current version is **0.2**, with a local mode and a server mode (hosted or self-hosted). saveslot is before 1.0: interfaces may change between minor versions. Some parts of the design are not in 0.2 yet; see [what 0.2.0 provides](docs/spec/07-scope-v1.md#7-what-020-provides).
 
 ## Documentation
 
@@ -85,6 +85,8 @@ The documents are under `docs/`, in two directories, each with one job. The guid
 | [`docs/spec/`](docs/spec/README.md) | **Specification**: the complete definition of every rule, for implementing and reviewing, looked up as needed. Its contents and reading order are in [`docs/spec/README.md`](docs/spec/README.md) |
 
 Where the guide and the specification differ, the specification holds.
+
+To connect an agent or an application to saveslot, start at the [integration guide](docs/integration/README.md).
 
 ## Getting help and contributing
 

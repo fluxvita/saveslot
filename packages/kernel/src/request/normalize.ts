@@ -1232,7 +1232,7 @@ function readPremises(
     if (first === "row") {
       if (state) invalid("state_table", `${pat}/row`);
       // A temporary name ("@name"): the row an earlier op of the request binds it to, resolved by
-      // the write path (02-integrity «能指向什么»: 本请求里新建的行).
+      // the write path (02-integrity «能指向什么 · 本请求里新建的行»).
       if (typeof t === "string" && t.startsWith("@") && TEMP_NAME.test(t.slice(1)))
         target = { kind: "name", name: t.slice(1) };
       else {

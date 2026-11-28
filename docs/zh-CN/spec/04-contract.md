@@ -6,7 +6,7 @@
 > **本文写规则与说明；参数、结果、错误的结构与全部枚举在 [`04-contract-types.md`](04-contract-types.md)，字段名与取值以它为准。**
 > 两份文档写的都是完整设计。第一版不实现的部分在类型文件里标 `@later`，清单见它的 0.2 节；范围以 [`07-scope-v1.md`](07-scope-v1.md) 为准。待定项统一记在 [`08-open-questions.md`](08-open-questions.md)。
 >
-> **"第一版"与 0.1.0**：本文的"第一版"指第一版的设计范围；0.1.0 是第一个对外发布的版本，只提供第一版的一部分。0.1.0 尚未提供：隐私删除（`deletion_preview`、`delete`、撤回删除，以及只因它们而有的字段、标记、事项类型与错误）；需要重建物理表的迁移（在写入过的表上加字段、删字段、收紧约束、改精度、换单位）；`log.reconcile`。`policy.set`、字段上的 `migrate` 与表达式形式的 `backfill` 在第一版之后。尚未提供的操作与参数报 `not_in_this_version`。0.1.0 提供什么见 [`07-scope-v1.md`](07-scope-v1.md) 第 7 节；本文与类型文件里讲这些的各节写的是设计。
+> **"第一版"与 0.2.0**：本文的"第一版"指第一版的设计范围；0.2.0 是目前对外发布的版本，只提供第一版的一部分。0.2.0 尚未提供：隐私删除（`deletion_preview`、`delete`、撤回删除，以及只因它们而有的字段、标记、事项类型与错误）；需要重建物理表的迁移（在写入过的表上加字段、删字段、收紧约束、改精度、换单位）；`log.reconcile`。`policy.set`、字段上的 `migrate` 与表达式形式的 `backfill` 在第一版之后。尚未提供的操作与参数报 `not_in_this_version`。0.2.0 提供什么见 [`07-scope-v1.md`](07-scope-v1.md) 第 7 节；本文与类型文件里讲这些的各节写的是设计。
 
 ## 本文是什么
 
@@ -37,7 +37,7 @@
 
 ¹ `policy.get` 例外：任何有 `saveslot.read` 的凭证都可以调用。
 
-"第一版"一列写的是第一版的设计范围。0.1.0 尚未提供其中的 `deletion_preview` 与 `delete`，以及管理类里的对拍 `log.reconcile`，这几项报 `not_in_this_version`；`policy.set` 在第一版之后。
+"第一版"一列写的是第一版的设计范围。0.2.0 尚未提供其中的 `deletion_preview` 与 `delete`，以及管理类里的对拍 `log.reconcile`，这几项报 `not_in_this_version`；`policy.set` 在第一版之后。
 
 ## 读与写怎么配合
 
@@ -373,7 +373,7 @@
 | `corrected` | 该行被纠错过。状态类表上按段给：这一段里所读字段的值出自纠错写入（合并的段里任一段是即可） |
 | `revoked` | 该行已撤销；只在 `include_revoked: true` 时出现 |
 | `possibly_affected` | 本连接实例之前读过的版本后来受影响；值后来恢复则撤掉 |
-| `partially_deleted` | 按时刻读（`history` 的 `as_of`、`query` 的后续页）、还原时，当时的部分数据已删除：出自被删除去掉的贡献的值不给。`history` 的 `changes` 里同名字段标在一条上，表示那一侧不给；冲突事项详情的 `previous` 上的同名字段，表示合并基那一刻有值不给（`take_previous` 写回的是删除之后那个位置上的状态）；事项详情的 `effective`、`current`，以及 flagged 事项详情上的同名字段，表示那一侧（flagged 是 `matched_values`）有值不给 |
+| `partially_deleted` | 按时刻读（`history` 的 `as_of`、`query` 的后续页）、还原时，当时的部分数据已删除：出自被删除去掉的贡献的值不给。`history` 的 `changes` 里同名字段标在一条上，表示那一侧不给；冲突事项详情的 `previous` 上的同名字段，表示合并基那一刻有值不给（`take_previous` 写回的是删除之后那个位置上的状态）；事项详情的 `effective`、`current`，以及 flagged 事项详情上的同名字段，表示那一侧（flagged 是 `matched_values`）有值不给。`as_of` 的行上它也表示这一段有一端不给（那一端的键缺着）；`as_of` 的结果上它表示有内容因此没给出，含没列出的段 |
 | `pending_deletion` | 这一行受一项可撤回的删除影响（判据见 data-model「删除 · 撤回与宽限期」的"受影响"；这段时间里它上面的事项不能处理、写入不能 `undo`） |
 | `dangling_ref` | 这一行的某个 `ref` 字段指向的行 / 实体已撤销或已被隐私删除；引用方的值不变，只标出来。带字段与状态（`revoked` / `deleted`） |
 | `premise_changed` | 这一行当前的值所用到的前提（5.1）后来变了；值没有动，是否仍然成立由读方判断。**任何读取方**都看得到。带前提所在的行、声明的字段、声明时所见的版本、原因、使它变了的操作号、本行里由这条声明覆盖的字段、哪次写入声明的 |
@@ -428,7 +428,7 @@
   - 已被取代或被拒、从未生效的草稿：它提交时的 `base_version`。slot 之后切换过，交回报 `draft_outdated`；没有切换过（被拒之后），交回是提交一份同样的新草稿。
 
   读取照常记读取记录。草稿不存在、不属于参数里的 `slot`、或不可见，报 `not_found`（`draft`），三者逐字节相同。`schema` 档带不带 `draft`，都要 slot 的每张表在可见范围内才给，否则报与 slot 不存在相同的 `not_found`（`slot`）：第一版不给"只含可见表"的文档，派生规则的文本会带出它读的表名（data-model「可见范围」）。按表点名了当前全部表的调用方读草稿的文档，会看到草稿新加的表（它还没有 ID，无从点名）：这是有意的。`schema_draft` 的回执截掉了文档全文时，就用它重读（回执里的文档是提交的原文回填 ID，只列草稿改到的表；这里是整份）。文档不能分页；超出外化面的结果预算时报 `too_large`（`result_budget`），不截断。（这是读操作，什么都没落账；已经落账的操作不用这个错误，见 surfaces 第 3 节。）
-- 概况：行数、业务时间范围、每个字段最近 K 个不同取值（按操作号取，确定性）。`table` 档每张表都带 `profile`（行数、业务时间范围与规模提示），只数调用方可见范围内的表；读时计算的派生表不带：它没有落表的行可数，现算一遍规则也不是目录该做的事。行数数的是表里现有的行：事件类与无时间表数未撤销的行，状态类表数区间段（相邻且全部字段同值的段先合并，物理上怎么切不改变结果，与 `query` 的 `total` 同口径），派生表数它自己的行。业务时间范围：事件类表的 `from` 与 `to` 是时间字段的最早值与最晚值，两端都含（只算未撤销的行）；状态类表的 `from` 是最早的区间起点，`to` 是最晚的 `valid_to`，不含（与契约里所有 `valid_to` 同一约定），有一直延续的段时不给 `to`；无时间表、派生表与空表不给。读时由当前数据现算，不进事件。slot 有迁移在进行时，`list` 档带 `migration`；这期间涉及这个 slot 的调用在 `notices` 里给 `migration_progress`（目标版本与进度）。
+- 概况：行数、业务时间范围；每个字段的取值示例第一版不给（04-contract-types.md 第 0.2 节）。`table` 档每张表都带 `profile`（行数、业务时间范围与规模提示），只数调用方可见范围内的表；读时计算的派生表不带：它没有落表的行可数，现算一遍规则也不是目录该做的事。行数数的是表里现有的行：事件类与无时间表数未撤销的行，状态类表数区间段（相邻且全部字段同值的段先合并，物理上怎么切不改变结果，与 `query` 的 `total` 同口径），派生表数它自己的行。业务时间范围：事件类表的 `from` 与 `to` 是时间字段的最早值与最晚值，两端都含（只算未撤销的行）；状态类表的 `from` 是最早的区间起点，`to` 是最晚的 `valid_to`，不含（与契约里所有 `valid_to` 同一约定），有一直延续的段时不给 `to`；无时间表、派生表与空表不给。读时由当前数据现算，不进事件。slot 有迁移在进行时，`list` 档带 `migration`；这期间涉及这个 slot 的调用在 `notices` 里给 `migration_progress`（目标版本与进度）。
 - **规模提示**：`table` 档的概况在行数过界时带 `scale`：超过舒适线（`comfortable_rows`）、不超过实测线（`tested_rows`）是 `large`，超过实测线是 `beyond_tested`；两条线的数值随内核版本发布（architecture「容量边界与实测数值」）。按这张表当前的 `profile.rows` 读时算出，不进事件，不是数据标记；不超过舒适线时不带。`list` 档不带。
 
 ### `query`
@@ -468,6 +468,7 @@
 - 四种模式都按 `limit` / `cursor` 分页。
 - `timeline` 列出这一行 / 实体上的全部操作，含没有生效的（候选、待确认）与由 `resolve`、删除、撤回触发的；条目的 `via` 说明来由。内容已按删除移除的字段带 `removed: true`，它的 `result` 是 `removed`（不是 `dropped`：`dropped` 是删除重放后不再是贡献、内容还在的项）。schema 切换时常量 `backfill` 补出的值也是一条：`intent` 是 `schema_switch`，`via` 是 `{schema: {sv}}`，`actor` 是 `system`，没有源数据；它不改行的 `ver`，所以当前 `ver` 里的操作号可以比这一条早。回退写回的字段可能带 `no_value` 或 `uncovered`（含义见 5.4）。声明了前提的写入带 `premises`（目标、字段、所见版本、现在是否已变）；重申与清除也各是一条，清除的 `premises` 是空数组；同一请求里对同一行的几个 op 各是一条，按 op 下标从后往前。已不再作数的声明（被同一目标上更晚的声明取代，或被清除）给 `ended`，不带原因与 `since`。后面的页停在第一页的操作号上，但前提的状态是现在的，`since` 可以大于那个操作号。前提目标所在的表对读方不可见时，那一条只给 `hidden: true`、现在是否已变与 `since`，不给目标、字段、所见版本与原因：这是有意的例外，读方知道这次写入依据的某条记录变了以及从哪次操作起，不知道是什么、怎么变的。
 - `as_of` 接受操作号、时刻、`{read}`（任何连接实例的一次读取）或 `{task}`（**限本连接实例**的该任务，默认取它对这个目标的最后一次读取，`other_reads` 列出其余几次；`as_of` 自己的读取读到的是历史版本，不算在内）；后两种按那次读取所见状态的位置还原，那次读取读的是同一张表时另沿用它的业务时间条件，别的表的读取只取位置。早于第一条操作的时刻给 `seq: 0`、不带 `recorded_at`，结果为空。结果标明当时的 `sv`，值按它解释；早于这个 slot 第一次生效的位置，`sv` 取它的第一版（表名、字段名也按它）。`{read}` 指向一次不可见范围内的读取时报 `not_found`（`read`）；`{task}` 下没有读过这个目标报 `not_found`（`read`，`param` 为 `as_of/task`）。
+- `as_of` 在状态类表上，一段的起点或终点（含"一直到以后"）出自仍待执行的删除去掉的内容时不给：那一端的键缺着（不写成 `null`，`valid_to_inclusive` 随 `valid_to` 一起缺），这一段标 `partially_deleted`。值都不给、起点也不给的一段不列出。一端出自谁、怎么判，见 data-model「删除」的「版本表」与决定记录 [`interval-ends-of-deleted-content.md`](../process/decisions/interval-ends-of-deleted-content.md)。端点在合段之后、按合出来的段判；一段的终点不给，不因此与后一段并成一段。`valid_at`（与沿用的读取的业务时间条件）只凭给出的端点判命中：要凭不给的那一端才定得了的，不命中。起点不给的段排在同一实体各段之后，彼此之间照真实的先后；翻页位置里它的起点那个键是 `null`，另有一个序号键，所以这里的翻页位置格式比别处多一版，之前格式的位置报 `handle_expired`（`format_changed`）。有行带 `partially_deleted`，或有一段因此没列出时，结果带 `partially_deleted`，结果为空时也带。
   - 事件类表、无时间表上，到那时已撤销的行照样返回，带 `marks.revoked`；那时还不存在的目标结果为空。
   - 目标从未有过任何版本（对它的写入都没有生效，例如唯一的一次写入只成了候选或待确认）时报 `not_found`（`row` / `entity`），与 ID 不存在相同，各种模式都一样；目标有过版本、`as_of` 早于它的第一个版本时结果为空（上一条）。
 - 翻页同第 15 节：`timeline` 的后续页只列首页操作号及以前的条目，`ver` 取那一刻的；`reads` 只在首页给，返回并登记当前 `ver` 的也只有首页。`as_of` 的各页按段的起点；记录点（时刻、超出日志的操作号、`{read}`、`{task}`）在首页解析，截到首页的操作号，随位置带到后续页，之后的写入与读取不改变它。`changes` 的各页新的在前、同一操作内按目标 ID；窗口（`since` 与 `until` 解析成的操作号，`"my_last_read"` 也在首页解析）在首页定下，随位置带到后续页：之后的写入不进窗口，首页本身登记的读取也不改变后续页的 `since`。`reads.list` 的后续页只列到首页时最后一条读取记录。
@@ -488,7 +489,7 @@
 
 ### `deletion_preview`
 
-0.1.0 尚未提供：`deletion_preview`（含 `dc_` 句柄）报 `not_in_this_version`；本节是设计（[`07-scope-v1.md`](07-scope-v1.md) 第 7 节）。
+0.2.0 尚未提供：`deletion_preview`（含 `dc_` 句柄）报 `not_in_this_version`；本节是设计（[`07-scope-v1.md`](07-scope-v1.md) 第 7 节）。
 
 **不删任何东西。** 两种调用：给 `{kind, sources}` 出预览；或只给 `{confirm}`，按已有的 `dc_` 绑定的目标重新给出预览（返回的仍是同一个 `dc_`，有效期不变）。
 
@@ -532,12 +533,12 @@
 
 ### `schema_draft`
 
-0.1.0 尚未提供：需要重建物理表的迁移（在写入过的表上加字段、删字段、收紧约束、改精度、换单位）报 `not_in_this_version`，迁移的进度（`migration`、`migration_progress`）也随之只在设计里；本节这些部分是设计（[`07-scope-v1.md`](07-scope-v1.md) 第 7 节），0.1.0 的现状见「不收的改动（第一版与 0.1.0）」。
+0.2.0 尚未提供：需要重建物理表的迁移（在写入过的表上加字段、删字段、收紧约束、改精度、换单位）报 `not_in_this_version`，迁移的进度（`migration`、`migration_progress`）也随之只在设计里；本节这些部分是设计（[`07-scope-v1.md`](07-scope-v1.md) 第 7 节），0.2.0 的现状见「不收的改动（第一版与 0.2.0）」。
 
 #### 返回与结果
 
 - 参数是 schema 文档（data-model「schema 文档格式」）；新建 slot 时 `base_version: null`。新提交的草稿取代该 slot 尚未确认的旧草稿（旧草稿的 `schema_change` 事项标已被取代，原因 `draft_replaced`）。
-- **一次调用同时返回编译结果与影响预览**：回填了 ID 与推断结果的文档、逐项改动（改动码 `change`、类别、对旧版写入是否兼容、是否破坏性、是否可自动生效）、影响（受影响行数、派生值变化、按旧名字使用它的调用方、`migrate` / `backfill` 的试跑结果）。**0.1.0 不计算使用方，一律按在用处理（进待确认）**：改已有 slot 的回执不给 `consumers`（给空列表就成了"没有使用方"的结论），"没人在用"也一律按在用处理。所以改名（`rename_unused`）一律要确认，`restructure_unused` 这一类也不会自动生效，这些改动都进待确认。
+- **一次调用同时返回编译结果与影响预览**：回填了 ID 与推断结果的文档、逐项改动（改动码 `change`、类别、对旧版写入是否兼容、是否破坏性、是否可自动生效）、影响（受影响行数、派生值变化、按旧名字使用它的调用方、`migrate` / `backfill` 的试跑结果）。**0.2.0 不计算使用方，一律按在用处理（进待确认）**：改已有 slot 的回执不给 `consumers`（给空列表就成了"没有使用方"的结论），"没人在用"也一律按在用处理。所以改名（`rename_unused`）一律要确认，`restructure_unused` 这一类也不会自动生效，这些改动都进待确认。
 - 草稿与当前版本相比没有任何改动，报 `invalid_argument`（`no_change`，`param` 为 `document`），不产生任何事件、不占版本号。只相对于当前版本判：与待确认的那份内容完全相同的草稿（不在幂等窗口内，或换了 `task`）照常取代它、拿新的版本号。
 - 改已有 slot 时的报错次序：slot 找不到或不在范围 → `base_version` 的写法 → 草稿过时（`draft_outdated`，`base_version`）→ 迁移进行中（`draft_outdated`，`migrating`，带 `current_sv` 与 `migration`）→ 其余。
 
@@ -551,13 +552,14 @@
 #### 从未被写入的表
 
 - **从未被写入的表**（日志里没有任何一条以这张表为目标的基础写入；写过、行已全部撤销或内容已全部删除的都不算）上，下面这些改动放开：改表的时间类型（`change_time_type`）、增删改 `entity_key`（`change_entity_key`）、改 `granularity`（`change_granularity`）、`base` 改 `derived`（`change_table_kind`；反方向仍不支持）、字段与 `ref` 互转或改 `ref` 的目标（`change_ref`）、加 / 去掉 / 换来源键（`add_external_key` / `drop_external_key` / `change_external_key`）。表 ID 与字段 ID 不变。
-  - 这张表最近 30 天也没有提交者以外的连接实例按名字读写过时，这些改动，连同同一张表上的 `drop_field`、`change_type`、`change_dimension`、`change_unit`、`change_precision`、`tighten_constraint`，`add_required_field`、`change_time_field`，都归入 `restructure_unused`，自动生效：没有值可丢，`class` 记 `metadata`，`destructive` 是 `false`，`migrate` 不必给。新增必填字段与可选改必填仍须给常量形式的 `backfill`。有别人读写过时要确认，影响的 `consumers` 列出他们。0.1.0 不计算使用方，见「返回与结果」。
+  - 这张表最近 30 天也没有提交者以外的连接实例按名字读写过时，这些改动，连同同一张表上的 `drop_field`、`change_type`、`change_dimension`、`change_unit`、`change_precision`、`tighten_constraint`，`add_required_field`、`change_time_field`，都归入 `restructure_unused`，自动生效：没有值可丢，`class` 记 `metadata`，`destructive` 是 `false`，`migrate` 不必给。新增必填字段与可选改必填仍须给常量形式的 `backfill`。有别人读写过时要确认，影响的 `consumers` 列出他们。0.2.0 不计算使用方，见「返回与结果」。
   - 依赖这张表的派生规则在同一次编译里按新定义重新编译；规则的输出没变的不另列改动。
   - 经 `restructure_unused` 生效的任何改动之后，带旧 `sv` 写这张表的写入一律被拒：`schema_incompatible`，`changed_fields` 给一项 `{field: "*", change: <改动码>}`，`"*"` 表示整张表。表被删（`drop_table`）之后，带删除之前的 `sv` 写它同样如此，`change` 是 `drop_table`。
   - 草稿等确认期间这张表被写入了：草稿里凡按"从未被写入"编译的改动都不再成立，确认时一律报 `draft_outdated`（`table_written`，见 `resolve`）。
-#### 不收的改动（第一版与 0.1.0）
+#### 不收的改动（第一版与 0.2.0）
 
-- **0.1.0 尚未提供的改动**：需要重建物理表的迁移。在写入过的表上加字段、删字段、收紧约束、改精度、同量纲换单位这类改动，草稿可以提交、可以预览；0.1.0 里会自动生效的草稿在提交时就报 `not_in_this_version`（`reason` 是 `table_written`），要确认的草稿在确认时报 `not_in_this_version`，草稿留着。表从未被写入时这些改动照常生效（新表是空的，不需要迁移）。`migrate` 与表达式形式的 `backfill` 见下面最后一条。
+- **0.2.0 尚未提供的改动**：需要重建物理表的迁移。在写入过的表上加字段、删字段、收紧约束、改精度、同量纲换单位这类改动，草稿可以提交、可以预览；0.2.0 里会自动生效的草稿在提交时就报 `not_in_this_version`（`reason` 是 `table_written`），要确认的草稿在确认时报 `not_in_this_version`，草稿留着。表从未被写入时这些改动照常生效（新表是空的，不需要迁移）。`migrate` 与表达式形式的 `backfill` 见下面最后一条。
+- **0.2.0 尚未提供的改动：派生表**。在已有的 slot 上新增派生表、改已有派生表的规则或字段，以及把基础表改成派生表（表从未被写入时也一样），草稿里出现时整份报 `not_in_this_version`（`reason` 是 `not_implemented`），`param` 指到那张表（`tables/<i>`），不产生任何事件。草稿里原样列出、没有改动的派生表照常收。新建 slot 时的派生表不受影响。
 - **第一版不支持的键或改动**：`reextract`、`extends`、`compatibility`、`derived` 改 `base`；在写入过的表上改时间类型、增删改 `entity_key`、改 `granularity`、`base` 改 `derived`、`ref` 互转与改目标、换一组来源键（`change_external_key`）、改来源键字段的类型或收紧它的约束。写入过的表上仍可以加来源键（键字段须是同一份草稿新增的字段）或去掉它，都要确认。草稿里出现时整份报 `not_in_this_version`，`param` 指到那个键，不产生任何事件；因为表已被写入而不支持的，`reason` 是 `table_written`。
 - **第一版建 slot 时不收的派生规则**：用到 `saveslot_date` 的、分组键是 `decimal` / `quantity` 且小数位上界可能超出推断精度的（算法见 [`03-data-model/11-restricted-sql.md`](03-data-model/11-restricted-sql.md)「小数分组键」）。都报 `not_in_this_version`，`param` 指到那张派生表的规则（`tables/<i>/rule`），不产生任何事件。派生规则读读时计算的派生表，第一版同样报 `not_in_this_version`，`param` 是 `tables/<i>/rule/sql`。
 - 字段上的 `migrate` 与表达式形式的 `backfill` 在第一版之后：第一版里草稿带它们，在任何表上都报 `not_in_this_version`（`param` 指到那个键），常量形式的 `backfill` 照做。设计上它们只能引用本字段的旧值与常量，只对带值的位置求值，空值原样带过去。
@@ -596,7 +598,7 @@
 
 ### `delete`
 
-0.1.0 尚未提供：`delete` 与撤回删除（`resolve` 的 `deletion` · `cancel`）报 `not_in_this_version`；本节是设计（[`07-scope-v1.md`](07-scope-v1.md) 第 7 节）。
+0.2.0 尚未提供：`delete` 与撤回删除（`resolve` 的 `deletion` · `cancel`）报 `not_in_this_version`；本节是设计（[`07-scope-v1.md`](07-scope-v1.md) 第 7 节）。
 
 - 参数只有 `confirm`（`deletion_preview` 返回的 `dc_`）。只执行，不预览。
 - **判定顺序**：这个 `dc_` 已经执行过 → 返回原结果，`replayed: true`；签名过期或恢复次数对不上 → `handle_expired`；影响范围内有晚于预览的写入 → `preview_outdated`（附新预览与新的 `dc_`）。
@@ -783,13 +785,13 @@
 | `unauthenticated` | 凭证缺失（`missing`）、无效（`invalid`）、已吊销（`revoked`）、过期（`expired`）；服务器模式下租户属主的账户已停用（`account_disabled`） |
 | `insufficient_scope` | 凭证没有所需 scope（含 `resolve` 用了当前凭证不可用的处理方式）；连接实例调用只给用户会话的管理类操作（`required_scope: "user_session"`）；限定了 slot 范围的凭证新建 slot（`required_scope: "all_slots"`，见第 12 节） |
 | `rate_limited` | 限流或配额（`quota`）；同一租户已有一次对拍或导入在跑（`busy`） |
-| `handle_expired` | 签名句柄过期（`expired`）、恢复次数对不上（`restored`）、`dc_` 已经执行过而又拿它重出预览（`executed`）、翻页期间派生表被刷新过（`derived_changed`）、首页之后有删除被确认或撤回（`deletion_changed`） |
-| `not_in_this_version` | 调用了第一版不实现、或 0.1.0 尚未提供的参数、取值或操作。`reason` 说明是哪一种，附是哪个；schema 草稿里只对从未被写入的表放开的改动用在写入过的表上时，`reason` 是 `table_written` |
+| `handle_expired` | 签名句柄过期（`expired`）、恢复次数对不上（`restored`）、`dc_` 已经执行过而又拿它重出预览（`executed`）、翻页期间派生表被刷新过（`derived_changed`）、首页之后有删除被确认或撤回（`deletion_changed`）、位置是这一版之前的格式（`format_changed`：`history` 的 `as_of` 在状态类表上的位置） |
+| `not_in_this_version` | 调用了第一版不实现、或 0.2.0 尚未提供的参数、取值或操作。`reason` 说明是哪一种，附是哪个；schema 草稿里只对从未被写入的表放开的改动用在写入过的表上时，`reason` 是 `table_written` |
 | `unavailable` | 暂时不能处理：租户被占用或此刻打不开——写入排队、加锁超时、它的存储还没释放；或服务器模式下这次使用撞上租户的连接已断开、确定没有提交，或一次读的读取记录没能在应答之前写进去、这次读不交出内容（`busy`）；租户正在走恢复流程（`restoring`）；租户正在导入（`importing`；服务器模式下也来自导入换入期间写入撞上租户的封存标记）；对拍进入比较阶段而排队超时（`reconciling`）；服务刚启动还在补跑到期任务（`starting`）；服务正在停止，不再接新的请求，或服务器模式下这个进程比租户存储的格式旧、该被换下（`stopping`）。可重试时附 `retry_after` |
 | `internal` | 服务端内部错误。附 `incident`（供排查的编号，不含用户内容） |
 | `import_rejected` | 导入的文件不合格：格式不认识（`unsupported_format`）、不是从头开始（`not_from_start`）、续传的几段顺序不对（`segment_order`）、事件头链断裂（`chain_broken`）、内容校验和不符（`checksum_mismatch`）、条数或末尾对不上、清单与内容对不上（`incomplete`，如清单里的恢复次数不是导入的日志自己的）、重放失败（`replay_failed`）。只给位置（`seq`、`path`），不回显内容 |
 
-- **第一版不实现的东西与 0.1.0 尚未提供的东西一律报 `not_in_this_version`，不静默忽略**：生成的 schema 里不出现这些参数与取值，但服务端认得完整设计里的名字，收到时给出这个明确的错误，而不是笼统的 `invalid_argument`。
+- **第一版不实现的东西与 0.2.0 尚未提供的东西一律报 `not_in_this_version`，不静默忽略**：生成的 schema 里不出现这些参数与取值，但服务端认得完整设计里的名字，收到时给出这个明确的错误，而不是笼统的 `invalid_argument`。
 - `item_closed` 与 `preview_outdated` 在第 11 节：由内核判断。签名本身过期才是这里的 `handle_expired`。
 
 ## 17. 管理类操作
@@ -806,7 +808,7 @@
 | `reads.list` | 读取审计：哪个连接实例在什么时候读了哪些数据（含对源数据原文的读取）。只给版本，不给值；每条带 `task`；结果写明读取记录保留到哪一刻（没有清理时是租户创建的时刻）。`since` 含、`until` 不含；`slot` 不存在报 `not_found`（`slot`），`table` 不存在报 `unknown_table`（同别处按名字指表：带 `name` 与 `nearest`，给的是 `slot.table` 就列带 slot 的名字，只给表名就列表名）。一次读取在某张表上读到的行版本数超过阈值（初值 1,000，多见于受限 SQL 的聚合）时，这张表不逐行列，列在 `coarse` 里：只有表与这次读取所见状态的位置（data-model「读取记录」） |
 | `log.verify` | 校验日志：事件总数、事件头链完整与否（或自哪一条起断裂）、内容校验和不符的位置、索引列与事件头不符的位置（不算断裂）、已按删除移除的数量、恢复留下的序号空档（不算断裂） |
 | `log.end` | 日志末端：最新一条事件的 `seq` 与记录时刻（日志为空时为 null）。只读、不带参数；`saveslot status` 用它对照本机时钟 |
-| `log.reconcile` | 0.1.0 尚未提供：`log.reconcile` 报 `not_in_this_version`；本行是设计（[`07-scope-v1.md`](07-scope-v1.md) 第 7 节）。对拍：把日志从空存储重放到一份临时存储，与线上的逻辑表逐表比较（范围见 architecture §11）。同步返回，日志大时耗时长；只有最后的比较阶段让该租户的写入排队，PostgreSQL 上它在一个读快照里完成，不必让写入排队（architecture §7）。同一租户同时只跑一个，再次调用报 `rate_limited`（`busy`）。结果只给表 / 行 / 字段的 ID，不回显值。**它查不出 `delete` 自己算错的结果**（architecture §11「记录与重算一致」） |
+| `log.reconcile` | 0.2.0 尚未提供：`log.reconcile` 报 `not_in_this_version`；本行是设计（[`07-scope-v1.md`](07-scope-v1.md) 第 7 节）。对拍：把日志从空存储重放到一份临时存储，与线上的逻辑表逐表比较（范围见 architecture §11）。同步返回，日志大时耗时长；只有最后的比较阶段让该租户的写入排队，PostgreSQL 上它在一个读快照里完成，不必让写入排队（architecture §7）。同一租户同时只跑一个，再次调用报 `rate_limited`（`busy`）。结果只给表 / 行 / 字段的 ID，不回显值。**它查不出 `delete` 自己算错的结果**（architecture §11「记录与重算一致」） |
 | `export` | 导出全部日志事件，NDJSON：第一行是清单，之后每行一条事件，形状以 [`09-event-format.md`](09-event-format.md) 第 8 节为准，可在任何后端经 `apply` 重放。宽限期内待删除的内容默认换成占位，`include_pending_deletion: true` 才包含；`after_seq` 从某个位置之后续传（清单里记为 `after`）。读取记录不在导出里 |
 | `import` | 导入到空租户：把一份导出装进一个空租户（日志里只有创世事件，锚点里没有删除登记、恢复记录与进行中的恢复或导入）。逐事件原样追加并交给 `apply` 重放，追加一条 `tenant.imported`，恢复次数加 1；导入前登记的、仍有效的主体一律停用（已吊销的保持吊销，第 12 节），凭证由用户在目标处重新签发。整体要么完成、要么目标租户保持为空；期间这个租户的其他请求报 `unavailable`（`importing`）。导出里待删除内容的占位在导入时立即补墓碑，那些删除在目标处不可撤回。读取记录、控制面的内容（凭证、授权、签名密钥、源头的删除登记）、外部文件带不过来，结果如实列出。错误：`invalid_argument`（`tenant_not_empty`）、`import_rejected`、`rate_limited`（`busy`）、`too_large`（`import_line`：文件的一行超过上限，09 §8）。合并导入、迁移流程不在第一版 |
 

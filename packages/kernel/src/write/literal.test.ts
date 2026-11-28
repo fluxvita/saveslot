@@ -336,7 +336,7 @@ describe("what literal@1 does not take", () => {
     expect(at(QTY, q("5", "d"), "11月5日")).toBe("miss");
     expect(at(QTY, q("30", "min"), "10点30分")).toBe("miss");
     expect(at(INT, "10", "10点")).toBe("miss");
-    // 点 not as a time of day takes its number all the same: taking less (04 "数字记号").
+    // 点 not as a time of day takes its number all the same: taking less (04 "number tokens").
     expect(at(INT, "5", "给了5点建议")).toBe("miss");
     expect(at(QTY, q("30", "min"), "10时30分")).toBe("miss");
     // Not in a date or a time: as before.

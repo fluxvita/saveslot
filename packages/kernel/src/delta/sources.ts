@@ -1,6 +1,6 @@
-// The 出处项 of a row's or entity's field cells (01-objects «出处项»; 02-integrity «标记出现在哪一行»
-// step 1), from the sources table: what `stateAt` gives as a field's source, and what the marks of
-// premises are found on.
+// The origin items of a row's or entity's field cells (01-objects «出处项»; 02-integrity
+// «标记出现在哪一行» step 1), from the sources table: what `stateAt` gives as a field's source, and
+// what the marks of premises are found on.
 
 import type {
   CompiledBaseField,
@@ -120,7 +120,7 @@ const SOURCE_FROM = `FROM base_sources b
      LEFT JOIN ${READABLE_CONTENT} c ON c.seq = b.event_seq
        AND c.path = 'fields/' || b.field_id || '/' || b.k`;
 
-/** How the 出处项 are read. */
+/** How the origin items are read. */
 export interface SourceOptions {
   /**
    * A corroboration counts as reverted only by registrations of operations up to the version read
@@ -129,7 +129,7 @@ export interface SourceOptions {
   readonly revertsUpToVer?: boolean;
 }
 
-/** The 出处项 of a row's cells from its rows of the sources table (see `sourceItemsAt`). */
+/** The origin items of a row's cells from its rows of the sources table (see `sourceItemsAt`). */
 function itemsFrom(
   rows: readonly SourceRow[],
   t: CompiledBaseTable,
@@ -186,8 +186,8 @@ function itemsFrom(
 }
 
 /**
- * The 出处项 of each field cell, from the sources table: the contribution that gave the cell its
- * value, followed through its carried references to the end, and the corroborations of the same
+ * The origin items of each field cell, from the sources table: the contribution that gave the cell
+ * its value, followed through its carried references to the end, and the corroborations of the same
  * value still in force (not reverted, content not deleted, on a state table meeting the cell's
  * interval). What the table holds is read as of now, limited to operations up to `ver`: an item's
  * status and its registrations of being reverted are those of now.

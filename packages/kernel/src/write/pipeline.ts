@@ -112,7 +112,7 @@ import { createdInEffect, duplicateBlock, duplicateOf, flaggedItem } from "./dup
 import { WriteError } from "./errors.ts";
 import { type OpenedFlagged, settleFlagged } from "./flagged.ts";
 import {
-  createSimilarCache,
+  createKeyCache,
   type EntityKeyText,
   entitiesByKey,
   existingKeys,
@@ -291,7 +291,7 @@ export interface TrackedItem {
   readonly here: boolean;
   /** Joined by a candidate of this request. */
   mergedHere: boolean;
-  /** The last `write.base` of this request that reached it (01-objects «不过期»: 改到). */
+  /** The last `write.base` of this request that reached it (01-objects «不过期 · 改到»). */
   reachedBy?: Seq;
   /**
    * State tables, an item open when the request began: its interval then. A write reaches the item
@@ -597,7 +597,7 @@ export function scopeFor(state: RowState, t: TrackedItem): IntervalSet {
 }
 
 /**
- * Where a write of the request reaches an item (01-objects «不过期»: 改到): its interval as the
+ * Where a write of the request reaches an item (01-objects «不过期 · 改到»): its interval as the
  * request began together with its interval now. A revert proposal's interval follows the state, so
  * each half guards one way it moves:
  * - the interval as the request began: a write that leaves the proposal nothing to do empties it;
@@ -995,12 +995,13 @@ function knownRows(rows: ReadonlyMap<string, RowWork>) {
  * such a row gives, in effect or not: a superset, what is found again is compared.
  */
 /**
- * High impact ② at the end of a request or a resolution (05-time ② 段末: 引用方变了，事项的影响随之
- * 刷新): the targets its ref values named before or after it, and those of the rows it revoked or
- * brought back. An open `referenced_row` item on one has its referrers found again (as of the end,
- * the request's own rows laid over), the target's row loaded into `rows` when it was not touched.
- * The item names the `write.base` of a row that joined or left its referrers (`touchedBy`), when
- * its own row was not written; settling compares its entries and refreshes it if they changed.
+ * High impact ② at the end of a request or a resolution (05-time «高影响写入» ②, its end: the
+ * referrers change, "and the item's effect is refreshed accordingly"): the targets its ref values
+ * named before or after it, and those of the rows it revoked or brought back. An open
+ * `referenced_row` item on one has its referrers found again (as of the end, the request's own rows
+ * laid over), the target's row loaded into `rows` when it was not touched. The item names the
+ * `write.base` of a row that joined or left its referrers (`touchedBy`), when its own row was not
+ * written; settling compares its entries and refreshes it if they changed.
  */
 export async function refreshReferenced(
   tx: Tx,
@@ -1485,7 +1486,7 @@ async function writeIn(
   );
   if (!which.ok) throw requestFailure(which.error);
   // The slot and its tables are in range (`visible`): a credential writes whatever it can see
-  // (04-write-and-read «可见范围»: 写入).
+  // (04-write-and-read «可见范围 · 写入»).
   const slot = visible.find((s) => s.name === which.slot) as SeenSlot;
   // The slot as the request names it: its version's names, else the current ones.
   const naming: CompiledSchema = versionNames.get(slot.slot) ?? {
@@ -1621,7 +1622,8 @@ async function writeIn(
   // The segments are numbered once the operation is: the request's, then each op's own, right
   // after it (09 §4.2); a `source_ref` is the source it names.
   // An op that leaves nothing (this time) stores no source of its own, its inline evidence
-  // included (04-contract §5.4: 不为它存源数据); the request's evidence is stored as ever (09 §5.6).
+  // included (04-contract §5.4: "no source data is stored for it"); the request's evidence is
+  // stored as ever (09 §5.6).
   const entering = (o: NormalizedOp) => nothing?.has(o.index) !== true;
   const evidence = await placeEvidence(
     tx,
@@ -1763,8 +1765,8 @@ async function writeIn(
   // over every stretch, an undo, or a write left a candidate on an entity with none). Read off its
   // state once an op changes it, not again at each comparison.
   const writtenHere = new Map<EntityId, { table: TableId; revoked: boolean }>();
-  // What `similar_keys` reads of the store, once a request.
-  const similarCache = createSimilarCache();
+  // What the request reads of the store's keys (by key, `similar_keys`, the keys shown), once.
+  const keyCache = createKeyCache();
 
   /** The edges and clearing entries this request's ops recorded so far (the fan-in counts them). */
   const recordedHere: RecordedHere = { edges: [], clears: [] };
@@ -1776,8 +1778,8 @@ async function writeIn(
    * the interval each field it writes resolved to (a no-op's too: it writes that interval), or the
    * interval a restatement gives; `deps` the givers of the hull's ends where an end was resolved
    * from another contribution, and only of those ends. An event row: its time field as written,
-   * else its value in effect after the op (`deps`: the 出处项 giving it). None (from now on): a
-   * timeless row, an empty time field, a state row's restatement or clearing without an interval.
+   * else its value in effect after the op (`deps`: the origin items giving it). None (from now on):
+   * a timeless row, an empty time field, a state row's restatement or clearing without an interval.
    */
   const depTime =
     (
@@ -2005,7 +2007,7 @@ async function writeIn(
       const token = `${table.id} ${keyToken(table, key)}`;
       byKey = createdByKey.get(token);
       if (byKey === undefined) {
-        const held = await entitiesByKey(tx, table, key);
+        const held = await entitiesByKey(tx, table, key, keyCache);
         // Keys are unique over all time (05-time): two holders is a store out of order.
         if (held.length > 1) {
           throw new WriteError("internal", "two entities hold one key", {
@@ -2043,14 +2045,14 @@ async function writeIn(
                 : {}),
               revoked: x.revoked,
             })),
-          similarCache,
+          keyCache,
         );
         if (alike.length > 0) keysAlike.set(o.index, alike);
         const first = alike.map((x) => x.key);
         const seen = new Set(first.map((k) => JSON.stringify(k)));
         const rest = [
           ...mine.map((x) => keyText(table, x.key)),
-          ...(await existingKeys(tx, table, EXISTING_KEYS)),
+          ...(await existingKeys(tx, table, EXISTING_KEYS, keyCache)),
         ].filter((k) => !seen.has(JSON.stringify(k)));
         keysShown.set(o.index, [...first, ...rest].slice(0, EXISTING_KEYS));
         byKey = input.newId("entity") as EntityId;
@@ -2147,8 +2149,8 @@ async function writeIn(
     // judged a no-op, the same value.
     let addsKey = false;
     if (o.externalKey !== undefined) {
-      // The row first (04-write-and-read: 这一行未撤销): a revoked row is `revoked`, whatever the
-      // key's state, as any update naming it.
+      // The row first (04-write-and-read «给没有来源键的行补键»: "the row is unrevoked"): a revoked
+      // row is `revoked`, whatever the key's state, as any update naming it.
       const at: Limit = { upTo: (op - 1) as OpNumber, request: { op, below: o.index } };
       const revokedBy = work.state.revokedBy(at);
       if (revokedBy.length > 0) {
@@ -2311,7 +2313,7 @@ async function writeIn(
       request: { op, below: o.index },
     };
     // Key fields: in a write by key the key joins `set`; given in `set`, a key field must be the
-    // entity's key (05-time «按 entity_key 写入»: 键字段不可改), by the same value tokens.
+    // entity's key (05-time «按 entity_key 写入 · 键字段不可改»), by the same value tokens.
     let fields = o.fields;
     const keyed = isState ? keyFields(table) : [];
     if (o.kind === "write" && keyed.length > 0) {
@@ -2346,8 +2348,8 @@ async function writeIn(
       }
       fields = merged;
     }
-    // An external key (04-write-and-read «按来源键写入»: 键字段只能经 external_key 给出): a key field
-    // in the `set` of a write by row is the key the row holds, by the same value, or
+    // An external key (04-write-and-read «按来源键写入 · 键字段只能经 external_key 给出»): a key
+    // field in the `set` of a write by row is the key the row holds, by the same value, or
     // `key_field_changed` (a row without a key included). The row's key: one an earlier op of this
     // request added (`keysAddedHere`; the index learns it only once applied), else its entry in
     // the key index.

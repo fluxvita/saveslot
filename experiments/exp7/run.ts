@@ -1,5 +1,5 @@
-// Experiment 7 runner (pre-dev-w0-experiments 实验 7: plaintext residue after a physical deletion).
-// Results: experiments/out/exp7/*.json.
+// Experiment 7 runner (pre-dev-w0-experiments, experiment 7: plaintext residue after a physical
+// deletion). Results: experiments/out/exp7/*.json.
 //
 //   node --conditions=source experiments/exp7/run.ts --backend pglite|postgres --candidate A|B|C|D
 //        [--rounds 20] [--crash] [--rows 2000] [--steps stat,wal]

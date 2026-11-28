@@ -172,7 +172,7 @@ function stretches(state: RowState, f: FieldId) {
   return out;
 }
 
-// 05-time «写状态» example: 10-01 起 5000 (#10), 11-10 起 4000 (#20).
+// 05-time «写状态» example: 5000 from 10-01 (#10), 4000 from 11-10 (#20).
 const BUDGET = [
   write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "5000" } }),
   write({ op: 20, valid: span("11-10", "open"), fields: { f2: "4000" }, ack: true }),
@@ -364,7 +364,7 @@ describe("05-time «用同样的值写»", () => {
   });
 
   it("a stale corroboration splits: the same part corroborates, the changed part is judged", () => {
-    // 05-time example "一个字段两项".
+    // 05-time «用同样的值写», the example "two items for one field".
     const { js } = run(STATE, [
       write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "5000" } }),
       write({ op: 20, seen: 10, valid: span("11-02", "11-10"), fields: { f2: "3000" }, ack: true }),
@@ -1493,8 +1493,8 @@ describe("undo on revoked rows, of confirmed reverts; write-back deps", () => {
   });
 
   it("where a write fills a hole, an optional field it does not give is empty, not the hole", () => {
-    // 05-time «无值区间»: 可选字段不带就是空. f3 is empty on both sides of 11-01 and 11-07, so
-    // writing it over everything erases no change point of it: not ①.
+    // 05-time «无值区间»: "An optional field that is not carried is empty." f3 is empty on both
+    // sides of 11-01 and 11-07, so writing it over everything erases no change point of it: not ①.
     const { js } = run(STATE, [
       write({ op: 10, seen: 0, valid: span("10-01", "open"), fields: { f2: "1" } }),
       revoke(20, span("11-01", "11-07") as RevokeInput["valid"]),

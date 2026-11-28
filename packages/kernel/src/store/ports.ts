@@ -1,4 +1,4 @@
-// The tenant storage port (docs/zh-CN/spec/02-architecture.md §8 "租户存储").
+// The tenant storage port (docs/zh-CN/spec/02-architecture.md §8 «租户存储»).
 // The kernel depends only on these interfaces; backends (PGlite, PostgreSQL) implement them.
 
 /** Where a tenant's storage lives. Given by the host; the kernel never hard-codes a path. */

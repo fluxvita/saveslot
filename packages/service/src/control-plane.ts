@@ -14,7 +14,7 @@ export type UserId = `u_${string}`;
 export type ConnectionId = `ci_${string}`;
 export type PrincipalId = UserId | ConnectionId;
 
-/** A tenant of the tenant directory, and where its storage is (§5 «租户目录», "路由"). */
+/** A tenant of the tenant directory, and where its storage is (§5 «租户目录», "Routing"). */
 export interface TenantEntry {
   readonly id: TenantId;
   /** The user who owns it (v1: a tenant is a user's). */

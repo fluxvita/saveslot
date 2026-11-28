@@ -4,7 +4,10 @@
 #   pull request:      title, dco, forbidden-terms, secrets; `pnpm check` as three jobs on the
 #                      pinned Node; age-interop when the request changes
 #                      packages/cli/src/export-crypto*, pnpm-lock.yaml or this file. All of them
-#                      are the required checks of main.
+#                      are the required checks of main. Also changesets, not required yet: it
+#                      reads the description, and an edited description does not re-run it
+#                      (the jobs run on opened, synchronize and reopened), so it waits for that
+#                      to be settled before it is required.
 #   push to a main line: forbidden-terms, secrets; `pnpm check` on the pinned Node and on Node 26
 #                      LTS; test-postgres, age-interop
 #   nightly, by hand:  the same as a push to a main line but forbidden-terms and secrets, with the
@@ -35,9 +38,10 @@
 # Jobs run as the runner's own user, not root, so the tests of files and directories that user
 # cannot read are not skipped.
 #
-# GitHub has no variable for a pull request's base commit or title, so the workflow hands them to
-# the scripts as SAVESLOT_CI_* (scripts/ci-env.ts). The title goes through the environment, never
-# into a shell line.
+# GitHub has no variable for a pull request's base commit, title or description, so the workflow
+# hands them to the scripts as SAVESLOT_CI_* (scripts/ci-env.ts): the base and the title to every
+# job, the description (SAVESLOT_CI_BODY) to changesets only. Title and description go through the
+# environment, never into a shell line.
 
 name: ci
 
@@ -89,6 +93,24 @@ jobs:
         with:
           node-version: 24.22.3
       - run: node scripts/check-dco.ts
+
+  # A fix, feature or performance change to a published package's source adds a changeset, or its
+  # description says why none is needed (`No changeset: <reason>`; scripts/check-changesets.ts).
+  # The description goes through the environment, never the command line, as the title does.
+  changesets:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      SAVESLOT_CI_BODY: ${{ github.event.pull_request.body }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.3
+      - run: node scripts/check-changesets.ts
 
   # A project-held list of terms appears nowhere in tracked files, paths, the request's commit
   # messages or title (the list is the secret SAVESLOT_FORBIDDEN_TERMS_B64; output names terms by

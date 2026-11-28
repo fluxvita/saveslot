@@ -2,7 +2,7 @@
 // within the caller's visible range, computed as of now and never logged as a read:
 // - `pending_items`: the open pending items there and when the oldest was opened, counted as
 //   `pending` lists them (the same items, the same range);
-// - `schema_updated`: the version the caller last read of the slot (04-contract §2 "什么算读到 sv",
+// - `schema_updated`: the version the caller last read of the slot (04-contract §2 «什么算读到 sv»,
 //   by actor and task as the `sv` fallback has it) is behind the current one, and what changed since.
 
 import type { CompiledSchema, PrincipalId } from "@fluxvita/saveslot-contract-core";
@@ -120,7 +120,7 @@ export interface SchemaUpdatedNotice {
   readonly slot: string;
   readonly from: number;
   readonly to: number;
-  /** What the versions since changed, as `表` or `表.字段` (04-contract-types §7). */
+  /** What the versions since changed, as `table` or `table.field` (04-contract-types §7). */
   readonly changed: readonly string[];
 }
 

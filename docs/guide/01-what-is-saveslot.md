@@ -45,7 +45,7 @@ Take one expense. A database tells you "54 yuan". Memory tells you "the user sai
 This is also why saveslot can do a few things that are hard to do elsewhere:
 
 - **After a correction, it knows who was affected.** saveslot records who read which version, so when a value is corrected it can find the tasks that read the old one.
-- **Delete a sentence, and it is really gone.** Every value records its sources, so when the user asks for a sentence to be forgotten, the values derived from it are dealt with too. (0.1.0 does not provide this yet; see the end of "Agents interpret, saveslot enforces" below.)
+- **Delete a sentence, and it is really gone.** Every value records its sources, so when the user asks for a sentence to be forgotten, the values derived from it are dealt with too. (0.2.0 does not provide this yet; see the end of "Agents interpret, saveslot enforces" below.)
 - **The data can be taken away whole.** An export is the full timeline; replayed on another backend it yields the same state. It can also be imported into another saveslot that holds no data yet (chapter 11).
 
 ## Agents interpret, saveslot enforces
@@ -66,7 +66,7 @@ saveslot's core path does not call a model. The work is divided between it and t
 
 The reason for this division: the agent is already running a model and knows best what the user means at this moment, so interpreting falls to it naturally. A layer that answers for the data cannot rest its guarantees on a model's output, so saveslot only does deterministic checking, recording and execution.
 
-One boundary follows from this and should be known in advance: **saveslot does not judge whether what is written is true.** When an agent says "the user said lunch was 54 yuan", saveslot records exactly that and keeps the evidence for later inspection. Whether the data is true, and whether a confirmation really had the user's consent, is the responsibility of the agent that calls it. saveslot guarantees three things: every write leaves a trace; for any operation that needs confirmation, what is executed is the content that was confirmed; a deletion can be cancelled within 24 hours. Chapter 2 shows the last two. (Of these, deletion is not provided in 0.1.0 yet: privacy deletion comes in a following version; see section 7 of [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md).)
+One boundary follows from this and should be known in advance: **saveslot does not judge whether what is written is true.** When an agent says "the user said lunch was 54 yuan", saveslot records exactly that and keeps the evidence for later inspection. Whether the data is true, and whether a confirmation really had the user's consent, is the responsibility of the agent that calls it. saveslot guarantees three things: every write leaves a trace; for any operation that needs confirmation, what is executed is the content that was confirmed; a deletion can be cancelled within 24 hours. Chapter 2 shows the last two. (Of these, deletion is not provided in 0.2.0 yet: privacy deletion comes in a following version; see section 7 of [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md).)
 
 ## Products built on saveslot
 

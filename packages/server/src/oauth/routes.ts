@@ -19,12 +19,14 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   type AssertionTokenResponse,
+  ContractError,
   creatingBusy,
   DEVICE_VERIFY_PATH,
   exchangeRefreshToken,
   type IdentityProvider,
   JWT_BEARER,
   type OAuthDeps,
+  poolContractError,
   redeemAssertion,
   redeemCode,
   redeemDeviceCode,
@@ -32,6 +34,7 @@ import {
   SCOPES,
   startDeviceAuthorization,
   storageRefusal,
+  TenantPoolError,
   TokenError,
   type TokenErrorCode,
   type TokenResponse,
@@ -264,12 +267,23 @@ function failed(res: ServerResponse, ctx: OAuthRoutesContext, event: string, e: 
 
 /**
  * The `Retry-After` of an error that is the tenant's storage refusing this process, logged as a
- * call's is (`tenant_format_too_new`); undefined for any other error.
+ * call's is (`tenant_format_too_new`), or the pool not lending the tenant now; undefined for any
+ * other error.
  */
 function refusedBy(ctx: OAuthRoutesContext, e: unknown): string | undefined {
   const refused = storageRefusal(e);
   if (refused === "format_too_new") ctx.warn("tenant_format_too_new", {});
-  return refused === undefined ? undefined : "1";
+  if (refused !== undefined) return "1";
+  // The pool's refusals the contract answers `unavailable` (an import or a restore holding the
+  // tenant, here or in another process; no connection free yet): a retry later, as a request's.
+  if (e instanceof TenantPoolError) {
+    const c = poolContractError(e);
+    if (c instanceof ContractError && (c.code === "unavailable" || c.code === "rate_limited")) {
+      const after = c.detail["retry_after"];
+      return String(typeof after === "number" ? after : 1);
+    }
+  }
+  return undefined;
 }
 
 /** A page's answer; an internal error is a plain 500, without anything of it. */

@@ -1,5 +1,5 @@
 // Value encodings of event format v1 (docs/zh-CN/spec/09-event-format.md §1.2–§1.4) and the
-// identifier shapes of docs/zh-CN/spec/03-data-model/01-objects.md「标识的写法」.
+// identifier shapes of docs/zh-CN/spec/03-data-model/01-objects.md «标识的写法».
 //
 // Identifier and value types are template literal types rather than nominal brands: they reject
 // wrong prefixes and JSON numbers where strings are required at compile time, while the spec's
@@ -160,13 +160,13 @@ export type JsonObject = { readonly [key: string]: JsonValue };
 // Runtime shape predicates
 
 const CROCKFORD = "[0-9A-HJKMNP-TV-Z]";
-/** The `n` of a short ID: from 1, no leading zeros, at most 9 digits (01-objects 「标识的写法」). */
+/** The `n` of a short ID: from 1, no leading zeros, at most 9 digits (01-objects «标识的写法»). */
 const SHORT_NUMBER = "[1-9][0-9]{0,8}";
 
 /**
- * Full syntax of each identifier kind (01-objects.md「标识的写法」). Short IDs (`t<n>`, `f<n>`,
+ * Full syntax of each identifier kind (01-objects.md «标识的写法»). Short IDs (`t<n>`, `f<n>`,
  * `r<n>`): `n` is a decimal integer from 1 without leading zeros, at most 9 digits, so physical
- * table names stay well within PostgreSQL's 63-byte identifiers (01-objects 「标识的写法」).
+ * table names stay well within PostgreSQL's 63-byte identifiers (01-objects «标识的写法»).
  */
 export const ID_PATTERNS = {
   tenant: new RegExp(`^tn_${CROCKFORD}{26}$`),

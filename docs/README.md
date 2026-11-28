@@ -2,7 +2,7 @@
 
 The guide and the specification have two editions, English and Chinese, aligned in meaning. Each file links the other edition at its head. A change to one changes the other in the same pull request, and a difference between them is a defect, to be reported as an issue.
 
-All guide and specification documents have an English edition. The decision records, walkthroughs and experiment reports under `zh-CN/process/` and the research notes under `zh-CN/research/` are in Chinese only for now; their English edition is pending.
+All guide and specification documents have an English edition. The decision records, walkthroughs and experiment reports under `zh-CN/process/` and the research notes under `zh-CN/research/` are in Chinese only, and no English edition is scheduled.
 
 ## Guide
 
@@ -52,9 +52,9 @@ All guide and specification documents have an English edition. The decision reco
 | saveslot · Eval specification | [`spec/10-evals.md`](spec/10-evals.md) | [`zh-CN/spec/10-evals.md`](zh-CN/spec/10-evals.md) |
 | saveslot · Claims index | [`spec/11-claims.md`](spec/11-claims.md) | [`zh-CN/spec/11-claims.md`](zh-CN/spec/11-claims.md) |
 
-## Chinese only for now
+## Chinese only
 
-- [`zh-CN/process/`](zh-CN/process/README.md): decision records, walkthroughs and experiment reports. English edition pending.
-- [`zh-CN/research/`](zh-CN/research/): research notes. English edition pending.
+- [`zh-CN/process/`](zh-CN/process/README.md): decision records, walkthroughs and experiment reports. In Chinese only.
+- [`zh-CN/research/`](zh-CN/research/): research notes. In Chinese only.
 
 A link marked "(Chinese)" in an English document leads to a document that has no English edition yet (process and research).

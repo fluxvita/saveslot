@@ -350,11 +350,11 @@ describe.each(both)("%s table", (_, schema, state) => {
   });
 
   it("a revert never falls back to the reverted value", () => {
-    // 03-deletion «回掉的权威定义» step 3: "任何情况下都不落回被回掉的项自己的值". Two checks, each a
-    // hit: a segment given by a revert's write-back item carries its value from no write the
-    // revert lists; and a segment given by an item registered as reverted lies outside its
-    // registrations. On an event table an item is registered as a whole and gives no value at
-    // all: an item registered as reverted is a hit.
+    // 03-deletion «回掉的权威定义» step 3: "In no case does it fall back to the value of the reverted item
+    // itself." Two checks, each a hit: a segment given by a revert's write-back item carries its
+    // value from no write the revert lists; and a segment given by an item registered as reverted
+    // lies outside its registrations. On an event table an item is registered as a whole and gives
+    // no value at all: an item registered as reverted is a hit.
     // Measured share of hits: about 0.67 (state) and 0.75 (event).
     const hits = new Hits(0.5);
     fc.assert(

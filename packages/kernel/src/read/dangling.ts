@@ -1,5 +1,6 @@
 // Ref values pointing at a row or entity revoked since (04-contract §7 `dangling_ref`;
-// 03-data-model/04-write-and-read «引用字段»: 目标被撤销, 引用方不动、保留原 ID，读取时带标记).
+// 03-data-model/04-write-and-read «引用字段 · 目标被撤销»: "the referencing row is not touched and
+// keeps the original ID", and when read it carries a mark).
 //
 // Of the rows a read gives, the targets their ref fields name that are revoked as the read sees
 // them: now, or as of a record time (`asOf`). An event or timeless row revoked; a state entity with

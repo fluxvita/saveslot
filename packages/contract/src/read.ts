@@ -466,6 +466,11 @@ export interface AsOfResult extends CommonResult, PageResult {
   /** The slot's time zone now (as in `catalog`): the instants of the result are shown in it. */
   timezone: string;
   rows: Row[];
+  /**
+   * Something a deletion still pending removed was left out: a row is marked `partially_deleted`,
+   * or a stretch is not listed (nothing of it left; or a `valid_at` only a withheld end could decide).
+   */
+  partially_deleted?: true;
   /** `as_of: {task}`: the task's other reads of this target. */
   other_reads?: Array<{ read: ReadId; seq: Seq; at: Instant }>;
 }

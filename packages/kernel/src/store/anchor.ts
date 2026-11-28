@@ -1,5 +1,5 @@
-// The anchor store port (docs/zh-CN/spec/02-architecture.md §8 "锚点存储";
-// entries: docs/zh-CN/spec/03-data-model/03-deletion.md "删除登记").
+// The anchor store port (docs/zh-CN/spec/02-architecture.md §8 «锚点存储»;
+// entries: docs/zh-CN/spec/03-data-model/03-deletion.md «删除登记»).
 //
 // The anchor store keeps what must be remembered after a tenant's storage is replaced as a whole:
 // the deletion registry, the `seq` high water mark, the restore count, and the "restore in progress"

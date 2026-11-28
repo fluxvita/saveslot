@@ -1,4 +1,4 @@
-// The passphrase encryption of an export file (docs/zh-CN/spec/06-cli.md §4.8 "导出的口令加密"):
+// The passphrase encryption of an export file (docs/zh-CN/spec/06-cli.md §4.8 «导出的口令加密»):
 // the whole export stream, manifest line included, in an age v1 file with a passphrase (scrypt)
 // recipient. The format is age's own, so any age implementation opens it; there is no container
 // of ours. Where the passphrase comes from, and what it must look like, is decided here; the

@@ -1,5 +1,6 @@
 // `delta`'s `stateAt` on PGlite: a target's state at a version position read from the version table
-// (the cells in effect then), and the 出处项 from the sources table; compared by `targetDelta`.
+// (the cells in effect then), and the origin items from the sources table; compared by
+// `targetDelta`.
 
 import {
   appendOperation,
@@ -229,7 +230,7 @@ describe("stateAt of a row", () => {
     ]);
   });
 
-  it("reads the 出处项 only when asked, and tells another giver of the same value apart", async () => {
+  it("reads the origin items only when asked, and tells another giver of the same value apart", async () => {
     const feeling = idOf(table("runs"), "feeling");
     const plain = await at("runs", run, ops["update"] as number);
     expect(plain.kind === "row" && plain.fields[feeling]?.source).toBe("");
@@ -289,8 +290,8 @@ describe("stateAt of a row", () => {
       await at("runs", run, medium, true),
     ];
     const source = (x: typeof was) => (x.kind === "row" ? (x.fields[feeling]?.source ?? "") : "");
-    // The undo writes "hard" back from the earlier contribution: the same 出处项 as before the
-    // update to "medium", though the write that put it back is another item.
+    // The undo writes "hard" back from the earlier contribution: the same origin items as before
+    // the update to "medium", though the write that put it back is another item.
     expect(source(now)).toBe(source(was));
     expect(source(between)).not.toBe(source(was));
     expect(targetDelta(was, now)).toEqual([]);

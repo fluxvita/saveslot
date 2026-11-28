@@ -472,10 +472,11 @@ function compare(
         // Indices are not compared after a cancellation; status, interval and value are. An index
         // the cancelled deletion alone gave is left without a block, and the kernel and the
         // reference number the items left on that target differently, one 0 and the other 1
-        // (decision record `index-given-only-by-cancelled-deletion.md` §1). Its §7: "撤回之后的性质
-        // 比较继续不比下标". The second part of that decision (spec, kernel, reference) restates
-        // such an index as dropped and gives the item left a new number; its fixed cases (§8)
-        // compare the indices again then. Seed -1335765174 is held below.
+        // (decision record `index-given-only-by-cancelled-deletion.md` §1). Its §7: "after a
+        // cancellation the property comparison still does not compare indices". The second part of
+        // that decision (spec, kernel, reference) restates such an index as dropped and gives the
+        // item left a new number; its fixed cases (§8) compare the indices again then. Seed
+        // -1335765174 is held below.
         const indexed = () => false;
         expect({
           items: itemKeys(

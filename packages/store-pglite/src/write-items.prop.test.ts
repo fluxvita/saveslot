@@ -11,7 +11,7 @@
 //   theirs, the earliest, the merge base the earliest version a candidate saw;
 // and an open item is refreshed for being reached, or superseded, by a step exactly when the
 // reference evaluator's state before and after the step differ on the item's unit within its
-// interval: the conflict criterion's "改到", judged by a different implementation from the
+// interval: the conflict criterion's "changes", judged by a different implementation from the
 // pipeline's. In some samples the steps share a task, so a writer's own receipt of an item makes
 // it read and a reached item is superseded unless joined or refreshed since; in the others each
 // step has its own, and reached items are refreshed.
@@ -1071,8 +1071,8 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
                   return y.valid === undefined ? y : { ...y, valid: spanIn(y.valid) };
                 });
 
-            // "改到": the open items before this step, against the reference before and after it. A
-            // refresh for changed entries (`entries_changed`) is not one.
+            // "Changes": the open items before this step, against the reference before and after
+            // it. A refresh for changed entries (`entries_changed`) is not one.
             const reachedNow = new Set(
               evs
                 .filter(

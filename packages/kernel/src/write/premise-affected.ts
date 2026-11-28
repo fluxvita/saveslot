@@ -3,14 +3,14 @@
 // those on which it took one away.
 //
 // Rows, not declarations: a declaration this operation marked counts for its dependent row when the
-// mark shows there right after the operation (02-integrity «标记出现在哪一行»: it covers a 出处项 of
-// a value the row has then); one taken back counts when it showed right before. The receipt is the
-// same whether given now or rebuilt from the log later (04-contract §14), so both are read as of
-// the operation, not as of now: the row's cells and their 出处项 at that version position (a
-// corroboration reverted only by registrations up to it), and which declarations were in force on
-// them then, rebuilt from the log (the heads that declared, restated and cleared on the row, and the
-// items of their base writes, in (operation, op index) order, as apply keeps `premise_edges`):
-// `premise_edges` holds only what is in force now.
+// mark shows there right after the operation (02-integrity «标记出现在哪一行»: it covers an origin
+// item of a value the row has then); one taken back counts when it showed right before. The receipt
+// is the same whether given now or rebuilt from the log later (04-contract §14), so both are read
+// as of the operation, not as of now: the row's cells and their origin items at that version
+// position (a corroboration reverted only by registrations up to it), and which declarations were
+// in force on them then, rebuilt from the log (the heads that declared, restated and cleared on the
+// row, and the items of their base writes, in (operation, op index) order, as apply keeps
+// `premise_edges`): `premise_edges` holds only what is in force now.
 //
 // A dependent row on a table the caller cannot see counts and is not listed. `rows` lists one entry
 // for each declaration marked on a row, at most 20, by row and then declaration.

@@ -1,5 +1,5 @@
 // Storage format v1: the kernel's own tables in a tenant's storage
-// (docs/zh-CN/spec/02-architecture.md §8 "存储格式 v1"). One DDL script shared by both backends.
+// (docs/zh-CN/spec/02-architecture.md §8 «存储格式 v1»). One DDL script shared by both backends.
 //
 // The spec lists each table's primary key, key columns and maintainer; the remaining columns here
 // are the implementation's. Until the first public release of local mode the format is not frozen:
@@ -30,13 +30,13 @@
  */
 export const STORAGE_FORMAT_VERSION = 5;
 
-/** Where a table's state comes from (§3 "日志是唯一事实来源"). */
+/** Where a table's state comes from (§3 «日志是唯一事实来源»). */
 export type StateClass = "fact" | "materialized" | "local";
 
 export interface KernelTable {
   readonly name: string;
   readonly class: StateClass;
-  /** Materialized tables only: compared by `log.reconcile` (§8 "对拍" column). */
+  /** Materialized tables only: compared by `log.reconcile` (§8 "Replay comparison" column). */
   readonly reconciled?: boolean | "structure";
   readonly ddl: string;
 }
@@ -44,7 +44,7 @@ export interface KernelTable {
 const T = 'TEXT COLLATE "C"';
 
 /**
- * Fixed session settings (§8 "固定的会话设置"). Applied on every connection by the backend.
+ * Fixed session settings (§8 «固定的会话设置»). Applied on every connection by the backend.
  * The database encoding must be UTF8 (checked at open; it cannot be set per session).
  */
 export const SESSION_SETTINGS = [
@@ -224,8 +224,8 @@ CREATE INDEX block_deps_dep ON block_deps (dep_event, dep_field, dep_k);`,
   },
   {
     // The blocks a pending deletion lists (09 §5.9 `positions`): read no more from its confirmation
-    // on (§3.3 "待删除"), cleared by its tombstone, readable again when it is cancelled and no other
-    // pending deletion lists them. One row a deletion and block.
+    // on (09 §3.3 «待删除»), cleared by its tombstone, readable again when it is cancelled and no
+    // other pending deletion lists them. One row a deletion and block.
     name: "pending_blocks",
     class: "materialized",
     reconciled: true,

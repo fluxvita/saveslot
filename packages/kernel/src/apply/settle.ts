@@ -258,7 +258,7 @@ function settleRow(table: SettleTable, items: readonly SettleItem[]): Settled {
 
 // --- "reverted" registrations (09 §5.7 `revert`; 03-deletion «回掉的权威定义» steps 2, 3, 5) --------
 
-/** Step 3, "x 取代 r": by the kinds of content only. */
+/** Step 3, "x supersedes r": by the kinds of content only. */
 export function supersedes(x: SettleItem, r: SettleItem): boolean {
   const xFillsValue = x.target !== "existence" && x.content.kind === "value";
   if (r.content.kind === "revoke") return x.content.kind === "restore" || xFillsValue;

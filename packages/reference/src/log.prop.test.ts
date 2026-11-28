@@ -42,6 +42,13 @@ fc.configureGlobal({
   ...(process.env["PROP_PATH"] ? { path: process.env["PROP_PATH"], endOnFailure: true } : {}),
 });
 
+/**
+ * Decisions and `undo` in the grace period on a row a pending deletion affects, allowed: the rule
+ * the decision record grace-period-no-decisions.md sets aside for a later version ("之后要放开时"),
+ * not the first version's spec, which refuses them (03-deletion «撤回与宽限期»). Only the
+ * evaluator's own cases pass it; nothing here is compared with the kernel.
+ */
+const ALLOWED = { graceDecisions: "allowed" } as const;
 const STATE: TableSchema = { kind: "state", required: ["f2"] };
 const EVENT: TableSchema = { kind: "event", required: ["f2"] };
 const DAYS = ["11-01", "11-03", "11-05", "11-07", "11-09"].map((x) => `2026-${x}` as BizPoint);
@@ -774,7 +781,7 @@ const counts = {
   restoredByCancel: 0,
   keptEffective: 0,
   refusedInBase: 0,
-  putBackDiffers: 0,
+  putBack: 0,
   withDecisions: 0,
   decidedInGrace: 0,
   decidedDiffers: 0,
@@ -851,7 +858,8 @@ function noEndpointLeak(full: readonly LogEntry[], run: LogEvaluation): void {
  * cancellation kept in effect forced in effect and those it kept superseded forced out. Compared:
  * field values outside grace-period coverage, and the judgement and openness of every item of
  * the operations in `prefix`. The cancellation's own rules go first: a grace-period decision the
- * replay refuses, and a candidate put back and judged again, are compared by what they gave.
+ * replay refuses is compared by what it gave; a candidate put back keeps, in the replay too, the
+ * judgement the cancellation gave it, which is checked on its own against the state there.
  * Undefined when the deletion itself is refused.
  */
 /** Grace-period resolutions' candidates partly the same as the value after the cancellation. */
@@ -863,21 +871,24 @@ function checkCancelRestores(
   withD: readonly LogEntry[],
   graceAll: readonly LogEntry[],
   cancelOp: number,
+  /** Decisions in the grace period: refused on the affected row (the first version) or allowed. */
+  graceDecisions: "refused" | "allowed" = "refused",
 ):
   | {
       kept: number;
       refusedInBase: number;
-      putBackDiffers: number;
+      putBack: number;
       withDecisions: boolean;
       decided: { nonEmpty: boolean; differs: boolean };
     }
   | undefined {
+  const GRACE = { graceDecisions } as const;
   const state = schema.kind === "state";
-  const run = evaluateLog(schema, [
-    ...withD,
-    ...graceAll,
-    { kind: "cancel", op: cancelOp, id: "pi_d" },
-  ]);
+  const run = evaluateLog(
+    schema,
+    [...withD, ...graceAll, { kind: "cancel", op: cancelOp, id: "pi_d" }],
+    GRACE,
+  );
   // Entries refused in the run never entered the log; the baseline has none of them.
   const refused = new Set(run.steps.filter((x) => x.refused).map((x) => x.entry));
   if (refused.has(withD[withD.length - 1] as LogEntry)) return undefined;
@@ -894,11 +905,68 @@ function checkCancelRestores(
       decidedInGrace.set(st.entry.op, st.decided);
     }
   }
+  // Candidates the cancellation put back keep the judgement it gave them on the state at the
+  // cancellation (03-deletion «撤回与宽限期»), in every replay after it: the baseline too. That
+  // judgement is checked against the state at the cancellation below.
+  const putBack = (cancelStep?.putBack ?? []).map((x) => ({ ...x, at: cancelOp }));
+  // The re-judgement itself, against the state at the cancellation (the run's last step), not
+  // through what the evaluator recorded: a put-back candidate the same as the value in effect
+  // over its whole interval is a corroboration with evidence pointed at, a no-op without;
+  // otherwise a candidate (03-deletion «撤回与宽限期»). Its interval is the one it resolves to at
+  // its own write number after the cancellation: read from the same log with it forced to stay a
+  // candidate (a candidate, a no-op and a put-back corroboration give no value, so nothing else
+  // changes).
+  const runLog: LogEntry[] = [...withD, ...graceAll, { kind: "cancel", op: cancelOp, id: "pi_d" }];
+  for (const x of cancelStep?.putBack ?? []) {
+    const o = [...withD, ...graceAll].find(
+      (e): e is WriteOp => e.kind === "write" && e.event === x.event,
+    );
+    // Only a write's field candidates are put back (`cancelDeletion`).
+    if (x.target === "existence") continue;
+    const f = x.target;
+    const input = o?.fields[f];
+    if (o === undefined || input === undefined) continue;
+    const live = cancelled.items.filter(
+      (y) => y.event === x.event && y.target === x.target && y.status !== "dropped",
+    );
+    const asCandidate = evaluateLog(schema, runLog, {
+      ...GRACE,
+      forcedRejudged: [{ ...x, judged: "candidate", at: cancelOp }],
+    }).final;
+    const valid = union(
+      ...asCandidate.items
+        .filter((y) => y.event === x.event && y.target === x.target && y.status === "candidate")
+        .map((y) => y.valid),
+    );
+    const segs = state
+      ? elementarySegments(
+          endpoints([valid, ...(cancelled.fields[f] ?? []).map((g) => g.valid)]),
+        ).filter((g) => covers(valid, g))
+      : [{ from: null, to: null }];
+    const same =
+      segs.length > 0 &&
+      (state || cancelled.exists) &&
+      segs.every(
+        (g) =>
+          JSON.stringify((cancelled.fields[f] ?? []).find((h) => covers(h.valid, g))?.value) ===
+          JSON.stringify(input.value),
+      );
+    const want = same ? (input.explicit ? "corroborated" : "dropped") : "candidate";
+    expect({ putBack: etKey(x), judged: x.judged }).toEqual({ putBack: etKey(x), judged: want });
+    if (want === "candidate") {
+      expect({ putBack: etKey(x), live: live.map((y) => y.status) }).toEqual({
+        putBack: etKey(x),
+        live: live.map(() => "candidate"),
+      });
+    }
+  }
   const baseLog = [...prefix.filter((e) => !refused.has(e)), ...grace];
   const baseRun = evaluateLog(schema, baseLog, {
+    ...GRACE,
     forcedEffective: kept,
     forcedSuperseded: cancelStep?.keptSuperseded ?? [],
     forcedDecided: decidedInGrace,
+    forcedRejudged: putBack,
   });
   const base = baseRun.final;
   // Checked without the record passed: each grace-period decision's items are, after the
@@ -974,7 +1042,12 @@ function checkCancelRestores(
               ? [{ kind: "deletion" as const, op: at + 0.5, id: "pi_at", sources: later }]
               : []),
           ],
-          { forcedEffective: kept, forcedSuperseded: cancelStep?.keptSuperseded ?? [] },
+          {
+            ...GRACE,
+            forcedEffective: kept,
+            forcedSuperseded: cancelStep?.keptSuperseded ?? [],
+            forcedRejudged: putBack,
+          },
         ).final;
       };
       const seenState = stateAt(seenAt);
@@ -1026,17 +1099,6 @@ function checkCancelRestores(
   const graceEvents = new Set(
     grace.filter((e): e is Op => e.kind !== "deletion" && e.kind !== "cancel").map((e) => e.event),
   );
-  // A candidate the cancellation put back is judged again on the state at the cancellation
-  // (03-deletion «撤回与宽限期»), which is the definition; the forced replay may judge it otherwise
-  // (a write kept in effect can change its judgement there). Where the two judgements differ, its
-  // intervals go by the cancellation's, not the replay's (03-deletion «推论» «撤回还原»).
-  const putBackOf = (ev: Evaluation, x: { event: number; target: string }) =>
-    ev.items.filter((y) => y.event === x.event && y.target === x.target);
-  const judgedAs = (items: ItemResult[]) =>
-    JSON.stringify(items.map((y) => [y.status, y.closed === true, y.valid]));
-  const putBackDiffers = (cancelStep?.putBack ?? []).filter(
-    (x) => judgedAs(putBackOf(cancelled, x)) !== judgedAs(putBackOf(base, x)),
-  );
   for (const f of ["f2", "f3"] as FieldId[]) {
     const coveredBy = (ev: Evaluation): IvSet[] =>
       ev.items
@@ -1050,15 +1112,7 @@ function checkCancelRestores(
               schema.required.includes(x.target as FieldId)),
         )
         .map((x) => x.valid);
-    const rejudged = putBackDiffers
-      .filter(
-        (x) =>
-          x.target === f ||
-          x.target === "existence" ||
-          schema.required.includes(x.target as FieldId),
-      )
-      .flatMap((x) => [...putBackOf(cancelled, x), ...putBackOf(base, x)].map((y) => y.valid));
-    const covered = union(...coveredBy(cancelled), ...coveredBy(base), ...rejudged);
+    const covered = union(...coveredBy(cancelled), ...coveredBy(base));
     const sets: IvSet[] = [covered, cancelled.gaps, base.gaps];
     for (const ev of [cancelled, base]) for (const x of ev.fields[f] ?? []) sets.push(x.valid);
     const segs = state ? elementarySegments(endpoints(sets)) : [{ from: null, to: null }];
@@ -1076,7 +1130,7 @@ function checkCancelRestores(
   const prefixEvents = new Set(
     prefix.filter((e): e is Op => e.kind !== "deletion" && e.kind !== "cancel").map((e) => e.event),
   );
-  const excluded = new Set((cancelStep?.putBack ?? []).map((x) => String(x.event)));
+  const excluded = new Set<string>();
   // A decision taken in the grace period is judged on the state after the deletion, and stays
   // in effect after the cancellation (03-deletion «撤回与宽限期»). The baseline may refuse it
   // (a take_candidate whose required field has no value there without the deletion): what it
@@ -1107,8 +1161,10 @@ function checkCancelRestores(
     JSON.stringify(
       judgement(
         evaluateLog(schema, baseLog, {
+          ...GRACE,
           forcedEffective: kept,
           forcedSuperseded: cancelStep?.keptSuperseded ?? [],
+          forcedRejudged: putBack,
         }).final,
       ),
     ) !== JSON.stringify(judgement(base));
@@ -1117,7 +1173,7 @@ function checkCancelRestores(
   return {
     kept: kept.length,
     refusedInBase: refusedInBase.length,
-    putBackDiffers: putBackDiffers.length,
+    putBack: putBack.length,
     withDecisions: grace.some(
       (e) =>
         e.kind === "resolve" || e.kind === "confirm" || e.kind === "reject" || e.kind === "undo",
@@ -1329,7 +1385,8 @@ describe.each(both)("%s table", (_, schema, state) => {
     // writes in between: nothing is kept in effect.
     // Unless the cancellation keeps an item superseded, which a write made while a candidate was
     // taken out by any pending deletion can cause, an earlier one in the log too, cancelled since:
-    // "结果只取决于被删集合"只在宽限期内没有写入、撤回没有留下保持生效与保持已被取代时成立
+    // "the result depends only on the deleted set" holds only when there were no writes during
+    // the grace period and cancelling left no kept-in-effect or kept-superseded cases
     // (03-deletion «撤回与宽限期»). Such an order is not compared, and counted (`cancelKeeps`); the
     // fixed case below holds one.
     // Measured share of hits: about 0.66 (state) and 0.64 (event).
@@ -1419,8 +1476,8 @@ describe.each(both)("%s table", (_, schema, state) => {
               e.kind === "deletion" && !cancelledThen.has(e.id) ? [e.id] : [],
             ),
           );
-          const asThen = evaluateLog(schema, prefix).final;
-          const withoutPending = evaluateLog(
+          const asThen = evaluate(schema, prefix).final;
+          const withoutPending = evaluate(
             schema,
             prefix.filter((e) => !(e.kind === "deletion" && pendingThen.has(e.id))),
           ).final;
@@ -1753,10 +1810,18 @@ describe.each(both)("%s table", (_, schema, state) => {
           },
           { kind: "cancel", op: 60, id: "pi_7" },
         ];
+        // The take falls in pi_7's grace period on the row it affects: refused in the first
+        // version (03-deletion «撤回与宽限期»), taken under the rule set aside for later
+        // (`graceDecisions: "allowed"`), which is what reaches the restorable values.
+        const allowed: typeof evaluateLog = (sc, l, o = {}) =>
+          evaluateLog(sc, l, { ...o, graceDecisions: "allowed" });
+        expect(
+          evaluateLog(schema, log).steps.find((x) => x.entry.op === 50)?.pendingDeletionTarget,
+        ).toEqual(["pi_7"]);
         const before = restorableMet;
-        check({ hit() {} }, log);
+        check({ hit() {} }, log, undefined, allowed);
         expect({ restorableMet: restorableMet > before }).toEqual({ restorableMet: true });
-        expect(evaluateLog(schema, log).final.fields["f2"]?.[0]?.value).toBe("5");
+        expect(allowed(schema, log).final.fields["f2"]?.[0]?.value).toBe("5");
       }
       // The event table, a write carried from the item's candidate (seed 1554879808): #21 is a
       // candidate against #11, undone by #31 and that undo undone by #41. Without the resolution,
@@ -2087,44 +2152,56 @@ describe.each(both)("%s table", (_, schema, state) => {
     // grace-period decision the replay refuses: the decision stays in effect, so what it closed
     // is covered by the grace period (the fixed case below).
     // Measured share of hits: about 0.89 on both tables.
-    const hits = new Hits(0.75);
-    fc.assert(
-      fc.property(
-        withTwoSets(schema),
-        fc.array(graceStep, { maxLength: 3 }),
-        fc.boolean(),
-        hits.track(({ st, a: sources }, graceSteps, lateVer) => {
-          const prefix = extend(schema, [], st, 10);
-          const prefixRun = evaluateLog(schema, prefix);
-          const pending = pendingSources(prefixRun);
-          const dSources = sources.filter((x) => !pending.has(x));
-          fc.pre(dSources.length > 0);
-          if (changes(schema, prefix, dSources)) hits.hit();
-          const dOp = Math.max(...prefix.map((o) => o.op)) + 10;
-          const withD: LogEntry[] = [
-            ...prefix,
-            { kind: "deletion", op: dOp, id: "pi_d", sources: dSources },
-          ];
-          let grace = extend(schema, withD, graceSteps, dOp + 10, "G").slice(withD.length);
-          // With `lateVer`, grace-period writes carry the version after the confirmation, so they
-          // can make the cancellation keep a write in effect.
-          grace = grace.map((e) =>
-            (e.kind === "write" || e.kind === "revoke") && lateVer ? { ...e, seen: e.op - 1 } : e,
-          );
-          const cancelOp = dOp + 10 * (graceSteps.length + 2);
-          const checked = checkCancelRestores(schema, prefix, withD, grace, cancelOp);
-          fc.pre(checked !== undefined);
-          counts.keptEffective += checked.kept;
-          counts.refusedInBase += checked.refusedInBase;
-          counts.putBackDiffers += checked.putBackDiffers;
-          if (checked.decided.nonEmpty) counts.decidedInGrace++;
-          if (checked.decided.differs) counts.decidedDiffers++;
-          if (checked.withDecisions) counts.withDecisions++;
-        }),
-      ),
-      { numRuns: RUNS },
-    );
-    hits.check();
+    // Run twice: the first version (grace-period decisions on the affected row refused) and the
+    // rule set aside for later (`graceDecisions: "allowed"`: a decision is as recorded in every
+    // replay, put-back candidates keep the judgement the cancellation gave them).
+    for (const graceDecisions of ["refused", "allowed"] as const) {
+      const hits = new Hits(0.75);
+      fc.assert(
+        fc.property(
+          withTwoSets(schema),
+          fc.array(graceStep, { maxLength: 3 }),
+          fc.boolean(),
+          hits.track(({ st, a: sources }, graceSteps, lateVer) => {
+            const prefix = extend(schema, [], st, 10);
+            const prefixRun = evaluateLog(schema, prefix);
+            const pending = pendingSources(prefixRun);
+            const dSources = sources.filter((x) => !pending.has(x));
+            fc.pre(dSources.length > 0);
+            if (changes(schema, prefix, dSources)) hits.hit();
+            const dOp = Math.max(...prefix.map((o) => o.op)) + 10;
+            const withD: LogEntry[] = [
+              ...prefix,
+              { kind: "deletion", op: dOp, id: "pi_d", sources: dSources },
+            ];
+            let grace = extend(schema, withD, graceSteps, dOp + 10, "G").slice(withD.length);
+            // With `lateVer`, grace-period writes carry the version after the confirmation, so they
+            // can make the cancellation keep a write in effect.
+            grace = grace.map((e) =>
+              (e.kind === "write" || e.kind === "revoke") && lateVer ? { ...e, seen: e.op - 1 } : e,
+            );
+            const cancelOp = dOp + 10 * (graceSteps.length + 2);
+            const checked = checkCancelRestores(
+              schema,
+              prefix,
+              withD,
+              grace,
+              cancelOp,
+              graceDecisions,
+            );
+            fc.pre(checked !== undefined);
+            counts.keptEffective += checked.kept;
+            counts.refusedInBase += checked.refusedInBase;
+            counts.putBack += checked.putBack;
+            if (checked.decided.nonEmpty) counts.decidedInGrace++;
+            if (checked.decided.differs) counts.decidedDiffers++;
+            if (checked.withDecisions) counts.withDecisions++;
+          }),
+        ),
+        { numRuns: RUNS },
+      );
+      hits.check();
+    }
   });
 
   it("an accepted undo of a revert leaves none of that revert's write-back items giving a value", () => {
@@ -2146,85 +2223,97 @@ describe.each(both)("%s table", (_, schema, state) => {
     });
     // An undo of a revert with no write-back is rejected, so on the event table (X covers W
     // whole) only the skeletons deleting X before the second undo reach the check.
-    // Measured share of hits: about 0.79 (state) and 0.45 (event).
-    const hits = new Hits(state ? 0.6 : 0.3);
-    fc.assert(
-      fc.property(
-        steps,
-        skeleton,
-        fc.array(step, { maxLength: 3 }),
-        hits.track((st, sk, tail) => {
-          const head = extend(schema, [], st, 10);
-          const at = Math.max(...head.map((o) => o.op)) + 10;
-          const span = ([a, b]: [number, number]) =>
-            state
-              ? {
-                  valid: {
-                    from: { mode: "given" as const, value: DAYS[a] as BizPoint },
-                    to: { mode: "given" as const, value: DAYS[Math.max(b, a + 1)] ?? "2026-12-01" },
-                  },
+    // Run twice. In the first version (the default) an undo on a row a pending deletion affects
+    // is refused (03-deletion «撤回与宽限期»), so the second undo with X's deletion pending is
+    // not accepted. Under the rule the decision record grace-period-no-decisions.md sets aside
+    // for later (`graceDecisions: "allowed"`) it is, which is how the undo of a revert regains
+    // write-backs through a pending deletion (`undoOfRevertRegained`).
+    // Measured share of hits: first version about 0.3 (state) and 0.004 (event: there only a
+    // second undo with X's deletion pending reaches the check, refused now; no floor, the fixed
+    // cases of the refusal in log.test.ts hold it); allowed about 0.79 (state) and 0.45 (event).
+    for (const graceDecisions of ["refused", "allowed"] as const) {
+      const hits = new Hits(graceDecisions === "allowed" ? (state ? 0.6 : 0.3) : state ? 0.1 : 0);
+      fc.assert(
+        fc.property(
+          steps,
+          skeleton,
+          fc.array(step, { maxLength: 3 }),
+          hits.track((st, sk, tail) => {
+            const head = extend(schema, [], st, 10);
+            const at = Math.max(...head.map((o) => o.op)) + 10;
+            const span = ([a, b]: [number, number]) =>
+              state
+                ? {
+                    valid: {
+                      from: { mode: "given" as const, value: DAYS[a] as BizPoint },
+                      to: {
+                        mode: "given" as const,
+                        value: DAYS[Math.max(b, a + 1)] ?? "2026-12-01",
+                      },
+                    },
+                  }
+                : {};
+            const body: LogEntry[] = [
+              {
+                kind: "write",
+                op: at,
+                event: at + 1,
+                ...span(sk.w),
+                fields: { f2: { value: "7", sources: ["SW"] } },
+              },
+              {
+                kind: "write",
+                op: at + 10,
+                event: at + 11,
+                ...span(sk.x),
+                fields: { f2: { value: "8", sources: ["SX"] } },
+              },
+              {
+                kind: "undo",
+                op: at + 20,
+                event: at + 21,
+                target: at,
+                seen: at + 10,
+                acknowledge: ["overwrite"],
+              },
+              ...(sk.deleteX === "before"
+                ? [{ kind: "deletion" as const, op: at + 25, id: "pi_x", sources: ["SX"] }]
+                : []),
+              {
+                kind: "undo",
+                op: at + 30,
+                event: at + 31,
+                target: at + 20,
+                seen: at + 20,
+                acknowledge: ["overwrite"],
+              },
+              ...(sk.deleteX === "after"
+                ? [{ kind: "deletion" as const, op: at + 40, id: "pi_x", sources: ["SX"] }]
+                : []),
+            ];
+            const log = extend(schema, [...head, ...body], tail, at + 50);
+            const ev = evaluateLog(schema, log, { graceDecisions }).final;
+            const status = new Map(ev.reverts.map((r) => [r.op, r]));
+            for (const u of log) {
+              if (u.kind !== "undo") continue;
+              const undo = status.get(u.op);
+              const target = status.get(u.target);
+              if (undo?.status !== "applied" || target?.status !== "applied") continue;
+              counts.undoOfRevert++;
+              hits.hit();
+              if (sk.deleteX === "before" && u.op === at + 30) counts.undoOfRevertRegained++;
+              for (const [f, segs] of Object.entries(ev.fields)) {
+                for (const seg of segs ?? []) {
+                  expect({ f, by: seg.by?.event }).not.toEqual({ f, by: target.event });
                 }
-              : {};
-          const body: LogEntry[] = [
-            {
-              kind: "write",
-              op: at,
-              event: at + 1,
-              ...span(sk.w),
-              fields: { f2: { value: "7", sources: ["SW"] } },
-            },
-            {
-              kind: "write",
-              op: at + 10,
-              event: at + 11,
-              ...span(sk.x),
-              fields: { f2: { value: "8", sources: ["SX"] } },
-            },
-            {
-              kind: "undo",
-              op: at + 20,
-              event: at + 21,
-              target: at,
-              seen: at + 10,
-              acknowledge: ["overwrite"],
-            },
-            ...(sk.deleteX === "before"
-              ? [{ kind: "deletion" as const, op: at + 25, id: "pi_x", sources: ["SX"] }]
-              : []),
-            {
-              kind: "undo",
-              op: at + 30,
-              event: at + 31,
-              target: at + 20,
-              seen: at + 20,
-              acknowledge: ["overwrite"],
-            },
-            ...(sk.deleteX === "after"
-              ? [{ kind: "deletion" as const, op: at + 40, id: "pi_x", sources: ["SX"] }]
-              : []),
-          ];
-          const log = extend(schema, [...head, ...body], tail, at + 50);
-          const ev = evaluateLog(schema, log).final;
-          const status = new Map(ev.reverts.map((r) => [r.op, r]));
-          for (const u of log) {
-            if (u.kind !== "undo") continue;
-            const undo = status.get(u.op);
-            const target = status.get(u.target);
-            if (undo?.status !== "applied" || target?.status !== "applied") continue;
-            counts.undoOfRevert++;
-            hits.hit();
-            if (sk.deleteX === "before" && u.op === at + 30) counts.undoOfRevertRegained++;
-            for (const [f, segs] of Object.entries(ev.fields)) {
-              for (const seg of segs ?? []) {
-                expect({ f, by: seg.by?.event }).not.toEqual({ f, by: target.event });
               }
             }
-          }
-        }),
-      ),
-      { numRuns: RUNS },
-    );
-    hits.check();
+          }),
+        ),
+        { numRuns: RUNS },
+      );
+      hits.check();
+    }
   });
 
   it("original items of one write in one segment: merged, no endpoint leaks", () => {
@@ -2797,19 +2886,23 @@ it("«撤回还原»: a grace-period decision the replay without the deletion re
       take: 81,
     },
   ];
-  expect(checkCancelRestores(STATE, prefix, withD, grace, 130)).toEqual({
+  expect(checkCancelRestores(STATE, prefix, withD, grace, 130, "allowed")).toEqual({
     kept: 0,
     refusedInBase: 1,
-    putBackDiffers: 0,
+    putBack: 0,
     withDecisions: true,
     decided: { nonEmpty: true, differs: false },
   });
-  const base = evaluateLog(STATE, [...prefix, ...grace]).steps.at(-1);
+  const base = evaluateLog(STATE, [...prefix, ...grace], ALLOWED).steps.at(-1);
   expect({ refused: base?.refused, rejected: base?.rejected }).toEqual({
     refused: true,
     rejected: "missing_required",
   });
-  const run = evaluateLog(STATE, [...withD, ...grace, { kind: "cancel", op: 130, id: "pi_d" }]);
+  const run = evaluateLog(
+    STATE,
+    [...withD, ...grace, { kind: "cancel", op: 130, id: "pi_d" }],
+    ALLOWED,
+  );
   const ev = run.final;
   const item = (event: number) => {
     const x = ev.items.find((y) => y.event === event);
@@ -2858,8 +2951,9 @@ it("«撤回还原»: a put-back candidate judged again where the forced replay 
   // effect. 51's item was resolved in the grace period: put back, it is judged again on the state
   // at the cancellation (03-deletion «撤回与宽限期»): 3 against 1 on [11-03, 11-05), a candidate
   // of a conflict item of its own. In the forced replay 41 in effect moves 51's `next_change` end
-  // to 11-05, where nothing changed since its version: it takes effect there, 3. The cancellation's
-  // rule is the definition; the comparison takes 51's interval by it.
+  // to 11-05, where nothing changed since its version: judged anew, it would take effect there, 3.
+  // The cancellation's judgement is the definition, and the forced replay keeps it
+  // (`forcedRejudged`): 51 a candidate, 1, as after the cancellation.
   const given = (from: string, to?: string) => ({
     from: { mode: "given" as const, value: from as BizPoint },
     to:
@@ -2906,14 +3000,18 @@ it("«撤回还原»: a put-back candidate judged again where the forced replay 
       take: 21,
     },
   ];
-  expect(checkCancelRestores(STATE, prefix, withD, grace, 90)).toEqual({
+  expect(checkCancelRestores(STATE, prefix, withD, grace, 90, "allowed")).toEqual({
     kept: 1,
     refusedInBase: 0,
-    putBackDiffers: 1,
+    putBack: 1,
     withDecisions: true,
     decided: { nonEmpty: true, differs: false },
   });
-  const run = evaluateLog(STATE, [...withD, ...grace, { kind: "cancel", op: 90, id: "pi_d" }]);
+  const run = evaluateLog(
+    STATE,
+    [...withD, ...grace, { kind: "cancel", op: 90, id: "pi_d" }],
+    ALLOWED,
+  );
   const cancel = run.steps.at(-1);
   expect(cancel?.keptEffective?.map((x) => x.event)).toEqual([41]);
   expect(cancel?.putBack).toEqual([{ event: 51, target: "f2", judged: "candidate" }]);
@@ -2927,13 +3025,164 @@ it("«撤回还原»: a put-back candidate judged again where the forced replay 
   // After the cancellation: 1 on [11-03, 11-05), 51 an open candidate there.
   expect(valueAt(run.final)).toBe("1");
   expect(item51(run.final)).toEqual({ status: "candidate", closed: false, valid: [seg] });
-  // The forced replay: 51 in effect, 3.
-  const base = evaluateLog(STATE, [...prefix, ...grace], {
+  // The forced replay judging 51 anew: in effect, 3.
+  const anew = evaluateLog(STATE, [...prefix, ...grace], {
+    ...ALLOWED,
     forcedEffective: cancel?.keptEffective ?? [],
     forcedSuperseded: cancel?.keptSuperseded ?? [],
   }).final;
-  expect(valueAt(base)).toBe("3");
-  expect(item51(base)).toEqual({ status: "applied", closed: false, valid: [seg] });
+  expect(valueAt(anew)).toBe("3");
+  expect(item51(anew)).toEqual({ status: "applied", closed: false, valid: [seg] });
+  // The forced replay keeping the cancellation's judgement: as after the cancellation.
+  const base = evaluateLog(STATE, [...prefix, ...grace], {
+    ...ALLOWED,
+    forcedEffective: cancel?.keptEffective ?? [],
+    forcedSuperseded: cancel?.keptSuperseded ?? [],
+    forcedRejudged: (cancel?.putBack ?? []).map((x) => ({ ...x, at: 90 })),
+  }).final;
+  expect(valueAt(base)).toBe("1");
+  expect(item51(base)).toEqual({ status: "candidate", closed: false, valid: [seg] });
+});
+
+describe("«撤回还原»: a put-back candidate the same as the value at the cancellation", () => {
+  // The log of the case above, with a grace-period write of 3 over [11-01, 11-05): at the
+  // cancellation 51's interval, [11-03, 11-05) (41 kept in effect moves its default end there),
+  // has 3 in effect, 51's value. Put back, 51 is no change there (03-deletion «撤回与宽限期»): a
+  // corroboration with evidence pointed at, a no-op without. The forced replay keeps that, and
+  // the re-judgement is checked against the state at the cancellation.
+  const given = (from: string, to?: string) => ({
+    from: { mode: "given" as const, value: from as BizPoint },
+    to:
+      to === undefined
+        ? { mode: "open" as const }
+        : to === "next"
+          ? { mode: "next_change" as const }
+          : { mode: "given" as const, value: to as BizPoint },
+  });
+  const w = (
+    op: number,
+    seen: number,
+    from: string,
+    to: string | undefined,
+    value: string,
+    src: string,
+    explicit: boolean,
+    ack: boolean,
+  ): LogEntry => ({
+    kind: "write",
+    op,
+    event: op + 1,
+    seen,
+    valid: given(from, to),
+    fields: { f2: { value, sources: [src], explicit } },
+    ...(ack ? { acknowledge: ["overwrite" as const] } : {}),
+  });
+  it.each([
+    [true, "corroborated"],
+    [false, "dropped"],
+  ] as const)("51 explicit %s: %s", (explicit, judged) => {
+    const prefix: LogEntry[] = [
+      w(10, 0, "2026-10-01", undefined, "1", "S1", false, true),
+      w(20, 0, "2026-11-05", undefined, "2", "S2", false, false),
+      w(30, 10, "2026-11-07", undefined, "2", "S4", true, true),
+      w(40, 10, "2026-11-05", undefined, "3", "S1", true, false),
+      w(50, 20, "2026-11-03", "next", "3", "S4", explicit, true),
+    ];
+    const withD: LogEntry[] = [
+      ...prefix,
+      { kind: "deletion", op: 60, id: "pi_d", sources: ["S4"] },
+    ];
+    const grace: LogEntry[] = [
+      {
+        kind: "resolve",
+        op: 70,
+        event: 71,
+        decision: "take_candidate",
+        candidates: [21],
+        unit: "f2",
+        take: 21,
+      },
+      w(80, 70, "2026-11-01", "2026-11-05", "3", "S9", false, true),
+    ];
+    const run = evaluateLog(
+      STATE,
+      [...withD, ...grace, { kind: "cancel", op: 90, id: "pi_d" }],
+      ALLOWED,
+    );
+    expect(run.steps.at(-1)?.putBack).toEqual([{ event: 51, target: "f2", judged }]);
+    expect(checkCancelRestores(STATE, prefix, withD, grace, 90, "allowed")).toEqual({
+      kept: 1,
+      refusedInBase: 0,
+      putBack: 1,
+      withDecisions: true,
+      decided: { nonEmpty: true, differs: false },
+    });
+  });
+});
+
+it("«撤回还原»: a put-back candidate kept a candidate in the forced replay too (event table)", () => {
+  // Issue #65's counterexample, written out. #11 (2, S4); #21 (3, stale: a candidate); #31 f3;
+  // #41 (3); #51 (2, explicit, stale: a candidate); #81 (2, explicit) and #91 (2). Deleting S3 and
+  // S4 removes #11, #31 and #51. In the grace period #111 keeps the effective value against #91,
+  // and #121 writes 1. The cancellation keeps #21 in effect, and puts #51 back: judged on the
+  // state there, still a candidate (03-deletion «撤回与宽限期»). Judged anew instead, with #21 in
+  // effect at its own number #41 is no change of value and #51 has no L and takes effect; #81 and
+  // #91 follow. The forced replay keeps the cancellation's judgement (`forcedRejudged`), and
+  // everything the grace period did not cover is then as after the cancellation.
+  const write = (
+    op: number,
+    seen: number,
+    f: FieldId,
+    value: string,
+    src: string,
+    explicit: boolean,
+    ack = false,
+  ): LogEntry => ({
+    kind: "write",
+    op,
+    event: op + 1,
+    seen,
+    fields: { [f]: { value, sources: [src], explicit } },
+    ...(ack ? { acknowledge: ["overwrite" as const] } : {}),
+  });
+  const prefix: LogEntry[] = [
+    write(10, 0, "f2", "2", "S4", false, true),
+    write(20, 0, "f2", "3", "S1", false),
+    write(30, 0, "f3", "3", "S3", true),
+    write(40, 10, "f2", "3", "S1", false),
+    write(50, 30, "f2", "2", "S3", true),
+    write(80, 70, "f2", "2", "S1", true),
+    write(90, 60, "f2", "2", "S1", false),
+  ];
+  const withD: LogEntry[] = [
+    ...prefix,
+    { kind: "deletion", op: 100, id: "pi_d", sources: ["S3", "S4"] },
+  ];
+  const grace: LogEntry[] = [
+    {
+      kind: "resolve",
+      op: 110,
+      event: 111,
+      decision: "keep_effective",
+      candidates: [91],
+      unit: "f2",
+    },
+    write(120, 110, "f2", "1", "G1", false),
+  ];
+  const run = evaluateLog(
+    EVENT,
+    [...withD, ...grace, { kind: "cancel", op: 140, id: "pi_d" }],
+    ALLOWED,
+  );
+  expect(run.steps.at(-1)?.keptEffective).toEqual([{ event: 21, target: "f2" }]);
+  expect(run.steps.at(-1)?.putBack).toEqual([{ event: 51, target: "f2", judged: "candidate" }]);
+  expect(checkCancelRestores(EVENT, prefix, withD, grace, 140, "allowed")).toEqual({
+    kept: 1,
+    refusedInBase: 0,
+    putBack: 1,
+    withDecisions: true,
+    decided: { nonEmpty: true, differs: false },
+  });
 });
 
 describe("state table: a revert covers by (event, target)", () => {
@@ -3193,7 +3442,11 @@ describe("«撤回还原»: a grace-period decision is executed in the baseline 
   for (const kind of ["confirm", "reject"] as const) {
     it(`a ${kind}ation of #51`, () => {
       const grace: LogEntry[] = [{ kind, op: 70, event: 71, target: 51 }];
-      const run = evaluateLog(STATE, [...withD, ...grace, { kind: "cancel", op: 90, id: "pi_d" }]);
+      const run = evaluateLog(
+        STATE,
+        [...withD, ...grace, { kind: "cancel", op: 90, id: "pi_d" }],
+        ALLOWED,
+      );
       const items = (ev: Evaluation, e: number) =>
         ev.items
           .filter((x) => x.event === e)
@@ -3231,7 +3484,7 @@ describe("«撤回还原»: a grace-period decision is executed in the baseline 
       expect(items(run.final, 71)).toEqual(
         kind === "confirm" ? ['f2 applied [{"from":"2026-11-01","to":null}]'] : [],
       );
-      expect(checkCancelRestores(STATE, prefix, withD, grace, 90)?.decided).toEqual({
+      expect(checkCancelRestores(STATE, prefix, withD, grace, 90, "allowed")?.decided).toEqual({
         nonEmpty: true,
         differs: true,
       });
@@ -3271,7 +3524,7 @@ describe("«撤回还原»: a grace-period decision is executed in the baseline 
         unit: "existence",
       },
     ];
-    expect(checkCancelRestores(E, pre, withD, grace, 70)?.decided).toEqual({
+    expect(checkCancelRestores(E, pre, withD, grace, 70, "allowed")?.decided).toEqual({
       nonEmpty: true,
       differs: true,
     });
@@ -3342,8 +3595,14 @@ describe("«撤回还原»: a grace-period decision is executed in the baseline 
         unit: "f2",
       },
     ] as LogEntry[];
-    expect(checkCancelRestores(STATE, pre, withD, grace, 130)?.decided.nonEmpty).toBe(true);
-    const run = evaluateLog(STATE, [...withD, ...grace, { kind: "cancel", op: 130, id: "pi_d" }]);
+    expect(checkCancelRestores(STATE, pre, withD, grace, 130, "allowed")?.decided.nonEmpty).toBe(
+      true,
+    );
+    const run = evaluateLog(
+      STATE,
+      [...withD, ...grace, { kind: "cancel", op: 130, id: "pi_d" }],
+      ALLOWED,
+    );
     expect(run.final.items.filter((x) => x.event === 101).map((x) => x.status)).toEqual([
       "corroborated",
     ]);
@@ -3391,8 +3650,12 @@ describe("«撤回还原»: a grace-period decision is executed in the baseline 
       },
       { kind: "confirm", op: 50, event: 51, target: 41 },
     ] as LogEntry[];
-    checkCancelRestores(STATE, pre, withD, grace, 70);
-    const run = evaluateLog(STATE, [...withD, ...grace, { kind: "cancel", op: 70, id: "pi_d" }]);
+    checkCancelRestores(STATE, pre, withD, grace, 70, "allowed");
+    const run = evaluateLog(
+      STATE,
+      [...withD, ...grace, { kind: "cancel", op: 70, id: "pi_d" }],
+      ALLOWED,
+    );
     expect(run.final.items.filter((x) => x.event === 41).map((x) => x.status)).toEqual([
       "corroborated",
     ]);
@@ -3473,8 +3736,12 @@ describe("«撤回还原»: a grace-period decision is executed in the baseline 
         unit: "f2",
       },
     ] as LogEntry[];
-    checkCancelRestores(STATE, pre, withD, grace, 100);
-    const run = evaluateLog(STATE, [...withD, ...grace, { kind: "cancel", op: 100, id: "pi_d" }]);
+    checkCancelRestores(STATE, pre, withD, grace, 100, "allowed");
+    const run = evaluateLog(
+      STATE,
+      [...withD, ...grace, { kind: "cancel", op: 100, id: "pi_d" }],
+      ALLOWED,
+    );
     expect(
       run.final.items
         .filter((x) => x.event === 61)
@@ -3539,8 +3806,12 @@ describe("«撤回还原»: a grace-period decision is executed in the baseline 
       },
       { kind: "confirm", op: 80, event: 81, target: 71 },
     ] as LogEntry[];
-    checkCancelRestores(STATE, pre, withD, grace, 100);
-    const run = evaluateLog(STATE, [...withD, ...grace, { kind: "cancel", op: 100, id: "pi_d" }]);
+    checkCancelRestores(STATE, pre, withD, grace, 100, "allowed");
+    const run = evaluateLog(
+      STATE,
+      [...withD, ...grace, { kind: "cancel", op: 100, id: "pi_d" }],
+      ALLOWED,
+    );
     expect(
       run.final.items
         .filter((x) => x.event === 71)
@@ -3607,8 +3878,12 @@ describe("«撤回还原»: a grace-period decision is executed in the baseline 
         unit: "f2",
       },
     ] as LogEntry[];
-    checkCancelRestores(STATE, pre, withD, grace, 90);
-    const run = evaluateLog(STATE, [...withD, ...grace, { kind: "cancel", op: 90, id: "pi_d" }]);
+    checkCancelRestores(STATE, pre, withD, grace, 90, "allowed");
+    const run = evaluateLog(
+      STATE,
+      [...withD, ...grace, { kind: "cancel", op: 90, id: "pi_d" }],
+      ALLOWED,
+    );
     expect(
       run.final.items
         .filter((x) => x.event === 61)
@@ -3665,8 +3940,12 @@ describe("«撤回还原»: a grace-period decision is executed in the baseline 
         unit: "f2",
       },
     ] as LogEntry[];
-    checkCancelRestores(EVENT, pre, withD, grace, 80);
-    const run = evaluateLog(EVENT, [...withD, ...grace, { kind: "cancel", op: 80, id: "pi_d" }]);
+    checkCancelRestores(EVENT, pre, withD, grace, 80, "allowed");
+    const run = evaluateLog(
+      EVENT,
+      [...withD, ...grace, { kind: "cancel", op: 80, id: "pi_d" }],
+      ALLOWED,
+    );
     expect(
       run.final.items
         .filter((x) => x.event === 51)
@@ -3721,6 +4000,7 @@ describe("«撤回还原»: a grace-period decision is executed in the baseline 
         },
       ],
       50,
+      "allowed",
     );
     // Item 3: a field group; deleting SX removes #31's f2, the take lists #31 in the grace period;
     // after the cancellation #31's f2 is put back into an item of its own, not taken.
@@ -3754,6 +4034,7 @@ describe("«撤回还原»: a grace-period decision is executed in the baseline 
         },
       ],
       70,
+      "allowed",
     );
   });
 });

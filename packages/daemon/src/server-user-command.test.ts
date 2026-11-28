@@ -504,6 +504,10 @@ describe("saveslot server user passwd", () => {
           accounts: await openLocalAccounts(d.db),
           loginMs: 60_000,
           origin: "http://127.0.0.1:8080",
+          formKeys: {
+            current: "k0000000000000001",
+            byId: new Map([["k0000000000000001", Buffer.alloc(32, 1)]]),
+          },
           now: () => Date.now(),
         });
         const now = new Date().toISOString();

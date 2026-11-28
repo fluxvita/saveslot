@@ -69,6 +69,7 @@ import type {
   ValidParam,
   WriteOp,
 } from "./model.ts";
+import { stateWithoutIndices } from "./views.ts";
 
 type Target = FieldId | "existence";
 type Status = "applied" | "corroborated" | "candidate" | "awaiting";
@@ -483,7 +484,7 @@ class Replay {
     if (this.isState && !this.hasValue(seg, limit)) return NO_VALUE;
     const st = this.fieldState(f, seg, limit);
     // Where the entity has a value, a field the filling writes did not give is empty, not a hole
-    // (05-time «无值区间»: 可选字段不带就是空).
+    // (05-time «无值区间»: "An optional field that is not carried is empty.").
     if (this.isState && st.kind === "hole") return "none";
     return stateTok(st);
   }
@@ -858,8 +859,8 @@ class Replay {
         ? tok(input.value)
         : undefined;
     };
-    // W's group value at a point (09-references «冲突判据», 组值): a field W wrote whose own seen
-    // interval holds the point gives W's value; the others, those W did not write and those it
+    // W's group value at a point (09-references «冲突判据», group value): a field W wrote whose own
+    // seen interval holds the point gives W's value; the others, those W did not write and those it
     // wrote whose seen interval does not hold the point, the value in V. Each field's seen interval
     // is resolved on its own (a default end stops at that field's next change in V).
     const seenOf = new Map<FieldId, IvSet>();
@@ -1189,8 +1190,9 @@ class Replay {
           () => this.items.push(...applied),
           () => this.items.splice(this.items.length - applied.length, applied.length),
         );
-      // A rejection is of the whole write (01-objects, the `reject` row: "提议不生效"): a target of a write a
-      // person rejected takes effect in no replay, whatever made it a candidate or awaiting then.
+      // A rejection is of the whole write (01-objects, the `reject` row: "The proposal does not
+      // take effect"): a target of a write a person rejected takes effect in no replay, whatever
+      // made it a candidate or awaiting then.
       const rejected = this.ops.some((x) => x.kind === "reject" && x.target === o.event);
       for (const it of applied) {
         const r = this.recordedStatus(it.event, it.target, it.valid);
@@ -2079,6 +2081,9 @@ class Replay {
     for (const f of takenFields.sort()) {
       const input = takenOp?.kind === "write" ? takenOp.fields[f] : undefined;
       if (input === undefined) continue;
+      // A field the taken write gave as a no-op when written had no item: nothing of it to take,
+      // and no same-valued candidate stands in for it (as on a field unit, `takeCandidate`).
+      if (takenOp?.kind === "write" && this.wroteNoop(takenOp, f)) continue;
       const v = tok(input.value);
       const same = cands.filter(
         (x) => x.target === f && x.content.kind === "value" && tok(x.content.value) === v,
@@ -2817,7 +2822,7 @@ function inUnit(unit: ResolveOp["unit"], target: Target): boolean {
   return unit === "existence" || unitTargets(unit).includes(target);
 }
 
-/** Step 3, "x 取代 r". */
+/** Step 3, "x supersedes r". */
 function supersedes(x: Item, r: Item): boolean {
   const xIsFieldValue = x.target !== "existence" && x.content.kind === "value";
   if (r.content.kind === "revoke") return x.content.kind === "restore" || xIsFieldValue;
@@ -3074,6 +3079,26 @@ export function evaluateLog(
      */
     readonly forcedDecided?: ReadonlyMap<OpNumber, readonly string[]>;
     /**
+     * Decisions and `undo` in the grace period on a row or entity pending deletions affect:
+     * refused, as the first version has it (the default; 03-deletion «撤回与宽限期»), or `allowed`,
+     * as the rule set aside for a later version would have them: put-back candidates judged
+     * again at the cancellation, a decision as recorded in every replay (decision record
+     * grace-period-no-decisions.md, "之后要放开时"; not the spec). Only the default is compared with
+     * the kernel.
+     */
+    readonly graceDecisions?: "refused" | "allowed";
+    /**
+     * Candidates a cancellation put back, with the judgement it gave them on the state at the
+     * cancellation and the cancellation's operation (`LogStep.putBack`): the baseline keeps that
+     * judgement, as the replays after the cancellation do (03-deletion «撤回与宽限期»).
+     */
+    readonly forcedRejudged?: readonly {
+      readonly event: Seq;
+      readonly target: Target;
+      readonly judged: "dropped" | "corroborated" | "candidate";
+      readonly at: OpNumber;
+    }[];
+    /**
      * For a deletion event's operation and a replay's deleted set, the units (fields, "existence")
      * whose record is on a current deletion's list of positions (09-references «冲突判据», L's
      * interval), as the log's blocks and their deps say; `undefined` leaves it to the
@@ -3135,7 +3160,7 @@ export function evaluateLog(
    */
   const removedAt = (key: string, at: OpNumber): boolean => {
     // Out of every item and not in effect either: one a deletion put in effect at that point is
-    // the cancellation's "保持生效" case (`kept_effective`), not this one.
+    // the cancellation's "kept in effect" case (`kept_effective`), not this one.
     const before = [...steps].reverse().find((x) => !x.refused && x.entry.op < at)?.state;
     if (
       before?.items.some(
@@ -3383,6 +3408,34 @@ export function evaluateLog(
       steps.push({ entry: e, refused: true, state: prevState, notFound: [] });
       continue;
     }
+    // In the grace period, no decision and no `undo` on a row or entity pending deletions affect
+    // (03-deletion «撤回与宽限期»): affected when the replay with the current deleted set and the
+    // one without any pending deletion (executed ones still deleted) differ on it, in a value, who
+    // gives it, an item's sources, interval or judgement, or whether it exists. Refused as
+    // `invalid_argument` (`pending_deletion_target`), with the pending deletions touching its
+    // contributions. A decision the model finds invalid (its item not there or closed, 04-contract
+    // `resolve` steps 1 and 2) is refused as invalid first, below. A request is one operation in
+    // this model: the whole of it does not take effect.
+    if (
+      pending.size > 0 &&
+      options.graceDecisions !== "allowed" &&
+      (e.kind === "undo" ||
+        ((e.kind === "resolve" || e.kind === "confirm" || e.kind === "reject") &&
+          (options.forcedDecided?.has(e.op) === true || prev.validDecision(e))))
+    ) {
+      const without = replay(new Set([...executed.values()].flatMap((x) => [...x])));
+      if (
+        JSON.stringify(stateWithoutIndices(without.result())) !==
+        JSON.stringify(stateWithoutIndices(prevState))
+      ) {
+        const by = [...pending.entries()]
+          .filter(([, d]) => touches(schema, ops, rec, without, d.sources))
+          .sort(([, a], [, b]) => a.op - b.op)
+          .map(([id]) => id);
+        steps.push({ entry: e, refused: true, state: prevState, pendingDeletionTarget: by });
+        continue;
+      }
+    }
     // A take made while deletions are pending: what those deletions removed that is in effect
     // without them (`Recorded.takeRestorable`), on the history at this point.
     let restorable: Map<string, IvSet> | undefined;
@@ -3488,16 +3541,22 @@ export function evaluateLog(
     prevState = state;
   }
   // The baseline of «撤回还原»: a replay of this log as written, with the given writes counted as
-  // already in effect and so taking effect at their own write numbers, and the given writes whose
-  // items were kept superseded closed (as at a cancellation: they do not take effect). The
-  // write-time judgements stay those of the log; only the final replay sees the forced sets.
+  // already in effect and so taking effect at their own write numbers, the given writes whose
+  // items were kept superseded closed (as at a cancellation: they do not take effect), and the
+  // given put-back candidates judged as the cancellation judged them. The write-time judgements
+  // stay those of the log; only the final replay sees the forced sets.
   const forced = options.forcedEffective ?? [];
   const superseded = options.forcedSuperseded ?? [];
   const decidedAs = options.forcedDecided ?? new Map<OpNumber, readonly string[]>();
-  if (forced.length > 0 || superseded.length > 0 || decidedAs.size > 0) {
+  const rejudged = options.forcedRejudged ?? [];
+  if (forced.length > 0 || superseded.length > 0 || decidedAs.size > 0 || rejudged.length > 0) {
     for (const x of forced) rec.keptEffective.add(etKey(x.event, x.target));
     for (const e of superseded) rec.keptSuperseded.add(e);
     for (const [op, keys] of decidedAs) rec.decidedItems.set(op, new Set(keys));
+    for (const x of rejudged) {
+      rec.rejudged.set(etKey(x.event, x.target), x.judged);
+      rec.rejudgedAt.set(etKey(x.event, x.target), x.at);
+    }
     return { steps, final: replay(deletedNow()).result(), removed: [...rec.removed].sort() };
   }
   return { steps, final: prevState, removed: [...rec.removed].sort() };
@@ -3522,8 +3581,8 @@ function syncOutcome(
 /**
  * Requests refused while a deletion is pending (03-deletion «撤回与宽限期»): citing a source
  * pending deletion as evidence. (Writing to a row or entity pending deletions removed whole is
- * judged in `evaluateLog`, on two replays.) Resolving and confirming items is not a write to the
- * row and goes ahead.
+ * judged in `evaluateLog`, on two replays; so are decisions and `undo` on a row pending deletions
+ * affect.)
  */
 function refused(o: Op, deleted: ReadonlySet<SourceKey>): boolean {
   const cites: SourceKey[] =
@@ -3617,7 +3676,9 @@ function cancelDeletion(
       .map((x) => x.event);
   // The item stayed open after the deletion removed this candidate, and a grace-period decision
   // resolved it: a resolve on the unit whose candidates include one of the siblings. An item that
-  // lost its only candidate was superseded by the deletion instead (and is restored).
+  // lost its only candidate was superseded by the deletion instead (and is restored). Reached only
+  // with `graceDecisions: "allowed"`: in the first version a row a deletion took a candidate from
+  // is affected, so no decision falls on it in the grace period (03-deletion «撤回与宽限期»).
   const resolvedInGrace = (key: string, target: Target): boolean => {
     const sib = siblings(key, target);
     return grace.some(
@@ -3698,7 +3759,9 @@ function cancelDeletion(
 
   // Candidates the deletion removed, of an item resolved in the grace period, are put back and
   // judged on the state at the cancellation: same value as in effect → no-op or corroboration,
-  // otherwise a new conflict item. A re-judged candidate stays at its own write number.
+  // otherwise a new conflict item. A re-judged candidate stays at its own write number. Only with
+  // `graceDecisions: "allowed"`, the rule set aside for a later version (decision record
+  // grace-period-no-decisions.md); the first version has no put-back candidates.
   // Modelling limit: the evaluator does not track item identities; "its item was resolved" is
   // taken as "a grace-period resolve on the unit lists a candidate pending alongside it just
   // before the deletion" (see `resolvedInGrace`).

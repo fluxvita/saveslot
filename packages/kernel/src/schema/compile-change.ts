@@ -1,6 +1,6 @@
 // Compiling a draft that changes an existing slot (docs/zh-CN/spec/03-data-model/07-schema-evolution.md
-// «schema 文档格式» 提交粒度 / 字段匹配规则, «改动分类与迁移手段»; 04-contract «schema_draft»;
-// 09-event-format.md §5.5, §7).
+// «schema 文档格式 · 提交粒度», «schema 文档格式 · 字段匹配规则», «改动分类与迁移手段»; 04-contract
+// «schema_draft»; 09-event-format.md §5.5, §7).
 //
 // Pure: the current version's compiled definition, the other slots' names, the next free table and
 // rule numbers, the policy's automatic classes and what nobody else uses come from the caller. The
@@ -1371,7 +1371,8 @@ export function compileChange(input: CompileChangeInput): CompileChangeResult {
 
   for (const t of current.tables) {
     if (!dropped.has(t.id)) continue;
-    // A derived table has no values of its own to lose, nor writes (07 «改动分类与迁移手段» 派生表的删表).
+    // A derived table has no values of its own to lose, nor writes (07 «改动分类与迁移手段», the
+    // row dropping a derived table).
     const derived = t.kind === "derived";
     record({ table: t.id }, "drop_table", "metadata", {
       compatible: derived,

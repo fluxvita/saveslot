@@ -8,7 +8,7 @@ Write numbers follow chapter 2 (write #21 records the lunch, #25 corrects the lu
 
 > This chapter describes the complete design and marks on the spot what the first version does not do.
 >
-> **0.1.0 does not provide privacy deletion yet**: the preview, confirmation, grace period and cancellation, physical erasure at expiry, and re-applying deletions after a backup restore described in this chapter all come in later versions ([`../spec/07-scope-v1.md`](../spec/07-scope-v1.md) section 7). What 0.1.0 can do is revoke a row: the history is kept, and the revocation can be undone.
+> **0.2.0 does not provide privacy deletion yet**: the preview, confirmation, grace period and cancellation, physical erasure at expiry, and re-applying deletions after a backup restore described in this chapter all come in later versions ([`../spec/07-scope-v1.md`](../spec/07-scope-v1.md) section 7). What 0.2.0 can do is revoke a row: the history is kept, and the revocation can be undone.
 
 ## 1. First, tell them apart: three kinds of "deletion", and deletion is not correction
 
@@ -18,7 +18,7 @@ When a user says "delete it", they may mean three different things:
 |---|---|---|---|
 | Revoke a row | This record should not exist ("that entry is a duplicate") | An ordinary write with intent `revoke`. The row is marked as revoked; the history and the original words are both kept | Yes |
 | Evidence deletion | The original words should not be kept, but the data derived from them may stay | Deletes only the original text; the values stay | No |
-| Privacy deletion | Forget it completely | The original text and everything derived from it are dealt with | Yes (specified by source data) |
+| Privacy deletion | Forget it completely | The original text and everything derived from it are dealt with | Yes (specified by source data); not provided yet in 0.2.0 |
 
 What tells them apart is the user's intent, which the agent has to judge:
 
@@ -250,7 +250,7 @@ The consequences of a privacy deletion are not obvious, so it may not be execute
 | Content | Description |
 |---|---|
 | Totals | How many sources are deleted, how many rows are affected, how many derived values are recomputed |
-| Result per row | The row is deleted entirely / the row stays but some fields become empty / some fields return to an earlier value / the row is re-segmented / the value is unchanged and only its provenance changes; plus the **reason for the judgement**: which writes still contribute to each required field. On a state table, intervals that go from having a value to having none are listed separately with the reason. One reason is that a required field has no surviving contribution in that stretch of time. The other is less obvious: for example, a revoke saying "does not count from 11-05 on" had its end point on 11-20, given by the deleted sentence; after the deletion it extends past that date, a value written after 11-20 with only an amount and no owner cannot support that stretch, and so that stretch has no value |
+| Result per row | The row is deleted entirely / the row stays but some fields become empty / some fields return to an earlier value / the row is re-segmented / the value is unchanged and only its provenance changes; plus the **reason for the judgement**: which writes still contribute to each required field. On a state table, intervals that go from having a value to having none are listed separately with the reason. One reason is that a required field has no surviving contribution in that stretch of time. The other is less obvious: for example, a revoke saying "does not count from 11-05 on" had its end point on 11-20, given by the deleted sentence; after the deletion it extends past that date, a value written after 11-20 with only an amount and no owner cannot support that stretch (here the owner, `owner`, is taken to be a required field; in chapter 7, section 6 it is optional), and so that stretch has no value |
 | Writes that will take effect | The ones described in the previous section, listed separately |
 | Writes that will turn into awaiting confirmation | Same as above, listed separately |
 | Items that will be superseded | |

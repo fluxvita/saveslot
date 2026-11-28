@@ -81,9 +81,10 @@ export const cancellationReplayForTests = (
  * Several deletions of one row, confirmed and cancelled in turn, as judge replays each (no write
  * after the first, so nothing written in a grace period): the blocks last given are the records'
  * with the restatements of the deletion and cancellation events laid over in log order, those of a
- * cancelled deletion left out (09 §5.7 "被撤回的删除给出的块不算"); a confirmation's replay takes away what it deletes and what the
- * deletions still pending do; a cancellation's, what the others still pending do. Each call is
- * recorded as the event the caller appends next.
+ * cancelled deletion left out (09 §5.7 "Blocks given by a cancelled deletion do not count"); a
+ * confirmation's replay takes away what it deletes and what the deletions still pending do; a
+ * cancellation's, what the others still pending do. Each call is recorded as the event the caller
+ * appends next.
  */
 export class DeletionSessionForTests {
   readonly #deletions = new Map<string, { deleted: ReadonlySet<string>; cancelled: boolean }>();

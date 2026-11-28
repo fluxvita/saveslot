@@ -1,11 +1,11 @@
-// A guard on part of the conflict criterion's symmetry (09-references-conflict-sync «冲突判据»,
-// 对称): two writes from the same version, both to the next change, neither pointing evidence at
-// a field nor erasing a change point of the version it saw, judged in either order, both conflict
-// or both merge, and merged they leave the same values. It covers this subset only, not the
-// clause: an explicit interval beside a default end, or a write awaiting for high impact, is where
-// the clause says more than the rules give (08 «P3 前»; symmetry.test.ts pins those as they are).
-// Its use: judging a corroboration's changed part as written, and `ver.current`, left this as it
-// was.
+// A guard on part of the conflict criterion's symmetry (09-references-conflict-sync
+// «冲突判据 · 对称»): two writes from the same version, both to the next change, neither pointing
+// evidence at a field nor erasing a change point of the version it saw, judged in either order,
+// both conflict or both merge, and merged they leave the same values. It covers this subset only,
+// not the clause: an explicit interval beside a default end, or a write awaiting for high impact,
+// is where the clause says more than the rules give (08 «P3 前»; symmetry.test.ts pins those as
+// they are). Its use: judging a corroboration's changed part as written, and `ver.current`, left
+// this as it was.
 
 import type { BizPoint, FieldId } from "@fluxvita/saveslot-contract-core";
 import type { Op, WriteOp } from "@fluxvita/saveslot-reference";

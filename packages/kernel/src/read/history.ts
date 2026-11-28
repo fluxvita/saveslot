@@ -45,11 +45,12 @@ import {
 } from "../request/index.ts";
 import { computedAtRead } from "../rules/index.ts";
 import type { ReadTx } from "../store/ports.ts";
-import { cellWithheld, withholdingIn } from "../store/readable-content.ts";
+import { cellEnds, cellWithheld, withholdingIn } from "../store/readable-content.ts";
 import { valueOut } from "../time/index.ts";
 import { changersOf } from "./changed-by.ts";
 import { danglingOf, revokedTargets } from "./dangling.ts";
 import { rowDetails } from "./detail.ts";
+import { type CellEnds, stretchEnds } from "./ends.ts";
 import { digest, limitOf, pageAfter, positionOf } from "./page.ts";
 import { bizPoint, kindOf, type TableKind } from "./params.ts";
 import { cmpText, correctedWithin, type KeySpec } from "./rows.ts";
@@ -449,6 +450,8 @@ type Cell = {
   src_op: unknown;
   /** Its value came from a contribution no longer readable: not given (./versions.ts). */
   withheld: boolean | null;
+  /** Where its ends came from (`cellEnds`): null when nothing is withheld in this tenant. */
+  ends: CellEnds | null;
 } & Record<string, unknown>;
 
 /** The cells of the target in effect after operation `s`. */
@@ -462,10 +465,12 @@ async function cellsAsOf(tx: ReadTx, t: CompiledBaseTable, id: string, s: number
       : `to_char(valid_from, ${INSTANT_TEXT}) AS vf, to_char(valid_to, ${INSTANT_TEXT}) AS vt`
     : "NULL AS vf, NULL AS vt";
   const cols = t.fields.flatMap((f) => selectOf(f).map((x, i) => `${x} AS c_${f.id}_${i}`));
+  const withholding = await withholdingIn(tx);
   const r = await tx.query<Cell>(
     `SELECT field_id, ${interval}, rec_from, intent, revoked, no_value,
        (SELECT e.op FROM events e WHERE e.seq = v.src_event) AS src_op,
-       ${cellWithheld("v", await withholdingIn(tx))} AS withheld, ${cols.join(", ")}
+       ${cellWithheld("v", withholding)} AS withheld,
+       ${state ? cellEnds("v", withholding) : "NULL"} AS ends, ${cols.join(", ")}
      FROM ${versions} v
      WHERE row_id = $1 AND rec_from <= $2 AND (rec_to IS NULL OR rec_to > $2)`,
     [id, s],
@@ -517,14 +522,15 @@ async function svAsOf(tx: ReadTx, slot: string, s: number, current: number): Pro
 }
 
 /**
- * The slot's name and the table as a version defines them, for naming what was read (08 «状态机» "已退役":
- * by that version's compiled definition): `then`, that version's definition; `now`, the slot's name
- * and the table as the current version has them. Where that version answers from the same physical
- * table as the current one (a rename, a description). A table answered then by another physical
- * table that is empty (`thenEmpty`: restructured while never written, 08 «物理做法») had no row
- * then: named as that version has it. Another table rebuilt since is `not_in_this_version` (reading
- * retired physical tables comes with the migrations that make them); a table not in that version
- * had no row then and is named as now; a definition missing is `internal`.
+ * The slot's name and the table as a version defines them, for naming what was read
+ * (08 «状态机 · 已退役»: by that version's compiled definition): `then`, that version's definition;
+ * `now`, the slot's name and the table as the current version has them. Where that version answers
+ * from the same physical table as the current one (a rename, a description). A table answered then
+ * by another physical table that is empty (`thenEmpty`: restructured while never written,
+ * 08 «物理做法») had no row then: named as that version has it. Another table rebuilt since is
+ * `not_in_this_version` (reading retired physical tables comes with the migrations that make them);
+ * a table not in that version had no row then and is named as now; a definition missing is
+ * `internal`.
  */
 export function namedAsOf(
   then: CompiledSchema | undefined,
@@ -650,13 +656,23 @@ export async function asOfInTx(
     as_of: given as JsonValue,
     valid_at: has(params, "valid_at") ? (get(params, "valid_at") as JsonValue) : null,
   });
-  const specs: KeySpec[] = [{ type: target.kind === "state" ? "plain" : "text", dir: "asc" }];
+  // A state entity's stretches by their start, then an ordinal for those whose start is withheld
+  // (after the others, in their real order; the decision on interval ends, §4): position format 2.
+  const specs: KeySpec[] =
+    target.kind === "state"
+      ? [
+          { type: "plain", dir: "asc" },
+          { type: "count", dir: "asc" },
+        ]
+      : [{ type: "text", dir: "asc" }];
+  const version = target.kind === "state" ? 2 : 1;
   const position = await positionOf(tx, params, {
     identity,
     specs,
     restoreCount: restore,
     latest,
     condition: true,
+    version,
   });
   let point: { seq: number; at: string | undefined };
   let condition: { at?: string; during?: readonly [string, string | null] } | undefined;
@@ -736,22 +752,25 @@ export async function asOfInTx(
     if (condition.during !== undefined) during = [condition.during[0], condition.during[1]];
   }
 
-  const version = await versionAsOf(tx, t, target.id, point.seq);
+  const recorded = await versionAsOf(tx, t, target.id, point.seq);
   // Named as the version in effect then defines them: the answer's `sv`, its names and its fields
   // are of one version.
   const sv = await svAsOf(tx, target.named.slot.slot, point.seq, target.named.slot.sv);
   const shown = await shownAs(tx, target.named.slot, t, sv);
   const qualified = `${shown.slot}.${shown.table.name}`;
   const rows: Row[] = [];
+  // Each row's paging keys; and whether anything a deletion removed was left out of the result.
+  const keys: (string | number | null)[][] = [];
+  let partial = false;
   // What each row's detail is worked out from: its values by field ID and its stretch.
   const sources: {
     values: Readonly<Record<string, FieldValue>>;
     from?: string;
     to?: string | null;
   }[] = [];
-  if (version !== undefined) {
+  if (recorded !== undefined) {
     const cells = await cellsAsOf(tx, t, target.id, point.seq);
-    const ver = `h${version.op}.${restore}`;
+    const ver = `h${recorded.op}.${restore}`;
     // Ref values naming a target revoked then (`dangling_ref`), in tables the caller can see.
     const gone = (values: Readonly<Record<string, unknown>>[]) =>
       revokedTargets(
@@ -766,24 +785,80 @@ export async function asOfInTx(
       const correct = (await correctSpansOf(tx, t, [target.id], point.seq)).get(target.id);
       const readAll = new Set<string>(t.fields.map((f) => f.id));
       const segments = segmentsOf(t, cells);
+      // Which ends came from content a deletion still pending removed: judged on the stretches
+      // as merged (the decision on interval ends, §1, §2).
+      const ends = stretchEnds(t, cells, segments);
       const revoked = await gone(segments.map((s) => s.values));
-      for (const s of segments) {
-        if (at !== undefined && !(s.from <= at && (s.to === null || at < s.to))) continue;
+      // Each stretch kept, with its ends; in order: by start, those whose start is withheld after
+      // the others, in their real order (§4).
+      const kept: {
+        s: (typeof segments)[number];
+        fromWithheld: boolean;
+        toWithheld: boolean;
+      }[] = [];
+      for (const [i, s] of segments.entries()) {
+        const { fromWithheld, toWithheld } = ends[i] as (typeof ends)[number];
+        // Nothing left: no value given and no start, only an end that would draw the removed
+        // write's range again (§2).
+        if (fromWithheld && Object.values(s.values).every((x) => x === null)) {
+          partial = true;
+          continue;
+        }
+        // The business time condition, by the ends given only: one an end withheld would decide
+        // does not hit, and the result says something was left out (§4).
+        const known = (ok: boolean | undefined) => {
+          if (ok === undefined) partial = true;
+          return ok === true;
+        };
+        const startsBy = (p: string): boolean | undefined =>
+          fromWithheld ? undefined : s.from <= p;
+        const endsAfter = (p: string): boolean | undefined =>
+          toWithheld ? undefined : s.to === null || p < s.to;
+        const both = (a: boolean | undefined, b: boolean | undefined) =>
+          a === false || b === false
+            ? false
+            : a === undefined || b === undefined
+              ? undefined
+              : true;
+        if (at !== undefined && !known(both(startsBy(at), endsAfter(at)))) continue;
+        // A stretch is never empty: a given start at or after the window's start already puts its
+        // end after it, and a given end at or before the window's end already puts its start
+        // before it.
+        const endsAfterStart = (p: string): boolean | undefined =>
+          !fromWithheld && p <= s.from ? true : endsAfter(p);
+        const startsBeforeEnd = (p: string | null): boolean | undefined =>
+          p === null || (!toWithheld && s.to !== null && s.to <= p)
+            ? true
+            : fromWithheld
+              ? undefined
+              : s.from < p;
         if (
           during !== undefined &&
-          !((s.to === null || s.to > during[0]) && (during[1] === null || s.from < during[1]))
+          !known(both(endsAfterStart(during[0]), startsBeforeEnd(during[1])))
         )
           continue;
+        kept.push({ s, fromWithheld, toWithheld });
+      }
+      const ordered = [
+        ...kept.filter((x) => !x.fromWithheld),
+        ...kept.filter((x) => x.fromWithheld),
+      ];
+      let ordinal = 0;
+      for (const { s, fromWithheld, toWithheld } of ordered) {
         sources.push({ values: s.values, from: s.from, to: s.to });
+        keys.push([fromWithheld ? null : s.from, fromWithheld ? ordinal++ : null]);
         rows.push({
           table: qualified,
           entity: target.id as never,
           ver,
           historical: true,
           values: byName(shown.table, s.values),
-          valid_from: s.from as BizPoint,
-          valid_to: s.to as BizPoint | null,
-          ...(date && s.to !== null ? { valid_to_inclusive: dayBefore(s.to) as never } : {}),
+          // An end that came from content a deletion still pending removed is left out (§2).
+          ...(fromWithheld ? {} : { valid_from: s.from as BizPoint }),
+          ...(toWithheld ? {} : { valid_to: s.to as BizPoint | null }),
+          ...(date && s.to !== null && !toWithheld
+            ? { valid_to_inclusive: dayBefore(s.to) as never }
+            : {}),
           // By segment, as query gives it: every field is read.
           ...((): { marks?: Marks } => {
             const dangling = danglingOf(t, s.values, revoked);
@@ -792,8 +867,10 @@ export async function asOfInTx(
                 ? { corrected: true as const }
                 : {}),
               ...(dangling.length > 0 ? { dangling_ref: dangling } : {}),
-              // A value a removed contribution gave then: not given (03-deletion «版本表»).
-              ...(s.withheld.length > 0 ? { partially_deleted: true as const } : {}),
+              // A value or an end a removed contribution gave then: not given (03-deletion «版本表»).
+              ...(s.withheld.length > 0 || fromWithheld || toWithheld
+                ? { partially_deleted: true as const }
+                : {}),
             };
             return Object.keys(m).length > 0 ? { marks: m } : {};
           })(),
@@ -811,13 +888,14 @@ export async function asOfInTx(
       const revoke = cells.find((c) => c.field_id === "existence" && c.revoked === true);
       const dangling = danglingOf(t, values, await gone([values]));
       const marks: Marks = {
-        ...(version.corrected ? { corrected: true as const } : {}),
+        ...(recorded.corrected ? { corrected: true as const } : {}),
         ...(dangling.length > 0 ? { dangling_ref: dangling } : {}),
         ...(withheld ? { partially_deleted: true as const } : {}),
         // The revoke's own operation, not when its cell was last cut.
         ...(revoke !== undefined ? { revoked: { seq: Number(revoke.src_op) as never } } : {}),
       };
       sources.push({ values });
+      keys.push([target.id]);
       rows.push({
         table: qualified,
         row: target.id as never,
@@ -830,14 +908,14 @@ export async function asOfInTx(
   }
   // The detail of each row, as of the point; the rows a ref summary read, for the read record.
   let detailRead: ReadRow[] = [];
-  if (detailed && version !== undefined && rows.length > 0) {
+  if (detailed && recorded !== undefined && rows.length > 0) {
     const d = await rowDetails(tx, {
       table: t,
       fields: shown.table.fields as readonly CompiledBaseField[],
       visible: target.named.slot.tables,
       page: sources.map((x) => ({
         id: target.id,
-        ver: Number(version.op),
+        ver: Number(recorded.op),
         values: x.values,
         ...(x.from !== undefined ? { validFrom: x.from, validTo: x.to ?? null } : {}),
       })),
@@ -856,15 +934,12 @@ export async function asOfInTx(
     detailRead = d.read;
   }
   // Who made this version, when not the caller: every row here is of the one version.
-  if (version !== undefined && rows.length > 0) {
-    const by = (await changersOf(tx, [version.op], input.actor)).get(Number(version.op));
+  if (recorded !== undefined && rows.length > 0) {
+    const by = (await changersOf(tx, [recorded.op], input.actor)).get(Number(recorded.op));
     if (by !== undefined) for (const [i, r] of rows.entries()) rows[i] = { ...r, changed_by: by };
   }
   const page = pageAfter(
-    rows.map((item) => ({
-      item,
-      keys: [target.kind === "state" ? (item.valid_from as string) : target.id],
-    })),
+    rows.map((item, i) => ({ item, keys: keys[i] as (string | number | null)[] })),
     {
       specs,
       identity,
@@ -877,8 +952,12 @@ export async function asOfInTx(
       restoreCount: restore,
       limit: limitOf(params),
       ...(condition !== undefined ? { condition } : {}),
+      version,
     },
   );
+  // A row marked, or a stretch left out for what a deletion removed: the result says so, even
+  // when it has no row left to carry the mark (§4).
+  if (rows.some((r) => r.marks?.partially_deleted === true)) partial = true;
   const result: AsOfResult = {
     mode: "as_of",
     // Before any operation: seq 0 and no recorded time.
@@ -891,6 +970,7 @@ export async function asOfInTx(
     total: rows.length,
     ...(page.next !== undefined ? { next_position: page.next } : {}),
     rows: page.page,
+    ...(partial ? { partially_deleted: true as const } : {}),
     // The other reads: on the first page only.
     ...(otherReads !== undefined && otherReads.length > 0 ? { other_reads: otherReads } : {}),
   };
@@ -910,13 +990,13 @@ export async function asOfInTx(
     ...(valid !== undefined ? { valid } : {}),
     // A historical version: recorded, but not read for the fallback (04-contract §2).
     rows: [
-      ...(version === undefined
+      ...(recorded === undefined
         ? []
         : [
             {
               table: t.id as TableId,
               target: target.id,
-              ver: { op: version.op as never, restoreCount: restore },
+              ver: { op: recorded.op as never, restoreCount: restore },
             },
           ]),
       // The rows a ref summary read (`detail: "detailed"`), as of the same point.

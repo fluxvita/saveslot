@@ -472,7 +472,7 @@ describe("what 05 §6 asks for", () => {
     expect(d).toContain("version iv_8VEZWJ3J7BMKMXTV.13.0");
     expect(d).toMatch(new RegExp(`In effect: amount 54 ${B}CNY${E} \\(#10`));
     expect(d).toMatch(new RegExp(`Candidate 0: amount 50 ${B}CNY${E} \\(#13`));
-    // Each decision with what it would do (05 §6 `saveslot_pending`: 可选).
+    // Each decision with what it would do (05 §6 `saveslot_pending`: "Choices").
     expect(d).toContain(
       [
         "  Choices:",
@@ -914,6 +914,30 @@ describe("a read's column names (05 §6 saveslot_query)", () => {
       rows: rows.map((r) => ({ ...r, ver: "h7.0", historical: true })),
     } as R);
     expect(x).toMatch(/\nColumns after the row's ID and ver: [^\n]+\n/);
+  });
+
+  it("history as_of: an end a deletion removed is (deleted), not open; the result says what was left out", () => {
+    const row = { ...(rows[0] as R), ver: "h7.0", historical: true };
+    const base = {
+      mode: "as_of",
+      as_of: { seq: 7, recorded_at: "2026-11-10T04:00:00Z" },
+      sv: 1,
+      timezone: "Asia/Shanghai",
+      partially_deleted: true,
+    };
+    const state = {
+      ...row,
+      entity: "e_4KWKRM296X61WJ89DY5XJNVA4P",
+      valid_from: "2026-11-10",
+      marks: { partially_deleted: true },
+    };
+    delete (state as Record<string, unknown>)["row"];
+    const x = renderResult("saveslot_history", { ...base, rows: [state] } as R);
+    expect(x).toContain("until (deleted)");
+    expect(x).toMatch(/Columns after the row's ID and ver: period/);
+    expect(x).toContain("Part of what was recorded then has since been deleted and is left out.");
+    const empty = renderResult("saveslot_history", { ...base, rows: [] } as R);
+    expect(empty).not.toContain("It did not exist yet.");
   });
 });
 

@@ -1,5 +1,5 @@
 // A Node HTTP request as an identity provider takes it, and its answer written back
-// (docs/zh-CN/spec/05-surfaces.md §15 «本地账户的登录页»; 02-architecture §12 身份提供者). A name
+// (docs/zh-CN/spec/05-surfaces.md §15 «本地账户的登录页»; 02-architecture §12 «身份提供者»). A name
 // given more than once, in the query, the headers, the cookies or a form, counts by its first value.
 // A cookie is set only through the service's `setCookieHeader`.
 

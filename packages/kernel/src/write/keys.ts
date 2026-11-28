@@ -10,8 +10,10 @@
 // are the same value (decimals rounded to the field's scale, quantities in the field's unit, text in
 // NFC, a zoned date-time as its instant and zone).
 //
-// Each lookup reads the creating events of the whole table: fine at this phase's sizes; an index
-// table of keys is left until there are numbers for large tables (or the deletion phase needs one).
+// A table's keys are read from the creating events of the whole table, once a request when the
+// request passes a `KeyCache` (the store does not change while a request is judged); one entity's
+// key is read from its own creating event. An index table of keys, so that a lookup does not grow
+// with the table, comes with storage format 6 (decisions/table-indexes-format-6.md).
 
 import {
   type CompiledBaseField,
@@ -46,17 +48,18 @@ export function keyToken(t: CompiledBaseTable, key: KeyValues): string {
   return canonicalize(keyFields(t).map((f) => (key[f.id] ?? null) as JcsValue));
 }
 
-/** The key of each entity of the table, from the event that created it. */
+/** The key of each entity of the table (or of `only`), from the event that created it. */
 export async function tableKeys(
   tx: ReadTx,
   t: CompiledBaseTable,
+  only?: EntityId,
 ): Promise<Map<EntityId, KeyValues>> {
   const ids = new Set<string>(keyFields(t).map((f) => f.id));
   const r = await tx.query<{ row_id: string; path: string; body: string }>(
     `SELECT o.row_id, c.path, c.body FROM row_origins o
      JOIN ${READABLE_CONTENT} c ON c.seq = o.origin_seq AND c.body IS NOT NULL AND c.path LIKE 'fields/%'
-     WHERE o.table_id = $1 ORDER BY o.row_id, c.path`,
-    [t.id],
+     WHERE o.table_id = $1 ${only === undefined ? "" : "AND o.row_id = $2"} ORDER BY o.row_id, c.path`,
+    only === undefined ? [t.id] : [t.id, only],
   );
   const out = new Map<EntityId, Record<FieldId, FieldValue>>();
   for (const x of r.rows) {
@@ -73,23 +76,52 @@ export async function tableKeys(
   return out;
 }
 
-/** The entities holding this key: one at most, unless the store breaks the key's uniqueness. */
+/** A table's stored keys, by entity and by key token (`keyToken`), in entity ID order. */
+interface StoredKeys {
+  readonly byEntity: ReadonlyMap<EntityId, KeyValues>;
+  readonly byToken: ReadonlyMap<string, readonly EntityId[]>;
+}
+
+/** The table's stored keys: read once a request when given a cache, else read now. */
+async function storedKeys(
+  tx: ReadTx,
+  t: CompiledBaseTable,
+  cache: KeyCache | undefined,
+): Promise<StoredKeys> {
+  const had = cache?.keys.get(t.id);
+  if (had !== undefined) return had;
+  const byEntity = await tableKeys(tx, t);
+  const byToken = new Map<string, EntityId[]>();
+  for (const [e, k] of byEntity) {
+    const token = keyToken(t, k);
+    byToken.set(token, [...(byToken.get(token) ?? []), e]);
+  }
+  const out = { byEntity, byToken };
+  cache?.keys.set(t.id, out);
+  return out;
+}
+
+/**
+ * The entities holding this key: one at most, unless the store breaks the key's uniqueness. With a
+ * cache, as the store was when the request first read the table's keys: entities the request
+ * creates are the caller's to look up.
+ */
 export async function entitiesByKey(
   tx: ReadTx,
   t: CompiledBaseTable,
   key: KeyValues,
+  cache?: KeyCache,
 ): Promise<EntityId[]> {
-  const token = keyToken(t, key);
-  return [...(await tableKeys(tx, t))].filter(([, k]) => keyToken(t, k) === token).map(([e]) => e);
+  return [...((await storedKeys(tx, t, cache)).byToken.get(keyToken(t, key)) ?? [])];
 }
 
-/** An entity's key, from the event that created it. */
+/** An entity's key, from the event that created it (the entity's own row of `row_origins`). */
 export async function keyOf(
   tx: ReadTx,
   t: CompiledBaseTable,
   entity: EntityId,
 ): Promise<KeyValues | undefined> {
-  return (await tableKeys(tx, t)).get(entity);
+  return (await tableKeys(tx, t, entity)).get(entity);
 }
 
 /** A key value as text a caller can write back. */
@@ -119,24 +151,15 @@ export async function existingKeys(
   tx: ReadTx,
   t: CompiledBaseTable,
   limit: number,
+  cache: KeyCache = createKeyCache(),
 ): Promise<EntityKeyText[]> {
-  const keys = await tableKeys(tx, t);
-  if (keys.size === 0) return [];
-  const name = t.physical.table;
-  if (!/^t[1-9][0-9]{0,8}$/.test(t.id) || !new RegExp(`^t_${t.id}_v[1-9][0-9]{0,8}$`).test(name)) {
-    throw new Error(`not a physical table name: ${JSON.stringify(name)}`);
-  }
-  const latest = await tx.query<{ row_id: string; at: unknown }>(
-    `SELECT row_id, max(rec_from) AS at FROM "${name}__ver" GROUP BY row_id`,
-  );
-  const at = new Map(latest.rows.map((x) => [x.row_id, Number(x.at)]));
-  return [...keys]
-    .sort(([a], [b]) => (at.get(b) ?? 0) - (at.get(a) ?? 0) || (a < b ? -1 : a > b ? 1 : 0))
-    .slice(0, limit)
-    .map(([, k]) => keyText(t, k));
+  return (await snapshotOf(tx, t, cache)).byRecency.slice(0, limit).map((x) => keyText(t, x.key));
 }
 
-/** Entities compared for `similar_keys`, the most recently written first (10 «比较范围», 初值). */
+/**
+ * Entities compared for `similar_keys`, the most recently written first (10 «比较范围», initial
+ * value).
+ */
 export const SIMILAR_SCOPE = 5000;
 /** `similar_keys` given at most. */
 export const SIMILAR_MAX = 5;
@@ -148,7 +171,7 @@ export interface SimilarKey {
   readonly revoked?: true;
 }
 
-/** What `similarKeys` reads of a table once a request (`createSimilarCache`). */
+/** What `similarKeys` and `existingKeys` read of a table once a request (`createKeyCache`). */
 interface TableSnapshot {
   /** The stored entities with their keys, the most recently written first, then by entity ID. */
   readonly byRecency: readonly {
@@ -163,21 +186,27 @@ interface TableSnapshot {
 }
 
 /**
- * What `similarKeys` reads once a request and keeps: each table's stored keys, their latest write
- * and whether they have a value (the store does not change while a request is judged: its own
- * writes come in as `here`), and each text folded (`foldKey`).
+ * What a request reads of the store's keys once and keeps (the store does not change while a
+ * request is judged: its own writes come in apart, as `here` or the caller's own map): each
+ * table's stored keys (`keys`), their latest write and whether they have a value (`tables`), and
+ * each text folded (`foldKey`).
  */
-export interface SimilarCache {
+export interface KeyCache {
+  readonly keys: Map<TableId, StoredKeys>;
   readonly tables: Map<TableId, TableSnapshot>;
   readonly folded: Map<string, readonly number[]>;
 }
 
-export const createSimilarCache = (): SimilarCache => ({ tables: new Map(), folded: new Map() });
+export const createKeyCache = (): KeyCache => ({
+  keys: new Map(),
+  tables: new Map(),
+  folded: new Map(),
+});
 
 async function snapshotOf(
   tx: ReadTx,
   t: CompiledBaseTable,
-  cache: SimilarCache,
+  cache: KeyCache,
 ): Promise<TableSnapshot> {
   const had = cache.tables.get(t.id);
   if (had !== undefined) return had;
@@ -185,7 +214,7 @@ async function snapshotOf(
   if (!/^t[1-9][0-9]{0,8}$/.test(t.id) || !new RegExp(`^t_${t.id}_v[1-9][0-9]{0,8}$`).test(name)) {
     throw new Error(`not a physical table name: ${JSON.stringify(name)}`);
   }
-  const stored = await tableKeys(tx, t);
+  const stored = (await storedKeys(tx, t, cache)).byEntity;
   const latest = await tx.query<{ row_id: string; at: unknown }>(
     `SELECT row_id, max(rec_from) AS at FROM "${name}__ver" GROUP BY row_id`,
   );
@@ -203,7 +232,7 @@ async function snapshotOf(
   return snap;
 }
 
-function foldedOf(s: string, cache: SimilarCache): readonly number[] {
+function foldedOf(s: string, cache: KeyCache): readonly number[] {
   let f = cache.folded.get(s);
   if (f === undefined) {
     f = foldKey(s);
@@ -234,7 +263,7 @@ export async function similarKeys(
     readonly key?: KeyValues;
     readonly revoked: boolean;
   }[],
-  cache: SimilarCache,
+  cache: KeyCache,
 ): Promise<SimilarKey[]> {
   const fields = keyFields(t);
   if (!fields.some((f) => f.type === "text")) return [];

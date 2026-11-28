@@ -1,4 +1,4 @@
-// Experiment 8 runner (pre-dev-w0-experiments 实验 8). Results: experiments/out/exp8/*.json.
+// Experiment 8 runner (pre-dev-w0-experiments, experiment 8). Results: experiments/out/exp8/*.json.
 //
 //   node --conditions=source experiments/exp8/run.ts contend --candidate A [--rounds 100] [--procs 10] [--store]
 //   node --conditions=source experiments/exp8/run.ts kill    --candidate A [--rounds 100] [--store]

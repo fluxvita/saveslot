@@ -1,7 +1,7 @@
 // The profile of a table in `catalog` at the `table` level (docs/zh-CN/spec/04-contract.md §10
-// `catalog` "概况" «规模提示»; 04-contract-types.md §4.2 `profile`): its row count, the range of its
-// business time, and the scale hint. Worked out when read, from the current data: nothing is
-// stored, nothing goes into an event, and the hint is no mark on the data.
+// `catalog`, the profile, «规模提示»; 04-contract-types.md §4.2 `profile`): its row count, the
+// range of its business time, and the scale hint. Worked out when read, from the current data:
+// nothing is stored, nothing goes into an event, and the hint is no mark on the data.
 //
 // What a row is: a live row of the table as stored. An event or timeless table: the rows not
 // revoked. A state table: its segments (a revoke is an interval with no value there, so a
@@ -62,7 +62,7 @@ export async function profileOf(
   bounds: ScaleBounds = SCALE_BOUNDS,
 ): Promise<TableProfile | undefined> {
   // A derived table computed when read has no stored rows to count, and computing its rule is not
-  // the catalog's to do: no profile (04-contract §10 "概况").
+  // the catalog's to do: no profile (04-contract §10 «`catalog`»).
   if (t.kind === "derived" && computedAtRead(t)) return undefined;
   let sql: string;
   if (t.kind === "derived") {

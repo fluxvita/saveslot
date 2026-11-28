@@ -1,4 +1,4 @@
-// The tenant-creation entry (docs/zh-CN/spec/02-architecture.md §4 "契约操作与内部操作";
+// The tenant-creation entry (docs/zh-CN/spec/02-architecture.md §4 «契约操作与内部操作»;
 // docs/zh-CN/spec/09-event-format.md §5.2 `tenant.genesis`).
 //
 // Neither a contract operation nor an internal operation: `saveslot init` or provisioning calls

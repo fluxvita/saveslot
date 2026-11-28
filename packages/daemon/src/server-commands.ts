@@ -39,10 +39,14 @@ import {
 import { type ControlDatabase, openControlDatabase } from "@fluxvita/saveslot-store-postgres";
 import { daemonVersion } from "./main.ts";
 import {
+  CellIdentityRefused,
+  CellUnreachable,
   ControlUnreachable,
+  ControlUpgradeFailed,
   type RunningServer,
   runServer,
   ServerAlreadyRunning,
+  ServerConfigRefused,
   ServerStartRefused,
 } from "./run-server.ts";
 import type { ServerCommandIO } from "./server-command-io.ts";
@@ -53,6 +57,7 @@ import {
   readIdentity,
   ServerIdentityRefused,
 } from "./server-identity.ts";
+import { releaseServerLock, takeServerLock } from "./server-lock.ts";
 import { restoreTarget, type ServerRestoreIO, serverRestore } from "./server-restore-command.ts";
 import {
   accountRefused,
@@ -305,15 +310,31 @@ async function initWith(
     return 7;
   }
   try {
+    // The control database of an older format is upgraded only with no server running: the
+    // server lock taken alone, for the upgrade only (06-cli §4.1 `server init`).
+    const alone = await takeServerLock(db);
+    let upgraded: { from: number; to: number } | undefined;
     try {
-      await initControlPlane(db);
+      await initControlPlane(db, {
+        upgrade: alone,
+        onEvent: (e) => {
+          if (e.event === "control_upgraded") upgraded = { from: e.from, to: e.to };
+        },
+      });
       await initOAuthTables(db);
       await initIdentityTables(db, external);
     } catch (e) {
       if (!(e instanceof ControlPlaneError) && !(e instanceof IdentityTablesRefused)) throw e;
-      io.err(TEXTS.server.controlFormat);
+      if (e instanceof ControlPlaneError && e.code === "control_format_old") {
+        io.err(TEXTS.server.controlUpgradeNeedsAlone);
+      } else if (e instanceof ControlPlaneError && e.code === "control_upgrade_failed") {
+        io.err(TEXTS.server.controlUpgradeFailed(e.step ?? "", e.sqlState));
+      } else io.err(TEXTS.server.controlFormat);
       return 5;
+    } finally {
+      if (alone) await releaseServerLock(db);
     }
+    if (upgraded !== undefined) io.out(TEXTS.server.controlUpgraded(upgraded.from, upgraded.to));
     io.out(made ? TEXTS.server.keyFileMade : TEXTS.server.keyFileKept);
     io.out(TEXTS.server.controlReady);
     if (external !== undefined) return 0;
@@ -397,6 +418,22 @@ async function serverStart(config: ServerConfig, io: ServerRestoreIO): Promise<n
     if (e instanceof ServerAlreadyRunning) {
       io.err(TEXTS.server.alreadyRunning);
       return 7;
+    }
+    if (e instanceof CellUnreachable) {
+      io.err(TEXTS.server.cellUnreachable);
+      return 7;
+    }
+    if (e instanceof CellIdentityRefused) {
+      io.err(TEXTS.server.cellIdentityRefused(e.sqlState));
+      return 5;
+    }
+    if (e instanceof ControlUpgradeFailed) {
+      io.err(TEXTS.server.controlUpgradeFailed(e.step, e.sqlState));
+      return 5;
+    }
+    if (e instanceof ServerConfigRefused) {
+      io.err(TEXTS.server.configDiffers(e.differences));
+      return 5;
     }
     if (e instanceof ServerStartRefused || e instanceof IdentityTablesRefused) {
       io.err(TEXTS.server.startRefused(e.set, e.reason));

@@ -8,7 +8,8 @@
 // - `conflictImpact`, `awaitingImpact`, `proposalImpact`: what carrying the item out would change
 //   (`impact/<k>`).
 // - `reaches`: whether an operation changed what is in effect on an item's unit within its
-//   interval: the conflict criterion's "改到" (candidates and awaiting parts change nothing).
+//   interval: what the conflict criterion counts as "changes" (candidates and awaiting parts change
+//   nothing).
 
 import type { FieldId, FieldValue, OpNumber } from "@fluxvita/saveslot-contract-core";
 import { sameValue } from "../delta/index.ts";
@@ -246,10 +247,10 @@ function segmentsOf(state: RowState, x: Parameters<typeof overwrittenBy>[1], at:
 }
 
 /**
- * What taking a candidate would overwrite, when that would be high impact (01-objects «影响»:
- * 候选若生效会属高影响时): its items put into effect after `at` would erase a change point of the
- * state as of `at` (05-time «高影响写入» ①, the same test the judge makes of a write). Only state
- * tables have change points.
+ * What taking a candidate would overwrite, when that would be high impact (01-objects «影响»: "if a
+ * candidate would be high-impact when it takes effect"): its items put into effect after `at` would
+ * erase a change point of the state as of `at` (05-time «高影响写入» ①, the same test the judge
+ * makes of a write). Only state tables have change points.
  */
 export function candidateImpact(
   state: RowState,
@@ -348,7 +349,7 @@ export function awaitingImpact(state: RowState, j: Judgement): ImpactEntry[] {
 
 /**
  * Whether what is in effect on `unit` within `scope` differs between two positions of the log
- * (01-objects «不过期»: "改到" by the conflict criterion, on the item's unit only): an op of a
+ * (01-objects «不过期»: "changes" by the conflict criterion, on the item's unit only): an op of a
  * request, from just before it to just after it. On a unit of fields, a field's state on some
  * stretch; on the unit "existence", whether some stretch went between having a value and not
  * (event and timeless tables: whether the row became revoked or not).

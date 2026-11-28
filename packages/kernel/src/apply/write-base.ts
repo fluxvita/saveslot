@@ -313,7 +313,7 @@ export const BASE_SOURCE_COLUMNS = [
   "given_path",
 ];
 
-/** A field value as the columns of its field take it (02-architecture §8 业务表). */
+/** A field value as the columns of its field take it (02-architecture §8 «业务表»). */
 function columnValues(t: CompiledBaseTable, f: FieldId, v: FieldValue): SqlValue[] {
   const def = t.fields.find((x) => x.id === f);
   const zoned = def?.type === "zoned_datetime";
@@ -373,7 +373,7 @@ export function settleRowChanges(
     ]),
   });
 
-  // Version cells (02-architecture §8 版本表): an open cell no longer current is closed at this
+  // Version cells (02-architecture §8 «版本表»): an open cell no longer current is closed at this
   // operation, or dropped when this operation opened it (a later op of one operation overwrites);
   // a current cell not open yet is opened at this operation.
   const now = new Map(

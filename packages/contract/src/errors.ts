@@ -31,7 +31,14 @@ export const OUTER_ERROR_REASONS = {
   unauthenticated: ["missing", "invalid", "revoked", "expired", "account_disabled"],
   insufficient_scope: [],
   rate_limited: ["quota", "busy"],
-  handle_expired: ["expired", "restored", "executed", "derived_changed", "deletion_changed"],
+  handle_expired: [
+    "expired",
+    "restored",
+    "executed",
+    "derived_changed",
+    "deletion_changed",
+    "format_changed",
+  ],
   not_in_this_version: ["parameter", "value", "operation", "table_written", "not_implemented"],
   unavailable: ["busy", "restoring", "importing", "reconciling", "starting", "stopping"],
   internal: [],
@@ -58,8 +65,8 @@ export type ErrorCode = keyof typeof ERROR_REASONS;
 export type ErrorReason<C extends ErrorCode = ErrorCode> = (typeof ERROR_REASONS)[C][number];
 
 /**
- * 04-contract-types §9 the extra fields of an error, per code (the "其余附带字段" column), all
- * optional here: which ones appear depends on `code` and `reason`.
+ * 04-contract-types §9 the extra fields of an error, per code (the "Other accompanying fields"
+ * column), all optional here: which ones appear depends on `code` and `reason`.
  */
 export interface ErrorDetails {
   // invalid_argument

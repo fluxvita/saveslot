@@ -75,8 +75,8 @@ function refusal(f: () => unknown): JudgeError {
 const values = (state: RowState, f: FieldId) =>
   (view(state).fields[f] ?? []).map((s) => [s.valid[0]?.from ?? null, s.value]);
 
-// 05-time «写状态» example: 10-01 起 5000 (#10), 11-10 起 4000 (#20); #30 from 11-02 open erases
-// the change point and awaits.
+// 05-time «写状态» example: 5000 from 10-01 (#10), 4000 from 11-10 (#20); #30 from 11-02 open
+// erases the change point and awaits.
 const awaiting = [
   write(10, { f2: "5000" }, { seen: 0 }),
   { ...write(20, { f2: "4000" }, { from: "11-10" }), acknowledge: true as const },
@@ -850,7 +850,7 @@ describe("K's filter (03-deletion «回掉的权威定义» step 2), against the
   });
 });
 
-describe("an undo applied when written stays applied (03-deletion «高影响»: 按偏离二保持生效)", () => {
+describe("an undo applied when written stays applied (03-deletion «高影响»: by deviation 2)", () => {
   it("its write-backs, empty when written, erase change points once a deletion uncovers what it takes back", () => {
     // #20 writes 2 on [11-03, 11-05); #30 covers it whole with 5 on [11-01, 11-09); #40 undoes
     // #20: #21 is covered, no write-back, nothing erased, applied without acknowledge. S30 deleted:

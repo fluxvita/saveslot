@@ -1,9 +1,10 @@
-// What apply keeps of write premises (docs/zh-CN/spec/09-event-format.md §5.7 前提块, §5.10
-// `premise.changed`; 02-architecture §8 `premise_decls`, `premise_edges`): the declarations and their
-// state, and for each 出处项 the declaration in force on it for each premise target. apply compares
-// no values: whether a premise changed is decided once, online, and recorded in `premise.changed`.
+// What apply keeps of write premises (docs/zh-CN/spec/09-event-format.md §5.7, the premise block;
+// §5.10 `premise.changed`; 02-architecture §8 `premise_decls`, `premise_edges`): the declarations
+// and their state, and for each origin item the declaration in force on it for each premise target.
+// apply compares no values: whether a premise changed is decided once, online, and recorded in
+// `premise.changed`.
 //
-// The cover (§5.7 "覆盖"): a declaration covers its op's own items, every item of the op's
+// The cover (09 §5.7 «覆盖»): a declaration covers its op's own items, every item of the op's
 // `write.base` on the target row (registered when that event is applied), and the items its op lists
 // in `premise_covers`. For one item and one premise target the latest declaration covering it is in
 // force: latest by (operation, op index), so an edge is written over only by a later one, whatever

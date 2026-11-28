@@ -2,9 +2,9 @@
 // §7 and §8 that §6.8 indexes). Each is an `as const` array, so the value set exists at runtime
 // for strict parsing (§1.6: an unknown enum value stops `apply`), plus the derived union type.
 //
-// Reserved values (§6 "保留值") are NOT members of these arrays: v = 1 neither produces nor accepts
-// them. They are listed in RESERVED_ENUM_VALUES only so that error messages can say "reserved"
-// instead of "unknown"; both are rejected.
+// Reserved values (§6 "reserved values") are NOT members of these arrays: v = 1 neither produces
+// nor accepts them. They are listed in RESERVED_ENUM_VALUES only so that error messages can say
+// "reserved" instead of "unknown"; both are rejected.
 //
 // Names follow docs/zh-CN/spec/04-contract-types.md where the contract has the same enum with the
 // same v1 value set (the contract marks reserved values `@later`; this package omits them).

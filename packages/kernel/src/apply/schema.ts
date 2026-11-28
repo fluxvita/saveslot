@@ -1,5 +1,5 @@
 // apply of slot policy and schema events: creating a slot (docs/zh-CN/spec/09-event-format.md §4.5,
-// §5.4, §5.5, §7) and the physical tables of a version (02-architecture.md §8 "存储格式 v1").
+// §5.4, §5.5, §7) and the physical tables of a version (02-architecture.md §8 «存储格式 v1»).
 //
 // This phase applies the path that creates a slot: `schema.draft_submitted` (creates_slot) →
 // `schema.compiled` (with `create_slot`) → `schema.confirmed` → `slot.policy_set` →

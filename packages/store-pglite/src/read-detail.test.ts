@@ -1,7 +1,8 @@
 // `detail: "detailed"` on `query` (04-contract-types §4.1 `RowDetail`; 04-contract §10 `detail`):
 // each row's last change and when it was recorded; each field read with its literal result and
-// source level (03-deletion «字段的来源级别»: 仍在的值来源里，字面命中的那些证据段的声明级别取最高;
-// any segment hit → hit, else any miss → miss, else na); a ref field with a summary of the row it
+// source level (03-deletion «字段的来源级别»: "among the value sources of the field that are still
+// there, the highest declared level among the evidence portions that have a literal match"; any
+// segment hit → hit, else any miss → miss, else na); a ref field with a summary of the row it
 // names, read as the page is and recorded as read; every premise in effect on the row, current
 // or changed. With `fields`, only the fields read.
 

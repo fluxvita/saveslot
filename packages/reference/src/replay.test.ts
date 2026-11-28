@@ -150,7 +150,8 @@ describe("which undo targets are accepted", () => {
   });
 
   it("a corroboration-only write is rejected: it changed no value", () => {
-    // 04-write-and-read «第 n 次写入是什么»: 只做了同值佐证 → `invalid_argument`.
+    // 04-write-and-read «第 n 次写入是什么»: "A write that only corroborated the same value" →
+    // `invalid_argument`.
     const corroborate = put(20, 21, "5000", ["S1"], "11-05", "11-20", { explicit: true });
     const ev = evaluate(STATE, [
       base,
@@ -405,8 +406,8 @@ describe("undoing a revert put into effect by a confirmation", () => {
 });
 
 it("revoking a revoked row of an event table again is a no-op", () => {
-  // 04-write-and-read «已撤销的行不可写»: 再次撤销是无操作. Undoing the first revoke brings the
-  // row back.
+  // 04-write-and-read «已撤销的行不可写»: "revoking again is a no-op". Undoing the first revoke
+  // brings the row back.
   const ops: Op[] = [
     { kind: "write", op: 10, event: 11, fields: { f2: { value: "1", sources: ["S1"] } } },
     { kind: "revoke", op: 20, event: 21 },
