@@ -524,8 +524,7 @@ async function readOnlyCancelled(
   if (givers.size === 0) return givers;
   const events = [...new Set([...givers.keys()].map((x) => Number(x.split("/")[0])))];
   const own = await tx.query<{ seq: unknown; path: string }>(
-    `SELECT seq, path FROM content WHERE seq = ANY($1)
-       AND (path LIKE 'fields/%' OR path LIKE 'existence/%')`,
+    `SELECT seq, path FROM ${rawContentOf("$1", "x.path LIKE 'fields/%' OR x.path LIKE 'existence/%'")} c`,
     [events as never],
   );
   for (const r of own.rows) {
