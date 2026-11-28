@@ -25,7 +25,7 @@ The name takes the sense of "save slot": a slot holds a complete state that can 
 A slot is the unit for three things:
 
 - **Schema version.** A slot has one current schema version (`sv`). A change to table structure raises the version per slot. The time zone is also set per slot.
-- **The scope of one deletion.** One privacy deletion touches the source data of only one slot. When one sentence speaks about things in two slots, it is stored as two pieces of source data, and each is deleted on its own (chapter 8).
+- **The scope of one deletion.** One privacy deletion touches the source data of only one slot. When one sentence speaks about things in two slots, it is stored as two pieces of source data, and each is deleted on its own (chapter 8; privacy deletion is not provided yet in 0.2.0, see [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md) section 7).
 - **The smallest unit of a credential's authorization scope.** When a credential is issued it can be limited to certain slots: a connector responsible only for health data gets a credential that sees only `health`, and the other slots are, for it, the same as nonexistent (chapter 11). A scope goes down to the slot level only, not to a single table or field; table-level and field-level data permissions are for later.
 
 Export is not per slot: the first version exports the whole log of the tenant (chapter 11). Exporting only one slot is for later.
@@ -70,7 +70,7 @@ There are three relationships between the two layers, and the mechanisms that fo
 2. **Every write has source data.** When evidence is passed, the evidence is stored as source data; when none is passed (for example a script calling the interface directly), saveslot stores the request itself as source data. There is no "write without a source". (The one exception is a sync request that changed nothing: all the records it brought were unchanged or skipped, and it leaves nothing in the log; chapter 5, section 3.)
 3. **A correction is a new piece of source data; it does not edit the old one.** When the user says "No, it is 54 yuan", that sentence itself is recorded, and a correction write is then produced from it. The original sentence and the original value both remain in the history.
 
-A piece of source data has a kind: the user's words, an agent's paraphrase or inference, a tool result, a reference to an external file. The kind determines its default **source level**: the user's words are "user explicit", and the rest are "agent inferred". The source level is used in conflict resolution.
+A piece of source data has a kind: the user's words, an agent's paraphrase or inference, a tool result, a reference to an external file. The kind determines its default **source level**: the user's words are "user explicit", and the rest are "agent inferred". The source level is there for conflict resolution: in the full design, a candidate with a higher source level can take effect by rule. The first version does not do this: every conflict keeps the current value, and levels take no part in the decision; they are still determined and recorded in the event, for later resolution to use (step 3 of chapter 2).
 
 Specification: [`../spec/03-data-model/01-objects.md`](../spec/03-data-model/01-objects.md), "Data layers" and "What a source is"; [`../spec/03-data-model/04-write-and-read.md`](../spec/03-data-model/04-write-and-read.md), "Invariant: every write has source data".
 
@@ -128,11 +128,13 @@ Read records belong to (c): they are large in volume, have their own retention p
 - **History and provenance come built in.** "What was it at some moment" and "on what grounds is this value" need no separate mechanism.
 - **Changing table structure is the same action.** Tables of the new version are built by replaying the log into the new structure.
 
+> Three things in this section are not provided yet in 0.2.0: the replay comparison used for self-checking (`saveslot verify --replay`); migrations that rebuild physical tables, the kind that replays the log into a new structure; and the clean-up of read records at expiry (0.2.0 does not clean up read records; they only grow). See [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md) section 7.
+
 Specification: [`../spec/02-architecture.md`](../spec/02-architecture.md) §3 "The log is the only source of truth"; which tables each kind has is in §8 "Storage format v1" of the same file; the fields of each kind of event are in [`../spec/09-event-format.md`](../spec/09-event-format.md), and a first reading does not need to go through all of it.
 
 ## 4. Event headers are separate from content
 
-"The log is append-only" and "the user has the right to demand complete deletion" conflict. saveslot's solution is to split each event into two parts:
+"The log is append-only" and "the user has the right to demand complete deletion" conflict. saveslot's solution is to split each event into two parts (the clearing of whole blocks described in this section comes from privacy deletion, which is not provided yet in 0.2.0; see [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md) section 7):
 
 | | What is in it | Can it be deleted | Is it in the chain |
 |---|---|---|---|
@@ -216,7 +218,7 @@ A premise exists only when the agent declares it explicitly at write time; saves
 
 ### Why there are two kinds of source
 
-So that deletion is computed correctly. Privacy deletion propagates only along **value sources**: when a sentence is deleted, the values it provided must be handled; but writes that it only "triggered" are not affected.
+So that deletion is computed correctly (privacy deletion is not provided yet in 0.2.0; this describes the design, see [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md) section 7). Privacy deletion propagates only along **value sources**: when a sentence is deleted, the values it provided must be handled; but writes that it only "triggered" are not affected.
 
 Take revoking: the user says "revoke that lunch entry", and later asks to delete this sentence. Deletion follows value sources to find the affected values, finds no value provided by this sentence, so the row's state does not change and it remains revoked. What is deleted is only the sentence itself. Without the two kinds of source, deleting this sentence would make that row "come back to life", which amounts to undoing, on the user's behalf, a decision the user had made.
 
@@ -249,7 +251,7 @@ These two things let saveslot detect concurrent modification and find the affect
 
 **The version mark `ver`.** Each row has a token for its current version, returned on read and passed back unchanged on modification. It is written like `v21.0`: the first number is the operation number of the operation that last changed this row, and the second number is the number of times the tenant has been restored from a backup (importing data into a new tenant also counts as one). From this saveslot knows "which version your modification was based on", and this version is called the **version seen** of the write. When it does not match, saveslot does not simply refuse but compares per field: if the field you want to change has not been touched by anyone else since, the change is merged and takes effect; only if it has been touched does it count as a conflict (step 3 of the previous chapter).
 
-`ver` changes only when the value in effect of this row has changed; the complete list is in chapter 5, section 3.
+`ver` is renewed when a field of this row changes: its value changes, or the value stays the same but is now given by another operation (for example, revoking again within an interval already revoked). A derived refresh, a migration or corroboration with the same value does not renew it. The complete list is in chapter 5, section 3.
 
 **The external key: for writers who have not read the row.** `ver` assumes that the writer has read the row it wants to change. A program that syncs data from an external system on a schedule (the connector mentioned in chapter 1) has not; all it has is the identifier of each record in the source system. So event tables and timeless tables can declare an **external key** in the schema: when writing by external key, an existing row is updated and a missing one is added, with no `ver`; when judging conflicts, saveslot uses "the values brought by the last sync" in place of the version seen. Chapter 5, section 3 covers this in detail.
 
@@ -263,7 +265,7 @@ It has three uses:
 - **Restoring by moment.** Which version a given task saw at that time.
 - **Fallback.** When the agent forgot to pass `ver` in a write, saveslot substitutes the version this connection most recently read, and says so in the receipt.
 
-Read records have a retention period and are cleaned up when it expires. So a correction impact query can cover only the reads within the retention period, and the result states up to which day it covers. Chapter 6 covers this in detail.
+Read records have a retention period and are cleaned up when it expires. So a correction impact query can cover only the reads within the retention period, and the result states up to which day it covers. Chapter 6 covers this in detail. (The clean-up at expiry is not provided yet in 0.2.0: 0.2.0 does not clean up read records; they only grow. See [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md) section 7.)
 
 Specification: [`../spec/03-data-model/02-integrity-and-records.md`](../spec/03-data-model/02-integrity-and-records.md), "The read record: `read_log`" and "Querying the reads a correction affects".
 
@@ -311,7 +313,7 @@ Some matters saveslot cannot decide by itself, and a person or an agent has to j
 | Awaiting confirmation | A high-impact write | No, it waits for confirmation | Confirm / reject |
 | Flagged | A suspected duplicate record | Yes, it is only marked out | Keep / revoke |
 | Schema change | A table structure change that cannot take effect automatically | No, it waits for confirmation | Confirm / reject |
-| Deletion grace period | A confirmed deletion, within 24 hours | Can no longer be read, not yet physically erased | Cancel the deletion |
+| Deletion grace period (not provided yet in 0.2.0) | A confirmed deletion, within 24 hours | Can no longer be read, not yet physically erased | Cancel the deletion |
 
 (There is one more kind of item, related to table structure migration, left for chapter 9.)
 
@@ -323,7 +325,7 @@ They share four properties.
 
 **It does not expire and is not quietly closed.** saveslot has no judgement, and any length of time after which something is "handled automatically" is a guess, so it does not rule on behalf of people. Items do not pile up, because of this:
 
-- Conflict items are counted per field: on the same field of the same row there is at most one open conflict item, and later conflicts are merged into it.
+- Conflict items are counted per **conflict unit**: a conflict unit is a field, or a group of fields the schema declares are judged together. On the same conflict unit of the same row there is at most one open conflict item, and later conflicts are merged into it; on a state table the intervals count too: a candidate is merged only when its interval intersects the existing item's, and one that does not intersect becomes an item of its own.
 - When a later write changes a field the item concerns, there are two cases. If the writer **has seen the details of the item**, the item is marked "superseded", because the writer made a new decision after seeing the candidate. If the writer **has not seen it**, the item is only **refreshed** (the current value is replaced with the new value) and stays open.
 
 The reason for the second rule: the party reading data sees only the value in effect and a flag, and has not seen what the candidate is. Suppose the value in effect is 9.5 inferred by an agent, and the candidate is 10 said by the user in person, and an unattended agent writes 9.6 as an external tool sync; if the item were closed just like that, the 10 the user said would no longer appear in any pending item. A candidate can be closed only by a party that has seen it.
