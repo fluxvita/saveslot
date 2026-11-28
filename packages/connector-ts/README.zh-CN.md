@@ -12,7 +12,7 @@
 
 ## 安装
 
-不发布到 npm：它是本仓库的私有包。从本仓库使用（workspace 依赖，或指向 `packages/connector-ts` 的路径）。
+还没有发布到 npm：目前是本仓库的私有包，以后单独发布。从本仓库使用（workspace 依赖，或指向 `packages/connector-ts` 的路径）。
 
 需要 Node.js 24 或更高版本。
 

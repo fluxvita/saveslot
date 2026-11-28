@@ -12,7 +12,7 @@ This is the TypeScript side only. SDKs for other platforms and languages are dev
 
 ## Install
 
-Not published to npm: it is a private package of this repository. Use it from this repository (a workspace dependency, or a path to `packages/connector-ts`).
+Not on npm yet: for now it is a private package of this repository, and it will be released on its own later. Use it from this repository (a workspace dependency, or a path to `packages/connector-ts`).
 
 Node.js 24 or later.
 
