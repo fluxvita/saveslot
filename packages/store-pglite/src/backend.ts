@@ -19,6 +19,7 @@ import {
   formatV1Ddl,
   META_KEYS,
   OLDEST_UPGRADABLE_FORMAT,
+  type PurgeOutcome,
   type QueryResult,
   type ReadTx,
   SESSION_SETTINGS,
@@ -43,6 +44,8 @@ import type {
   Durability,
   Envelope,
   HostSyncStats,
+  MaintainReply,
+  MaintainStep,
   OpenResult,
   QueryReply,
   Reply,
@@ -76,6 +79,11 @@ export interface PgliteBackendOptions {
    */
   readonly analyze?: AnalyzeMode;
   /**
+   * Tests only: the residue clean-up's steps as sent, given the steps it would send (a test leaves
+   * one out to show that the deleted text is then still on disk).
+   */
+  readonly purgeSteps?: (steps: readonly MaintainStep[]) => readonly MaintainStep[];
+  /**
    * Tests only: the format this backend takes for the kernel's, and the upgrade steps to it, in
    * place of STORAGE_FORMAT_VERSION and UPGRADE_STEPS (a test's own format, steps and failures).
    */
@@ -97,6 +105,7 @@ export interface PgliteBackendOptions {
 /** See PgliteBackendOptions `onEvent`. */
 export type StoreEvent =
   | "checkpoint_failed"
+  | "purge_failed"
   | "analyzed"
   | "analyze_failed"
   | "upgrading"
@@ -212,6 +221,7 @@ export class PgliteBackend implements StorageBackend {
   readonly #upgradeSteps: readonly UpgradeStep[];
   readonly #beforeStep: ((from: number) => Promise<void>) | undefined;
   readonly #onEvent: PgliteBackendOptions["onEvent"];
+  readonly #purgeSteps: PgliteBackendOptions["purgeSteps"];
 
   constructor(opts: PgliteBackendOptions = {}) {
     this.#durability = opts.durability ?? "host-fsync";
@@ -223,6 +233,7 @@ export class PgliteBackend implements StorageBackend {
     this.#upgradeSteps = opts.formatUpgrade?.steps ?? UPGRADE_STEPS;
     this.#beforeStep = opts.formatUpgrade?.beforeStep;
     this.#onEvent = opts.onEvent;
+    this.#purgeSteps = opts.purgeSteps;
   }
 
   async open(
@@ -332,6 +343,7 @@ export class PgliteBackend implements StorageBackend {
         worker,
         lock,
         onEvent: this.#onEvent,
+        purgeSteps: this.#purgeSteps,
         epoch: r.epoch,
         formatVersion,
       });
@@ -459,6 +471,7 @@ export class PgliteTenantStore implements TenantStore {
   readonly #worker: WorkerClient;
   readonly #lock: DirLockHandle;
   readonly #onEvent: PgliteBackendOptions["onEvent"];
+  readonly #purgeSteps: PgliteBackendOptions["purgeSteps"];
   #state: State = "open";
   #tail: Promise<unknown> = Promise.resolve();
   #closed: Promise<void> | undefined;
@@ -469,9 +482,11 @@ export class PgliteTenantStore implements TenantStore {
     worker: WorkerClient;
     lock: DirLockHandle;
     onEvent: PgliteBackendOptions["onEvent"];
+    purgeSteps?: PgliteBackendOptions["purgeSteps"];
     formatVersion: number;
     epoch: number;
   }) {
+    this.#purgeSteps = init.purgeSteps;
     this.dir = init.dir;
     this.#token = init.token;
     this.#worker = init.worker;
@@ -500,8 +515,45 @@ export class PgliteTenantStore implements TenantStore {
     return this.#enqueue(() => this.#transaction("read", fn));
   }
 
-  async purgeResidue(): Promise<void> {
-    throw new Error("purgeResidue is not implemented in v1 P0: its method is set by experiment 7");
+  /**
+   * The in-place residue clean-up (02-architecture §7 «残留清理的做法»; the kernel port's
+   * `purgeResidue`): each of `tables` rewritten, ANALYZE, the statistics rewritten, then the
+   * write-ahead log (two checkpoints around a segment switch, and one more), and the check. Each
+   * step is one request through the store's queue, so writes may come between two of them (what
+   * they write holds no deleted text); before each, the owner is checked, as before a checkpoint.
+   * There is no other session to wait for here (single-user mode). A name that is not one of the
+   * store's tables is refused before any step runs. A step that fails ends the worker
+   * (`worker_failed`): the instance may be broken, as after a failed checkpoint.
+   */
+  async purgeResidue(tables: readonly string[]): Promise<PurgeOutcome> {
+    const names = [...new Set(tables)].sort();
+    const known = new Set(
+      await this.read(async (tx) =>
+        (
+          await tx.query<{ name: string }>(
+            "SELECT relname AS name FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind = 'r'",
+          )
+        ).rows.map((r) => r.name),
+      ),
+    );
+    const unknown = names.filter((t) => !known.has(t));
+    if (unknown.length > 0) {
+      throw new Error(`purgeResidue: not tables of this store: ${unknown.join(", ")}`);
+    }
+    const steps: MaintainStep[] = [
+      ...names.map((table) => ({ op: "rewrite" as const, table })),
+      { op: "analyze" },
+      { op: "rewrite_statistics" },
+      { op: "checkpoint" },
+      { op: "switch_wal" },
+      { op: "checkpoint" },
+      { op: "checkpoint" },
+      { op: "check" },
+    ];
+    let last: MaintainReply = {};
+    for (const step of this.#purgeSteps?.(steps) ?? steps)
+      last = await this.#enqueue(() => this.#maintain(step));
+    return last.notRemovable === 0 ? { ok: true } : { ok: false, why: "dead_not_removable" };
   }
 
   async snapshot(): Promise<SnapshotRef> {
@@ -624,6 +676,23 @@ export class PgliteTenantStore implements TenantStore {
       this.#onEvent?.("checkpoint_failed", { code });
       if (this.#state === "open") this.#state = "failed";
       await this.#worker.terminate();
+    }
+  }
+
+  /** One step of `purgeResidue`, the owner checked first; one that fails ends the worker. */
+  async #maintain(step: MaintainStep): Promise<MaintainReply> {
+    this.#ensureUsable();
+    this.#checkOwner();
+    try {
+      return await this.#worker.call<MaintainReply>({ kind: "maintain", step });
+    } catch (e) {
+      const code = e instanceof PgliteStoreError ? (e.sqlState ?? e.code) : "unknown";
+      this.#onEvent?.("purge_failed", { step: step.op, code });
+      if (this.#state === "open") this.#state = "failed";
+      await this.#worker.terminate();
+      throw new PgliteStoreError("worker_failed", `the residue clean-up failed at ${step.op}`, {
+        cause: e,
+      });
     }
   }
 

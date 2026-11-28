@@ -65,6 +65,12 @@ class StandIn extends EventEmitter implements DriverClient {
 
   #usual(sql: string, values: unknown[]): Exclude<Answer, Error | undefined> {
     if (sql.includes("server_version_num")) return { rows: [{ version: this.version }] };
+    // What the role and the instance allow for the residue clean-up, read at open.
+    if (sql.includes("pg_switch_wal()")) {
+      return {
+        rows: [{ pg_maintain: true, pg_checkpoint: true, pg_switch_wal: true, wal_recycle: true }],
+      };
+    }
     if (sql.includes("server_encoding")) {
       // A server before 17 has no pg_database.datlocale.
       if (this.version < 170000)

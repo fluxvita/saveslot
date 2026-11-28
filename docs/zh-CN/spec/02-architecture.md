@@ -534,7 +534,7 @@ interface StorageBackend {
 interface TenantStore {
   write<T>(fn: (tx: Tx) => Promise<T>): Promise<T>     // 串行写事务；本机模式开头核对 epoch（格式只在打开时读），服务器模式开头取锁、核对格式与封存
   read<T>(fn: (tx: ReadTx) => Promise<T>): Promise<T>  // PGlite 上与写同一队列
-  purgeResidue(): Promise<void>                        // 物理删除后清理明文残留；做法与判据见 §7「残留清理的做法」
+  purgeResidue(tables: string[]): Promise<PurgeOutcome> // 物理删除后原地清理明文残留：重写给出的本租户的表（不是本租户的表就拒绝，一步也不做），再处理统计信息与预写日志；做法与判据见 §7「残留清理的做法」。PurgeOutcome = { ok: true } | { ok: false, why: "dead_not_removable" | "snapshot_timeout" }，没成不是故障；语句报错照抛，缺授权（PostgreSQL）抛 purge_permission
   snapshot(): Promise<SnapshotRef>                     // 物理快照，只用来加速；按备份对待（第一版不做）
   formatVersion: number
   close(): Promise<void>

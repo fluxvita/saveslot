@@ -533,7 +533,7 @@ interface StorageBackend {
 interface TenantStore {
   write<T>(fn: (tx: Tx) => Promise<T>): Promise<T>     // serial write transaction; local mode checks epoch at the start (the format is read at open only), server mode takes the lock and checks the format and the seal
   read<T>(fn: (tx: ReadTx) => Promise<T>): Promise<T>  // on PGlite, in the same queue as writes
-  purgeResidue(): Promise<void>                        // cleans up plaintext residue after physical erasure; method and criteria in §7 "How residue is cleaned up"
+  purgeResidue(tables: string[]): Promise<PurgeOutcome> // cleans up plaintext residue after physical erasure, in place: rewrites the given tables of this tenant (a name that is not one is refused, no step done), then the statistics and the write-ahead log; method and criteria in §7 "How residue is cleaned up". PurgeOutcome = { ok: true } | { ok: false, why: "dead_not_removable" | "snapshot_timeout" }; not done is no failure; a statement that fails throws, a missing grant (PostgreSQL) throws purge_permission
   snapshot(): Promise<SnapshotRef>                     // physical snapshot, only for speed; treated as a backup (not in the first version)
   formatVersion: number
   close(): Promise<void>

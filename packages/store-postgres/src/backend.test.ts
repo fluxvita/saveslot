@@ -3,7 +3,12 @@
 // epoch row left as made), a read's snapshot, and a connection that goes away before, during and at
 // the commit (02-architecture §7, §8).
 
-import { META_KEYS, SESSION_SETTINGS, STORAGE_FORMAT_VERSION } from "@fluxvita/saveslot-kernel";
+import {
+  META_KEYS,
+  PurgePermissionError,
+  SESSION_SETTINGS,
+  STORAGE_FORMAT_VERSION,
+} from "@fluxvita/saveslot-kernel";
 import { describe, expect, it } from "vitest";
 import {
   BUILTIN_LOCALE,
@@ -766,10 +771,9 @@ describe.skipIf(cell === undefined)("against a server", () => {
     );
 
     it(
-      "purgeResidue and snapshot are not in this version, as on PGlite",
+      "snapshot is not in this version, as on PGlite",
       async () => {
         await withStore(pg.name(), async (s) => {
-          await expect(s.purgeResidue()).rejects.toThrow("not implemented");
           await expect(s.snapshot()).rejects.toThrow("not implemented");
         });
       },
@@ -780,6 +784,149 @@ describe.skipIf(cell === undefined)("against a server", () => {
   // A write takes the tenant's lock first and reads after it. Its transaction is READ COMMITTED
   // whatever the database's default, so each statement after the wait sees what was committed
   // during it; at REPEATABLE READ the snapshot would be the lock statement's, from before the wait.
+  // The in-place residue clean-up (02-architecture §7 «残留清理的做法», «残留清理在 PostgreSQL 上需要的权限»).
+  // That it leaves no deleted text on disk is experiment 7's: these tests cannot read the server's
+  // files. Here: what it returns, what it waits for, what it refuses.
+  describe("purgeResidue", () => {
+    // A CHECKPOINT and VACUUM FULL wait on the whole instance's work: with the other test files
+    // writing to it at once, they take far longer than alone.
+    const TP = 240_000;
+    /** Done, or not done for one of the two reasons: the server's other work decides which. */
+    const OUTCOMES = [
+      { ok: true },
+      { ok: false, why: "dead_not_removable" },
+      { ok: false, why: "snapshot_timeout" },
+    ];
+    const quick = new PostgresBackend({ cells: { [CELL]: pg.cell }, purgeSnapshotWaitMs: 300 });
+    /** The store's database with a table `notes`, rows written and deleted. */
+    async function withNotes<T>(
+      b: PostgresBackend,
+      f: (s: PostgresTenantStore, db: string) => Promise<T>,
+    ): Promise<T> {
+      const db = pg.name();
+      const s = await b.open(pg.ref(db), { create: true });
+      try {
+        await s.write(async (tx) => {
+          await tx.exec("CREATE TABLE notes (id serial PRIMARY KEY, body text)");
+          await tx.exec("INSERT INTO notes (body) SELECT 'gone' FROM generate_series(1, 300)");
+        });
+        await s.write((tx) => tx.exec("DELETE FROM notes"));
+        return await f(s, db);
+      } finally {
+        await s.close();
+      }
+    }
+    /** What the role and the instance allow, read apart from the store. */
+    async function expectedMode(db: string) {
+      const r = await pg.sql(
+        db,
+        `SELECT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) AS su,
+           current_setting('wal_recycle') = 'off' AS off`,
+      );
+      return r.rows[0] as { su: boolean; off: boolean };
+    }
+
+    it(
+      "every step runs; residueMode as the role's grants and the instance's wal_recycle say",
+      async () => {
+        await withNotes(quick, async (s, db) => {
+          const { su, off } = await expectedMode(db);
+          if (su) {
+            expect(s.residueMode).toEqual(
+              off ? "in_place" : { rebuild: true, missing: ["wal_recycle"] },
+            );
+            // Every step ran: no statement threw. Alone on the server it is done ({ ok: true });
+            // sessions of no database (the run's other files) may keep it from being so.
+            expect(OUTCOMES).toContainEqual(await s.purgeResidue(["notes"]));
+          } else {
+            expect(s.residueMode).not.toBe("in_place");
+          }
+        });
+      },
+      TP,
+    );
+
+    it(
+      "a name that is not one of this database's tables: refused",
+      async () => {
+        await withNotes(backend, async (s) => {
+          await expect(s.purgeResidue(["notes", "pg_class"])).rejects.toThrow(
+            /not tables of this database: pg_class/,
+          );
+        });
+      },
+      TP,
+    );
+
+    it(
+      "another session of this database holding a snapshot past the wait: not done (snapshot_timeout)",
+      async () => {
+        await withNotes(quick, async (s, db) => {
+          const other = await Connection.connect(pg.cell, db);
+          try {
+            await other.run("BEGIN ISOLATION LEVEL REPEATABLE READ");
+            // A snapshot, and no lock on the table the clean-up rewrites (which it would wait for).
+            await other.run("SELECT count(*) FROM pg_class");
+            expect(await s.purgeResidue(["notes"])).toEqual({
+              ok: false,
+              why: "snapshot_timeout",
+            });
+            await other.run("COMMIT");
+            if ((await expectedMode(db)).su) {
+              expect(await s.purgeResidue(["notes"])).not.toEqual({
+                ok: false,
+                why: "snapshot_timeout",
+              });
+            }
+          } finally {
+            await other.end();
+          }
+        });
+      },
+      TP,
+    );
+
+    it(
+      "a role without the grants: residueMode names them, and a step it may not run is purge_permission",
+      async (ctx) => {
+        const role = `sst_purge_${process.pid}_${Date.now() % 100000}`;
+        try {
+          await pg.admin(`CREATE ROLE ${role} LOGIN CREATEDB`);
+        } catch {
+          ctx.skip();
+        }
+        const db = pg.name();
+        try {
+          const as = new PostgresBackend({ cells: { [CELL]: { ...pg.cell, user: role } } });
+          let opened: PostgresTenantStore | undefined;
+          try {
+            opened = await as.open(pg.ref(db), { create: true });
+          } catch {
+            ctx.skip();
+          }
+          const s = opened as PostgresTenantStore;
+          try {
+            const mode = s.residueMode;
+            expect(mode).not.toBe("in_place");
+            const missing = mode === "in_place" ? [] : mode.missing;
+            expect(missing).toEqual(
+              expect.arrayContaining(["pg_maintain", "pg_checkpoint", "pg_switch_wal"]),
+            );
+            await s.write((tx) => tx.exec("CREATE TABLE notes (id serial PRIMARY KEY, body text)"));
+            const e = await s.purgeResidue(["notes"]).catch((x: unknown) => x);
+            expect(e instanceof PurgePermissionError ? e.code : e).toBe("purge_permission");
+          } finally {
+            await s.close();
+          }
+        } finally {
+          await pg.admin(`DROP DATABASE IF EXISTS ${db} WITH (FORCE)`).catch(() => {});
+          await pg.admin(`DROP ROLE IF EXISTS ${role}`).catch(() => {});
+        }
+      },
+      TP,
+    );
+  });
+
   describe("a write that waited for the lock, on a database whose default isolation is repeatable read", () => {
     /**
      * A store over a tenant with a table `t`, opened after the database's default isolation was

@@ -15,6 +15,8 @@ import type {
   Durability,
   Envelope,
   ErrorCode,
+  MaintainReply,
+  MaintainStep,
   OpenParams,
   OpenResult,
   QueryReply,
@@ -374,6 +376,12 @@ async function analyze(): Promise<AnalyzeReply> {
   if (session) throw new Error("a transaction is open in the DB Worker");
   if (analyzeMode === "stale" && !(await stale(pg))) return { ran: false };
   const begun = performance.now();
+  await analyzeTables(pg);
+  return { ran: true, ms: Math.round(performance.now() - begun) };
+}
+
+/** ANALYZE of the store's tables, the content and header columns left out (see `analyze`). */
+async function analyzeTables(pg: PGlite): Promise<void> {
   const others = await pg.query<{ name: string }>(
     `SELECT quote_ident(relname) AS name FROM pg_class
      WHERE relnamespace = 'public'::regnamespace AND relkind IN ('r', 'p')
@@ -396,7 +404,61 @@ async function analyze(): Promise<AnalyzeReply> {
     await tx.exec(`ANALYZE content (${content})`);
   });
   await pg.exec(`ANALYZE events (${await columnsBut(pg, "events", "header")})`);
-  return { ran: true, ms: Math.round(performance.now() - begun) };
+}
+
+/**
+ * One step of the in-place residue clean-up (02-architecture §7 «残留清理的做法»), its statement
+ * fixed here; the main thread sends the steps in order, each once it has checked it still owns the
+ * storage. Outside any transaction, between requests, as a checkpoint: refused with one open. A
+ * statement that fails is thrown, and the main thread ends this worker (`worker_failed`): the
+ * instance may be broken, as after a failed checkpoint.
+ * - `rewrite`: `VACUUM FULL` of one of the store's tables, named, checked to be one.
+ * - `analyze`: ANALYZE as after a write (`analyzeTables`): it replaces the statistics of the data
+ *   before the deletion, and leaves the old statistics rows dead.
+ * - `rewrite_statistics`: `VACUUM FULL pg_statistic`, after ANALYZE, which leaves those rows dead.
+ *   No other session holds a snapshot here (PostgreSQL in single-user mode): nothing to wait for.
+ * - `checkpoint`, `switch_wal`: the log written so far is no longer needed, and with
+ *   `wal_recycle = off` (durability.ts) the segments holding it are removed, not reused.
+ * - `check`: `VACUUM (VERBOSE) pg_statistic`, its count of rows dead but not yet removable.
+ */
+async function maintain(step: MaintainStep): Promise<MaintainReply> {
+  const pg = requireDb();
+  if (session) throw new Error("a transaction is open in the DB Worker");
+  switch (step.op) {
+    case "rewrite": {
+      const r = await pg.query<{ name: string }>(
+        `SELECT quote_ident(relname) AS name FROM pg_class
+         WHERE relnamespace = 'public'::regnamespace AND relkind = 'r' AND relname = $1`,
+        [step.table],
+      );
+      const name = r.rows[0]?.name;
+      if (name === undefined) throw new Error(`not a table of the store: ${step.table}`);
+      await pg.exec(`VACUUM FULL public.${name}`);
+      return {};
+    }
+    case "analyze":
+      await analyzeTables(pg);
+      return {};
+    case "rewrite_statistics":
+      await pg.exec("VACUUM FULL pg_statistic");
+      return {};
+    case "checkpoint":
+      await pg.exec("CHECKPOINT");
+      return {};
+    case "switch_wal":
+      await pg.query("SELECT pg_switch_wal()");
+      return {};
+    case "check": {
+      const lines: string[] = [];
+      await pg.query("VACUUM (VERBOSE) pg_statistic", [], {
+        onNotice: (n) => lines.push(n.message ?? ""),
+      });
+      const m = /(\d+) are dead but not yet removable/.exec(lines.join("\n"));
+      if (m === null)
+        throw new Error("VACUUM (VERBOSE) pg_statistic reported no count of dead rows");
+      return { notRemovable: Number(m[1]) };
+    }
+  }
 }
 
 /** The columns of `table`, quoted and comma-separated, but `without`: for ANALYZE's column list. */
@@ -458,6 +520,8 @@ async function handle(req: Request): Promise<unknown> {
       return rollback();
     case "checkpoint":
       return checkpoint();
+    case "maintain":
+      return maintain(req.step);
     case "analyze":
       return analyze();
     case "upgrade":
