@@ -23,6 +23,12 @@
 // another exclusive with `busy`, which names the holder. These are this process's gate; `import_in_progress` and
 // `restore_in_progress` are the anchor's markers, which any opening sees (§8).
 //
+// Across processes (the server mode, `holders`), an import holds its tenant by a lock on a control
+// database connection of its own and a mark in the directory (./import-holders.ts). A use that
+// reads the mark is refused (`importing`) while another session holds the lock; when none does, the
+// import's process ended, and the use takes the lock, finishes the import under `exclusive` by the
+// re-entry rules below, lifts the seal ④ wrote, clears the mark last, and goes on.
+//
 // Opening takes up an import a crash left (§8 «重入»), as the kernel's `openTenant` decides it: with
 // the anchor's import marker, the import's event in the log says it was swapped in, and the import
 // is finished (`finishImport`); without it, the staging database is discarded and the marker cleared
@@ -34,7 +40,8 @@
 // A staging database with no marker is discarded on every opening. That is safe because the server
 // mode's import takes the tenant with `exclusive(..., { refuse: "importing" })` before it makes the
 // staging database and holds it through ⑥, the swap included: while an import is under way nothing
-// in this process opens the tenant, and v1 runs one process per control database (02 §7), so
+// in this process opens the tenant; and across processes the import's holder mark (`holders`,
+// below) is looked at before opening, an opening seeing it refused, so
 // one seen on opening was left by a crash before ④, or is the database a swap replaced (⑤ records it
 // there) that a crash or a failed drop left, or is a refused import's staging database (dropped after
 // the refusal's answer, recorded until then). One whose drop is still under way is left to that drop
@@ -85,6 +92,7 @@ import {
   type TenantStore,
 } from "@fluxvita/saveslot-kernel";
 import type { ControlPlane, TenantEntry, TenantId, UserId } from "./control-plane.ts";
+import type { ImportHolders } from "./import-holders.ts";
 import { closeLocalTenant } from "./local-tenant.ts";
 
 /** A tenant lent by the pool, as the local mode's `LocalTenant`. */
@@ -109,6 +117,13 @@ export interface TenantPoolOptions {
   readonly onReopen?: (tenant: TenantId, why: "connection" | "database") => void;
   /** Tests only: how long a use waits for a place (OPEN_WAIT_MS otherwise). */
   readonly openWaitMs?: number;
+  /**
+   * The server mode's import holders (02-architecture §8 «格式版本、导出、导入与恢复»): a tenant whose
+   * directory row names an import holder is refused (`importing`) while another session holds its
+   * lock, and finished by the re-entry rules when none does. Absent: the mark is not looked at
+   * (one process, the local mode's pool or a test's).
+   */
+  readonly holders?: ImportHolders;
   /**
    * Told that a use was refused with `pool_full`: it waited `wait`, or the database refused the
    * connection as too many (`database`). The tenant's ID only.
@@ -363,7 +378,15 @@ export class TenantPool {
     this.#refuseClosed();
     const slot = this.#slot(tenant);
     // What the directory names now: read here only when it was not given.
-    const entry = o.entry ?? (await this.options.control.tenant(tenant));
+    let entry = o.entry ?? (await this.options.control.tenant(tenant));
+    // An import holding the tenant: this process's own refuses at its gate first, so that the
+    // process holding the lock never takes its own import for one whose process ended.
+    if (entry?.importHolder !== undefined && this.options.holders !== undefined) {
+      if (slot.refuse !== undefined) {
+        throw new TenantPoolError(slot.refuse, `the tenant is held: ${slot.refuse}`);
+      }
+      entry = await this.#settleHolder(tenant, this.options.holders);
+    }
     // An exclusive holding the tenant and a close in progress, until neither: an exclusive may begin
     // while a close is waited for, and a close may be an exclusive's. The old storage is closed
     // first: opening it again meanwhile would meet its single-writer lock.
@@ -722,6 +745,8 @@ export class TenantPool {
     while (slot.closing !== undefined) await slot.closing;
     const opening = slot.opening;
     const unclosed = slot.unclosed;
+    // The database it was opened on, for the high water below.
+    const openedRef = slot.lent?.ref;
     if (opening === undefined && unclosed === undefined) return;
     slot.opening = undefined;
     slot.open = undefined;
@@ -740,7 +765,13 @@ export class TenantPool {
       const t = await opening?.catch(() => undefined);
       if (t === undefined) return;
       try {
-        const r = await closeLocalTenant({ ...t, user: t.owner }, this.#now());
+        // The database an import's swap replaced (the directory names another now): its log's end
+        // is not the tenant's, and does not push the high water (§8).
+        const now = await this.options.control.tenant(tenant).catch(() => undefined);
+        const current = now === undefined || openedRef === undefined || sameRef(now.ref, openedRef);
+        const r = await closeLocalTenant({ ...t, user: t.owner }, this.#now(), {
+          advanceHighWater: current,
+        });
         if (r.readsError !== undefined) this.#report(tenant, "reads_not_flushed", r.readsError);
         if (r.highWaterError !== undefined) {
           this.#report(tenant, "high_water_not_advanced", r.highWaterError);
@@ -759,10 +790,66 @@ export class TenantPool {
   }
 
   /** Opens the tenant as the directory routes it now, and checks that it serves. */
+  /**
+   * A tenant whose row names an import holder (02-architecture §8 «格式版本、导出、导入与恢复»): another
+   * session holds the lock, `importing`; none does, the import's process ended: this one takes the
+   * lock (another finder having it, `importing`, not waited for), finishes the import by the
+   * re-entry rules under the tenant's exclusive, clears the mark last, and releases the lock.
+   * Gives the row as it is then.
+   */
+  async #settleHolder(tenant: TenantId, holders: ImportHolders): Promise<TenantEntry | undefined> {
+    const importing = () => new TenantPoolError("importing", "the tenant is being imported into");
+    if (await holders.held(tenant)) throw importing();
+    const hold = await holders.take(tenant);
+    if (hold === undefined) throw importing();
+    try {
+      // Read again under the lock: another finder may have finished it meanwhile.
+      const now = await this.options.control.tenant(tenant);
+      if (now?.importHolder === undefined) return now;
+      await this.exclusive(tenant, () => this.#finishAbandoned(tenant, now));
+      await hold.clear();
+    } finally {
+      await hold.release();
+    }
+    return await this.options.control.tenant(tenant);
+  }
+
+  /**
+   * An import whose process ended, finished on the tenant's storage: the anchor's marker taken up
+   * (before the swap: the staging database dropped, the seal lifted, the marker cleared; after it:
+   * ⑥ done), a staging database left with no marker dropped, and the seal lifted in any case, so
+   * that no sealed storage stays with no holder to lift it.
+   */
+  async #finishAbandoned(tenant: TenantId, entry: TenantEntry): Promise<void> {
+    const store = await this.options.backend.open(entry.ref, {});
+    try {
+      const discard = async () => {
+        if (entry.staging !== undefined) await this.options.discardStaging(tenant, entry.staging);
+      };
+      const tail = await store.read((tx) => readTail(tx));
+      const { taken } = await takeUpImport({
+        store,
+        anchors: this.options.control.anchors,
+        tenant,
+        logEnd: tail?.seq ?? 0,
+        discardStaging: discard,
+      });
+      if (taken !== "aborted") await discard();
+      await store.unseal?.();
+    } finally {
+      await store.close().catch(() => {});
+    }
+  }
+
   async #open(tenant: TenantId): Promise<OpenTenant & { readonly ref: TenantEntry["ref"] }> {
     const { control, backend } = this.options;
     const entry = await control.tenant(tenant);
     if (entry === undefined) throw new TenantPoolError("unknown_tenant", "no such tenant");
+    // An import began since the use looked (its holder settled there): it holds the tenant, and
+    // what the opening would take up or drop is its own.
+    if (entry.importHolder !== undefined && this.options.holders !== undefined) {
+      throw new TenantPoolError("importing", "the tenant is being imported into");
+    }
     if (entry.state !== "active") {
       throw new TenantPoolError("tenant_creating", "the tenant's creation is not finished");
     }
@@ -796,8 +883,8 @@ export class TenantPool {
       });
       if (taken !== "aborted" && staging !== undefined) {
         // No marker (any more): left by a crash before ④, or the database a swap replaced (see the
-        // top of this file). Safe on every opening only because v1 runs one process per control
-        // database (§7).
+        // top of this file). No import holds the tenant either: in the server mode a holder's mark
+        // was looked at above, so this is no live import's staging database (§8).
         await discard().catch((e) => this.#reportDiscard(tenant, e));
       }
       if (tail === undefined) throw new TenantPoolError("tenant_empty", "the tenant has no events");
@@ -871,6 +958,10 @@ export async function takeUpImport(o: {
           );
         }
       },
+      // The seal ④ wrote (the server mode), lifted before the marker is cleared.
+      ...(o.store.unseal !== undefined
+        ? { unseal: () => o.store.unseal?.() ?? Promise.resolve() }
+        : {}),
     });
     return { decision: await decide(), taken: "aborted" };
   }

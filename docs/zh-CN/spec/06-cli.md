@@ -511,7 +511,7 @@ My long-term records (things that change over time: spending, workouts, budgets,
 
 租户库所在的服务器按它的系统标识（`pg_control_system()` 的 `system_identifier`）认，换主机名也不变；服务器不给这个标识时（数据库角色没有权限 `42501`、没有这个函数 `42883`、不支持 `0A000`，一些托管或改版的 PostgreSQL 如此），改按去掉用户名与口令的地址（`主机:端口/维护库`）认：这几种都是服务器固定的答复，每次启动认法不变。指纹里这一项连同认法一起记，两个进程认法不同就算不同，报错说明两边的认法。`server start` 连不上这台服务器、或问到一半连接断了，退出码 7（可重试）；服务器以别的原因拒绝，退出码 5，报错写明 SQLSTATE。
 
-**连接预算**：一个部署用到的 PostgreSQL 连接要满足 `SAVESLOT_TENANT_CONNECTIONS` × 进程数 + 4 × 进程数 + 同时进行的导入数 × 2 ≤ 实例可用的连接数。每个进程的 4 条是不计入上限的固定连接：控制面库一条；建库用的维护库一条，正在建的租户的库一条——建库与建租户在一个进程里各一次一个，排在后面的至多等 5 秒，等不到就回暂时忙（外部登录的首次登录回 503，带 `Retry-After`；`server user`、`server init` 退出码 7）；删库用的维护库一条——删库在一个进程里一次一个，没有人等它的应答，所以不设等待上限（删库要等一次检查点，忙的时候很慢，不与建库共用，免得把首次登录挡在后面）；导入一次直接打开两个库；可用的连接数是 `max_connections` 减去 `superuser_reserved_connections`、`reserved_connections` 与运维自己要用的。
+**连接预算**：一个部署用到的 PostgreSQL 连接要满足 `SAVESLOT_TENANT_CONNECTIONS` × 进程数 + 4 × 进程数 + 同时进行的导入数 × 3 ≤ 实例可用的连接数。每个进程的 4 条是不计入上限的固定连接：控制面库一条；建库用的维护库一条，正在建的租户的库一条——建库与建租户在一个进程里各一次一个，排在后面的至多等 5 秒，等不到就回暂时忙（外部登录的首次登录回 503，带 `Retry-After`；`server user`、`server init` 退出码 7）；删库用的维护库一条——删库在一个进程里一次一个，没有人等它的应答，所以不设等待上限（删库要等一次检查点，忙的时候很慢，不与建库共用，免得把首次登录挡在后面）；导入一次直接打开两个库，另用一条控制面库连接持有它的占有锁（[`02-architecture.md`](02-architecture.md) §8「跨进程的占有」）；可用的连接数是 `max_connections` 减去 `superuser_reserved_connections`、`reserved_connections` 与运维自己要用的。
 
 必填的变量缺了，或值写法不对，命令什么都不做，写明是哪个变量，退出码 5（与 `config.toml` 被拒的退出码相同，6.2）；报错里不写变量的值（连接串里可能有口令），只有 `SAVESLOT_TRUSTED_PROXIES` 与 `SAVESLOT_ALLOWED_ORIGINS` 写明不合的那一项（地址与来源里没有需要保密的内容）。
 

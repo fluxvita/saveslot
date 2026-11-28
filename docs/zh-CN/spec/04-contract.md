@@ -784,10 +784,10 @@
 |---|---|
 | `unauthenticated` | 凭证缺失（`missing`）、无效（`invalid`）、已吊销（`revoked`）、过期（`expired`）；服务器模式下租户属主的账户已停用（`account_disabled`） |
 | `insufficient_scope` | 凭证没有所需 scope（含 `resolve` 用了当前凭证不可用的处理方式）；连接实例调用只给用户会话的管理类操作（`required_scope: "user_session"`）；限定了 slot 范围的凭证新建 slot（`required_scope: "all_slots"`，见第 12 节） |
-| `rate_limited` | 限流或配额（`quota`）；同一租户已有一次对拍或导入在跑（`busy`） |
+| `rate_limited` | 限流或配额（`quota`）；同一租户已有一次对拍或导入在跑（`busy`；服务器模式下包括在另一个进程里跑的导入） |
 | `handle_expired` | 签名句柄过期（`expired`）、恢复次数对不上（`restored`）、`dc_` 已经执行过而又拿它重出预览（`executed`）、翻页期间派生表被刷新过（`derived_changed`）、首页之后有删除被确认或撤回（`deletion_changed`）、位置是这一版之前的格式（`format_changed`：`history` 的 `as_of` 在状态类表上的位置） |
 | `not_in_this_version` | 调用了第一版不实现、或 0.2.0 尚未提供的参数、取值或操作。`reason` 说明是哪一种，附是哪个；schema 草稿里只对从未被写入的表放开的改动用在写入过的表上时，`reason` 是 `table_written` |
-| `unavailable` | 暂时不能处理：租户被占用或此刻打不开——写入排队、加锁超时、它的存储还没释放；或服务器模式下这次使用撞上租户的连接已断开、确定没有提交，或一次读的读取记录没能在应答之前写进去、这次读不交出内容（`busy`）；租户正在走恢复流程（`restoring`）；租户正在导入（`importing`；服务器模式下也来自导入换入期间写入撞上租户的封存标记）；对拍进入比较阶段而排队超时（`reconciling`）；服务刚启动还在补跑到期任务（`starting`）；服务正在停止，不再接新的请求，或服务器模式下这个进程比租户存储的格式旧、该被换下（`stopping`）。可重试时附 `retry_after` |
+| `unavailable` | 暂时不能处理：租户被占用或此刻打不开——写入排队、加锁超时、它的存储还没释放；或服务器模式下这次使用撞上租户的连接已断开、确定没有提交，或一次读的读取记录没能在应答之前写进去、这次读不交出内容（`busy`）；租户正在走恢复流程（`restoring`）；租户正在导入（`importing`；服务器模式下，导入可能在另一个进程里，这次使用在租户目录里读到它的占有标记，也可能是写入撞上导入换入期间的封存标记；导入的进程中途退出时，发现它的请求收尾之后照常处理，同时发现的另一个请求回这个原因）；对拍进入比较阶段而排队超时（`reconciling`）；服务刚启动还在补跑到期任务（`starting`）；服务正在停止，不再接新的请求，或服务器模式下这个进程比租户存储的格式旧、该被换下（`stopping`）。可重试时附 `retry_after` |
 | `internal` | 服务端内部错误。附 `incident`（供排查的编号，不含用户内容） |
 | `import_rejected` | 导入的文件不合格：格式不认识（`unsupported_format`）、不是从头开始（`not_from_start`）、续传的几段顺序不对（`segment_order`）、事件头链断裂（`chain_broken`）、内容校验和不符（`checksum_mismatch`）、条数或末尾对不上、清单与内容对不上（`incomplete`，如清单里的恢复次数不是导入的日志自己的）、重放失败（`replay_failed`）。只给位置（`seq`、`path`），不回显内容 |
 

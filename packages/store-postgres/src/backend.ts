@@ -41,6 +41,7 @@ import {
   OLDEST_UPGRADABLE_FORMAT,
   type QueryResult,
   type ReadTx,
+  readTail,
   SESSION_SETTINGS,
   type SnapshotRef,
   type SqlValue,
@@ -162,6 +163,12 @@ function storeError(
  * no permission (42501), no such function (42883), not supported (0A000).
  */
 const NO_SYSTEM_IDENTIFIER: ReadonlySet<string | undefined> = new Set(["42501", "42883", "0A000"]);
+
+/**
+ * A transaction's kind: a read, a write (the tenant's lock; refused while sealed), a read's record
+ * (no lock, no seal), or the seal's own (the lock, the seal not refused: it writes or lifts it).
+ */
+type Mode = "read" | "write" | "reads" | "seal";
 
 export class PostgresBackend implements StorageBackend {
   readonly #cells: Readonly<Record<string, PostgresCell>>;
@@ -679,6 +686,34 @@ export class PostgresTenantStore implements TenantStore {
   }
 
   /** The read records only: no tenant lock, no seal; the format checked (the port's `recordReads`). */
+  /**
+   * Step ④ of an import (the port's `seal`): under the tenant's lock, with the format checked as
+   * for any write, the log's genesis event checked to be its only event, then the seal recorded in
+   * `meta` with the import's ID. A seal already there (this import's, the step run again) is kept.
+   */
+  seal(importId: string): Promise<"sealed" | "not_empty"> {
+    return this.#enqueue(() =>
+      this.#transaction("seal", async (tx) => {
+        const tail = await readTail(tx);
+        if (tail === undefined || tail.seq !== 1) return "not_empty";
+        await tx.query(
+          "INSERT INTO meta (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING",
+          [META_KEYS.sealed, importId],
+        );
+        return "sealed";
+      }),
+    );
+  }
+
+  /** The seal lifted (the port's `unseal`), under the tenant's lock; nothing when there is none. */
+  unseal(): Promise<void> {
+    return this.#enqueue(() =>
+      this.#transaction("seal", async (tx) => {
+        await tx.query("DELETE FROM meta WHERE key = $1", [META_KEYS.sealed]);
+      }),
+    );
+  }
+
   recordReads<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
     return this.#enqueue(() => this.#transaction("reads", fn));
   }
@@ -739,7 +774,7 @@ export class PostgresTenantStore implements TenantStore {
    * transaction (the port's `recordReads`) takes no lock and checks the format as a read does: a
    * read's record is part of the read, so a seal does not refuse it either.
    */
-  async #begin(mode: "read" | "write" | "reads"): Promise<void> {
+  async #begin(mode: Mode): Promise<void> {
     await this._run(
       mode === "read"
         ? "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY"
@@ -750,7 +785,7 @@ export class PostgresTenantStore implements TenantStore {
     );
     let rows: readonly { key: string; value: string }[];
     try {
-      if (mode === "write") await this._run(LOCK_SQL, undefined);
+      if (mode === "write" || mode === "seal") await this._run(LOCK_SQL, undefined);
       rows = (await this._run(GUARD_SQL, [META_KEYS.storageFormat, META_KEYS.sealed])).rows as {
         key: string;
         value: string;
@@ -787,7 +822,7 @@ export class PostgresTenantStore implements TenantStore {
     }
   }
 
-  async #transaction<T>(mode: "read" | "write" | "reads", fn: (tx: Tx) => Promise<T>): Promise<T> {
+  async #transaction<T>(mode: Mode, fn: (tx: Tx) => Promise<T>): Promise<T> {
     this.#ensureUsable();
     await this.#begin(mode);
     const tx = new TxHandle(this);

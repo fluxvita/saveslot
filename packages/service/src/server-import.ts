@@ -53,9 +53,10 @@ import {
   type TenantStore,
 } from "@fluxvita/saveslot-kernel";
 import type { ServerControl, TenantId, UserId } from "./control-plane.ts";
+import type { ImportHolders } from "./import-holders.ts";
 import { appendImportEventCounted } from "./import-result.ts";
 import { databaseOf } from "./server-tenant.ts";
-import { type TenantPool, takeUpImport } from "./tenant-pool.ts";
+import { type TenantPool, TenantPoolError, takeUpImport } from "./tenant-pool.ts";
 
 /**
  * Drops a database of the tenant's cell, the daemon's (the PostgreSQL backend's `discardDatabase`).
@@ -181,12 +182,21 @@ export async function importServerTenant(o: {
    * success); the promise never rejects. For tests and a host that wants to wait for them.
    */
   readonly onFailureDrops?: (dropped: Promise<void>) => void;
+  /**
+   * The import holders across processes (./import-holders.ts): the import takes the tenant's
+   * holder lock and writes its mark before its first step, clears the mark and releases the lock
+   * when it ends. Another session holding the lock: `busy`, as another import in this process.
+   * Absent: this process's exclusive only.
+   */
+  readonly holders?: ImportHolders;
 }): Promise<ServerImportResult> {
   // The databases to drop after the answer, outside the exclusive (see the top of this file).
   const after: string[] = [];
   let held: Awaited<ReturnType<typeof importHeld>>;
   try {
-    held = await o.pool.exclusive(o.tenant, () => importHeld(o, after), { refuse: "importing" });
+    held = await o.pool.exclusive(o.tenant, () => holding(o, (id) => importHeld(o, after, id)), {
+      refuse: "importing",
+    });
   } catch (e) {
     const dropped = dropAllQuietly(o, after);
     try {
@@ -238,9 +248,38 @@ async function dropQuietly(
   }
 }
 
+/**
+ * Runs the import holding the tenant across processes, when there are holders: the lock taken
+ * first, then the mark written; at the end, whatever it was, the mark cleared, then the lock
+ * released (02-architecture §8 «格式版本、导出、导入与恢复»). A mark found there, the lock free, is
+ * an import whose process ended: the import's own re-entry (`takeUpImport` below) finishes it, the
+ * seal lifted with it, before this one goes on.
+ */
+async function holding<T>(
+  o: Parameters<typeof importServerTenant>[0],
+  run: (importId: ReturnType<typeof newImportId>) => Promise<T>,
+): Promise<T> {
+  const importId = newImportId();
+  if (o.holders === undefined) return await run(importId);
+  const hold = await o.holders.take(o.tenant);
+  if (hold === undefined) {
+    throw new TenantPoolError("busy", "another process imports into the tenant", {
+      holder: "importing",
+    });
+  }
+  try {
+    await hold.mark(importId);
+    return await run(importId);
+  } finally {
+    await hold.clear().catch(() => {});
+    await hold.release();
+  }
+}
+
 async function importHeld(
   o: Parameters<typeof importServerTenant>[0],
   after: string[],
+  importId: ReturnType<typeof newImportId>,
 ): Promise<{ readonly result: Omit<ServerImportResult, "dropped">; readonly replaced: string }> {
   const entry = await o.control.tenant(o.tenant);
   if (entry === undefined || entry.state !== "active") {
@@ -259,7 +298,6 @@ async function importHeld(
 
   const notEmpty = () =>
     new OpsError("invalid_argument", "the tenant is not empty", { reason: "tenant_not_empty" });
-  const importId = newImportId();
   const staging = stagingDatabaseOf(o.tenant, importId);
   const opened: TenantStore[] = [];
   const open = async (r: TenantRef, create: boolean) => {

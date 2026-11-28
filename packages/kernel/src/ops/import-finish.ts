@@ -128,8 +128,15 @@ export async function abortImportOnOpen(o: {
   readonly tenant: TenantId;
   readonly importId: ImportId;
   readonly discardStaging: () => Promise<void>;
+  /**
+   * The target's seal lifted (`TenantStore.unseal`, the server mode): after the staging storage is
+   * discarded and before the marker is cleared, so that a crash between leaves the marker, and
+   * the next re-entry lifts it again; never a sealed storage with no marker to say why.
+   */
+  readonly unseal?: () => Promise<void>;
 }): Promise<void> {
   await o.discardStaging();
+  await o.unseal?.();
   await o.anchor.abortImport(o.tenant, o.importId);
 }
 
@@ -222,7 +229,23 @@ export async function runImport(o: {
     throw e;
   }
   // ④'s second half: with the marker set, the log holds the genesis event only. A write committed
-  // before the marker is seen here rather than lost by the swap.
+  // before the marker is seen here rather than lost by the swap. Where the storage seals (the
+  // server mode), the check and the seal are one write under the tenant's lock: a write of another
+  // process that passed its checks before is refused once it gets the lock, rather than committed
+  // to the storage the swap replaces.
+  if (o.target.seal !== undefined) {
+    if ((await o.target.seal(o.importId)) === "not_empty") {
+      await o.anchor.abortImport(o.tenant, o.importId);
+      throw notEmpty();
+    }
+    const sealedSwap = await o.swap();
+    return finishImport({
+      store: sealedSwap,
+      anchor: o.anchor,
+      tenant: o.tenant,
+      importId: o.importId,
+    });
+  }
   const tail = await o.target.read((tx) => readTail(tx));
   if (tail === undefined || tail.seq !== 1) {
     await o.anchor.abortImport(o.tenant, o.importId);

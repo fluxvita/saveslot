@@ -17,6 +17,7 @@ import {
   appendOperation,
   ImportRejected,
   importEventInLog,
+  newImportId,
   OpsError,
   readTail,
   type StorageBackend,
@@ -28,11 +29,22 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   checkDiscard,
   dropTestStorage,
+  TEST_BACKEND,
   testBackend,
   testStorageExists,
 } from "../../test-backend/src/index.fixture.ts";
+import { secondConnection } from "../../test-backend/src/second-connection.fixture.ts";
 import type { ServerControl, TenantId, UserId } from "./control-plane.ts";
-import { initControlPlane, type ServerControlPlane } from "./server-control-plane.ts";
+import { controlImportHolders } from "./import-holders.ts";
+import type { OAuthClient } from "./oauth-client.ts";
+import { ClientFetchLimits } from "./oauth-client-limits.ts";
+import { connectionNameTaken, issueCode, type OAuthDeps, redeemCode } from "./oauth-server.ts";
+import { initOAuthTables, openOAuthStore } from "./oauth-store.ts";
+import {
+  initControlPlane,
+  openControlPlane,
+  type ServerControlPlane,
+} from "./server-control-plane.ts";
 import {
   type DiscardDatabase,
   importServerTenant,
@@ -40,7 +52,7 @@ import {
   stagingDiscarder,
 } from "./server-import.ts";
 import { createServerTenant, databaseOf } from "./server-tenant.ts";
-import { TenantPool, TenantPoolError } from "./tenant-pool.ts";
+import { TenantPool, TenantPoolError, type TenantPoolOptions } from "./tenant-pool.ts";
 
 const T = 120_000;
 /**
@@ -244,6 +256,8 @@ async function outcome(tenant: TenantId): Promise<"empty" | "complete"> {
       const a = await t.anchor.read(tenant);
       const entry = await cp.tenant(tenant);
       expect(entry?.staging).toBeUndefined();
+      // No seal left (the server mode's ④): the tenant takes a write.
+      await t.store.write(async () => {});
       expect(a.importInProgress).toBeUndefined();
       if (tail?.seq === 1) {
         expect(a.restoreCount).toBe(0);
@@ -1648,6 +1662,428 @@ describe("killed after each step, the tenant opened again (§11)", () => {
       expect((await cp.anchors.read(tenant)).importInProgress).toBeDefined();
       expect(await outcome(tenant)).toBe("empty");
       await again(tenant, owner);
+    },
+    T,
+  );
+});
+
+/** The OAuth client and PKCE pair of the cross-process redemption (RFC 7636's example pair). */
+const EXT = "https://saveslot.example";
+const OAUTH_CLIENT: OAuthClient = {
+  id: "https://client.example/oauth/client.json",
+  name: "Example Agent",
+  host: "client.example",
+  redirectUris: ["https://client.example/callback"],
+  builtIn: false,
+};
+const VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+const CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+
+// Across processes (02-architecture §8 «格式版本、导出、导入与恢复», the import's hold): each process
+// a pool of its own over a connection of its own to the control database, with its import holders
+// (./import-holders.ts). On PostgreSQL only: PGlite has one connection to a database, one session.
+describe.runIf(TEST_BACKEND === "postgres")("an import across processes", () => {
+  const controlDir = join(root, "control");
+  const open: { close(): Promise<void> }[] = [];
+  const mine: TenantPool[] = [];
+  // The pools first, while their control connections are there to take their high water.
+  afterAll(async () => {
+    for (const p of mine.splice(0)) await p.closeAll().catch(() => {});
+    for (const c of open.splice(0)) await c.close().catch(() => {});
+  }, T);
+
+  /** A process: its control connection, control plane, holders and pool. */
+  async function processOf(onCloseFailure: TenantPoolOptions["onCloseFailure"] = () => {}) {
+    const conn = await secondConnection(controlDir);
+    open.push(conn);
+    const control = await openControlPlane(conn);
+    const holders = controlImportHolders({
+      db: conn,
+      open: async () => {
+        const c = await secondConnection(controlDir);
+        open.push(c);
+        return c;
+      },
+    });
+    const pool = new TenantPool({
+      control,
+      backend,
+      idleMs: 60_000,
+      now: () => NOW,
+      discardStaging: stagingDiscarder({ control, discardDatabase, inFlight: "leave" }),
+      discardScratch: async () => {},
+      holders,
+      onCloseFailure,
+    });
+    mine.push(pool);
+    return { control, holders, pool };
+  }
+
+  const importing = { name: "TenantPoolError", code: "importing" };
+  const entryOf = (tenant: TenantId) => cp.tenant(tenant);
+  const tailOf = (pool: TenantPool, tenant: TenantId) =>
+    pool.use(tenant, (t) => t.store.read((tx) => readTail(tx)));
+  /** A write of the tenant through a pool: a connection's registration, as any write. */
+  const writeThrough = (pool: TenantPool, tenant: TenantId, n: number) =>
+    pool.use(tenant, (t) =>
+      t.store.write((tx) =>
+        appendOperation(tx, {
+          actor: t.owner,
+          now: NOW as never,
+          events: [
+            {
+              type: "principal.registered",
+              blocks: {
+                ctx: { now: NOW, ruleset_version: 1 },
+                principal: {
+                  principal: `ci_${String(n).padStart(26, "7")}`,
+                  kind: "connection",
+                  scopes: ["saveslot.read"],
+                  via: "token",
+                },
+                name: { name: `w${n}` },
+              },
+            } as never,
+          ],
+        }),
+      ),
+    );
+
+  it(
+    "while one process imports, another's use is refused (importing) and its import is busy; then it reads what was imported",
+    async () => {
+      const a = await processOf();
+      const b = await processOf();
+      const { tenant, owner } = await newTenant();
+      let go!: () => void;
+      const hold = new Promise<void>((r) => {
+        go = r;
+      });
+      const running = importServerTenant({
+        control: a.control,
+        backend,
+        pool: a.pool,
+        discardDatabase,
+        tenant,
+        user: owner,
+        body: bodyOf(file, hold),
+        now: "2026-11-21T10:30:00.000Z" as never,
+        holders: a.holders,
+      });
+      try {
+        for (let i = 0; (await entryOf(tenant))?.importHolder === undefined; i++) {
+          if (i > 500) throw new Error("the import never wrote its mark");
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        await expect(tailOf(b.pool, tenant)).rejects.toMatchObject(importing);
+        await expect(
+          importServerTenant({
+            control: b.control,
+            backend,
+            pool: b.pool,
+            discardDatabase,
+            tenant,
+            user: owner,
+            body: bodyOf(file),
+            now: "2026-11-21T10:31:00.000Z" as never,
+            holders: b.holders,
+          }),
+        ).rejects.toMatchObject({ code: "busy", holder: "importing" });
+      } finally {
+        go();
+      }
+      await (await running).dropped;
+      expect((await entryOf(tenant))?.importHolder).toBeUndefined();
+      expect((await tailOf(b.pool, tenant))?.seq).toBe(sourceEnd + 1);
+    },
+    T,
+  );
+
+  it(
+    "OAuth's code redemption in another process while one imports: refused (importing), nothing written to the old database or the staging one; after it, a redemption issues",
+    async () => {
+      await initOAuthTables(controlStore);
+      const a = await processOf();
+      const b = await processOf();
+      const { tenant, owner } = await newTenant();
+      const conn = await secondConnection(controlDir);
+      open.push(conn);
+      const deps: OAuthDeps = {
+        store: await openOAuthStore(conn),
+        control: b.control,
+        identity: {
+          issueUserSession: async () => {
+            throw new Error("no user session here");
+          },
+        },
+        pool: { use: (t, fn) => b.pool.use(t, fn) },
+        fetchClient: async () => {
+          throw new Error("no client document fetched here");
+        },
+        external: EXT,
+        windows: { requestKey: 600_000, idempotencyKey: 86_400_000 },
+        clientFetches: new ClientFetchLimits(),
+      };
+      const NAME = "Laptop · Example Agent";
+      const code = () =>
+        issueCode(deps, {
+          client: OAUTH_CLIENT,
+          redirectUri: OAUTH_CLIENT.redirectUris[0] as string,
+          codeChallenge: CHALLENGE,
+          resource: EXT,
+          user: owner,
+          login: "login-1",
+          tenant,
+          scopes: ["saveslot.read"],
+          name: NAME,
+          now: NOW,
+        });
+      const redeem = async (c: string) =>
+        redeemCode(
+          deps,
+          new URLSearchParams({
+            grant_type: "authorization_code",
+            code: c,
+            code_verifier: VERIFIER,
+            client_id: OAUTH_CLIENT.id,
+            redirect_uri: OAUTH_CLIENT.redirectUris[0] as string,
+          }),
+          NOW,
+        );
+      const old = await entryOf(tenant);
+      let go!: () => void;
+      const hold = new Promise<void>((r) => {
+        go = r;
+      });
+      const running = importServerTenant({
+        control: a.control,
+        backend,
+        pool: a.pool,
+        discardDatabase,
+        tenant,
+        user: owner,
+        body: bodyOf(file, hold),
+        now: "2026-11-21T10:30:00.000Z" as never,
+        holders: a.holders,
+      });
+      let staging: string | undefined;
+      try {
+        for (let i = 0; (await entryOf(tenant))?.staging === undefined; i++) {
+          if (i > 500) throw new Error("the import never made its staging database");
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        staging = (await entryOf(tenant))?.staging;
+        await expect(redeem(await code())).rejects.toMatchObject(importing);
+        // Nothing of it in either database: the old one holds its genesis only, the staging one
+        // no connection of that name.
+        const oldStore = await backend.open((old as NonNullable<typeof old>).ref, {});
+        // Named in the directory before it is made: opened once it is there.
+        let stagingStore: TenantStore | undefined;
+        for (let i = 0; stagingStore === undefined; i++) {
+          stagingStore = await backend
+            .open({ kind: "postgres", cell: CELL, database: staging as string }, {})
+            .catch((e: unknown) => {
+              if (i > 500) throw e;
+              return new Promise<undefined>((r) => setTimeout(() => r(undefined), 10));
+            });
+        }
+        try {
+          expect((await oldStore.read((tx) => readTail(tx)))?.seq).toBe(1);
+          expect(await connectionNameTaken(oldStore, NAME)).toBe(false);
+          expect(await connectionNameTaken(stagingStore, NAME)).toBe(false);
+        } finally {
+          await oldStore.close();
+          await stagingStore.close();
+        }
+      } finally {
+        go();
+      }
+      await (await running).dropped;
+      const issued = await redeem(await code());
+      expect(issued.access_token).toMatch(/^slt_/);
+      expect(await b.pool.use(tenant, (t) => connectionNameTaken(t.store, NAME))).toBe(true);
+    },
+    T,
+  );
+
+  it(
+    "an import whose process ended before ④: the next use in another process drops its staging database, clears the mark, and serves",
+    async () => {
+      const a = await processOf();
+      const b = await processOf();
+      const { tenant } = await newTenant();
+      const hold = await a.holders.take(tenant);
+      if (hold === undefined) throw new Error("no hold");
+      const ended = newImportId();
+      await hold.mark(ended);
+      const staging = stagingDatabaseOf(tenant, ended);
+      await a.control.setStaging(tenant, staging);
+      await (
+        await backend.open({ kind: "postgres", cell: CELL, database: staging }, { create: true })
+      ).close();
+      // The process ends: its connection, and the lock with it, gone; the mark stays.
+      await hold.release();
+      expect((await entryOf(tenant))?.importHolder).toBe(ended);
+      await writeThrough(b.pool, tenant, 1);
+      const after = await entryOf(tenant);
+      expect(after?.importHolder).toBeUndefined();
+      expect(after?.staging).toBeUndefined();
+      expect(discards).toContain(staging);
+    },
+    T,
+  );
+
+  it(
+    "one that ended after ④, sealed and marked, before ⑤: the finder lifts the seal, clears the anchor's marker and then the mark; writes go on",
+    async () => {
+      const a = await processOf();
+      const b = await processOf();
+      const { tenant } = await newTenant();
+      const importId = newImportId();
+      const hold = await a.holders.take(tenant);
+      if (hold === undefined) throw new Error("no hold");
+      await hold.mark(importId);
+      const entry = await entryOf(tenant);
+      const staging = stagingDatabaseOf(tenant, importId);
+      await a.control.setStaging(tenant, staging);
+      await (
+        await backend.open({ kind: "postgres", cell: CELL, database: staging }, { create: true })
+      ).close();
+      await a.control.anchors.beginImport(tenant, importId);
+      const target = await backend.open((entry as NonNullable<typeof entry>).ref, {});
+      try {
+        expect(await target.seal?.(importId)).toBe("sealed");
+        // Sealed: a write of any process is refused.
+        await expect(writeThrough(b.pool, tenant, 2)).rejects.toBeDefined();
+      } finally {
+        await target.close();
+      }
+      await hold.release();
+      await writeThrough(b.pool, tenant, 3);
+      const after = await entryOf(tenant);
+      expect(after?.importHolder).toBeUndefined();
+      expect(after?.staging).toBeUndefined();
+      expect((await cp.anchors.read(tenant)).importInProgress).toBeUndefined();
+    },
+    T,
+  );
+
+  it(
+    "a process that had the tenant open before another's import closes the replaced database without pushing the high water from it",
+    async () => {
+      const a = await processOf();
+      const failures: string[] = [];
+      const b = await processOf((_t, what) => failures.push(what));
+      const { tenant, owner } = await newTenant();
+      expect((await tailOf(b.pool, tenant))?.seq).toBe(1);
+      const r = await importServerTenant({
+        control: a.control,
+        backend,
+        pool: a.pool,
+        discardDatabase,
+        tenant,
+        user: owner,
+        body: bodyOf(file),
+        now: "2026-11-21T10:30:00.000Z" as never,
+        holders: a.holders,
+      });
+      await r.dropped;
+      const before = await cp.anchors.read(tenant);
+      // B's storage is the replaced database's: closed, and told nothing went wrong.
+      await b.pool.closeAll();
+      expect(failures).toEqual([]);
+      expect(await cp.anchors.read(tenant)).toEqual(before);
+    },
+    T,
+  );
+
+  it(
+    "two processes finding it at once: one finishes it; the other is refused (importing) or served after",
+    async () => {
+      const a = await processOf();
+      const b = await processOf();
+      const c = await processOf();
+      const { tenant } = await newTenant();
+      const hold = await a.holders.take(tenant);
+      if (hold === undefined) throw new Error("no hold");
+      await hold.mark(newImportId());
+      await hold.release();
+      const results = await Promise.allSettled([tailOf(b.pool, tenant), tailOf(c.pool, tenant)]);
+      for (const r of results) {
+        if (r.status === "rejected") expect(r.reason).toMatchObject(importing);
+      }
+      expect(results.some((r) => r.status === "fulfilled")).toBe(true);
+      expect((await entryOf(tenant))?.importHolder).toBeUndefined();
+    },
+    T,
+  );
+
+  it(
+    "a write already waiting for the tenant's lock when ④ seals it is refused once it gets the lock (tenant_sealed), nothing written",
+    async () => {
+      const { tenant } = await newTenant();
+      const entry = await entryOf(tenant);
+      const ref = (entry as NonNullable<typeof entry>).ref;
+      const holder = await backend.open(ref, {});
+      const sealer = await backend.open(ref, {});
+      const writer = await backend.open(ref, {});
+      const watcher = await backend.open(ref, {});
+      const waiting = async (n: number) => {
+        for (let i = 0; i < 500; i++) {
+          const r = await watcher.read((tx) =>
+            tx.query<{ n: number }>(
+              `SELECT count(*)::int4 AS n FROM pg_locks
+               WHERE locktype = 'advisory' AND NOT granted
+                 AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`,
+            ),
+          );
+          if (r.rows[0]?.n === n) return;
+          await new Promise((res) => setTimeout(res, 10));
+        }
+        throw new Error(`never ${n} waiting for the lock`);
+      };
+      try {
+        let release!: () => void;
+        let holding!: () => void;
+        const inside = new Promise<void>((r) => {
+          holding = r;
+        });
+        // Inside its transaction, the lock taken: only then are the others queued behind it.
+        const held = holder.write(
+          () =>
+            new Promise<void>((r) => {
+              release = r;
+              holding();
+            }),
+        );
+        await inside;
+        // ④ first in the lock's queue, then the write: it passed its checks before the seal.
+        const sealed = sealer.seal?.(newImportId());
+        await waiting(1);
+        const wrote = writer.write((tx) => tx.query("SELECT 1"));
+        await waiting(2);
+        release();
+        await held;
+        expect(await sealed).toBe("sealed");
+        await expect(wrote).rejects.toMatchObject({ code: "tenant_sealed" });
+      } finally {
+        for (const s of [holder, sealer, writer, watcher]) await s.close().catch(() => {});
+      }
+    },
+    T,
+  );
+
+  it(
+    "④ refuses a log that holds more than the genesis event: nothing sealed",
+    async () => {
+      const entry = await entryOf(sourceTenant);
+      const target = await backend.open((entry as NonNullable<typeof entry>).ref, {});
+      try {
+        expect(await target.seal?.(newImportId())).toBe("not_empty");
+        await target.write(async () => {});
+      } finally {
+        await target.close();
+      }
     },
     T,
   );
