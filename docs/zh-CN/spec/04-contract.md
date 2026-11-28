@@ -558,6 +558,7 @@
 #### 不收的改动（第一版与 0.2.0）
 
 - **0.2.0 尚未提供的改动**：需要重建物理表的迁移。在写入过的表上加字段、删字段、收紧约束、改精度、同量纲换单位这类改动，草稿可以提交、可以预览；0.2.0 里会自动生效的草稿在提交时就报 `not_in_this_version`（`reason` 是 `table_written`），要确认的草稿在确认时报 `not_in_this_version`，草稿留着。表从未被写入时这些改动照常生效（新表是空的，不需要迁移）。`migrate` 与表达式形式的 `backfill` 见下面最后一条。
+- **0.2.0 尚未提供的改动：派生表**。在已有的 slot 上新增派生表、改已有派生表的规则或字段，以及把基础表改成派生表（表从未被写入时也一样），草稿里出现时整份报 `not_in_this_version`（`reason` 是 `not_implemented`），`param` 指到那张表（`tables/<i>`），不产生任何事件。草稿里原样列出、没有改动的派生表照常收。新建 slot 时的派生表不受影响。
 - **第一版不支持的键或改动**：`reextract`、`extends`、`compatibility`、`derived` 改 `base`；在写入过的表上改时间类型、增删改 `entity_key`、改 `granularity`、`base` 改 `derived`、`ref` 互转与改目标、换一组来源键（`change_external_key`）、改来源键字段的类型或收紧它的约束。写入过的表上仍可以加来源键（键字段须是同一份草稿新增的字段）或去掉它，都要确认。草稿里出现时整份报 `not_in_this_version`，`param` 指到那个键，不产生任何事件；因为表已被写入而不支持的，`reason` 是 `table_written`。
 - **第一版建 slot 时不收的派生规则**：用到 `saveslot_date` 的、分组键是 `decimal` / `quantity` 且小数位上界可能超出推断精度的（算法见 [`03-data-model/11-restricted-sql.md`](03-data-model/11-restricted-sql.md)「小数分组键」）。都报 `not_in_this_version`，`param` 指到那张派生表的规则（`tables/<i>/rule`），不产生任何事件。派生规则读读时计算的派生表，第一版同样报 `not_in_this_version`，`param` 是 `tables/<i>/rule/sql`。
 - 字段上的 `migrate` 与表达式形式的 `backfill` 在第一版之后：第一版里草稿带它们，在任何表上都报 `not_in_this_version`（`param` 指到那个键），常量形式的 `backfill` 照做。设计上它们只能引用本字段的旧值与常量，只对带值的位置求值，空值原样带过去。
