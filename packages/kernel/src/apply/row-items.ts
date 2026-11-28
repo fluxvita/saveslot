@@ -98,6 +98,7 @@ export async function rowItems(
         content: { kind: "value", value },
         shapeSeq: event as Seq,
         constSv: sv,
+        constant: true,
       });
       continue;
     }

@@ -14,6 +14,7 @@ import {
   createOpsContext,
   createTenant,
   eventsOf,
+  previewDeletion,
   query,
   type ReadTx,
   history as readHistory,
@@ -907,6 +908,88 @@ describe("a switch rebuilding tables", () => {
         ["2026-11-15", null, "95"],
       ]);
       await replaysTheSame();
+    },
+    T,
+  );
+  it(
+    "a field made required with a constant is not a required one for existence: with its fill gone, the entity still exists there, the field empty",
+    async () => {
+      const b1 = await w({
+        table: "plan",
+        intent: "insert",
+        valid_from: "2026-10-01",
+        valid_to: "2026-11-01",
+        set: { a: "a1" },
+      });
+      const e = b1.ops[0].target.entity as string;
+      await w({
+        table: "plan",
+        intent: "update",
+        entity: e,
+        ver: b1.ops[0].ver,
+        valid_from: "2026-10-15",
+        valid_to: "2026-12-01",
+        set: { b: "b1" },
+      });
+      // Version 2: `a` required, with a constant; the fill for [11-01, 12-01) is not recorded, as
+      // if a deletion had taken its block away.
+      const d = await draftFrom(1, [
+        {
+          ...PLAN,
+          fields: [{ ...TXT("a"), required: true, backfill: { const: "x" } }, TXT("b"), K(2)],
+        },
+      ]);
+      const t = d.compiled.tables.find((x: Any) => x.name === "plan");
+      const [a, b, k] = ["a", "b", "k"].map((n) => t.fields.find((f: Any) => f.name === n).id);
+      const f = (av: string | null, bv: string | null) => ({ [a]: av, [b]: bv, [k]: null });
+      await migrate(d, 1, `m_${"0".repeat(15)}3`, [t.id], {
+        [`tables/${t.id}`]: check([
+          { id: e, valid: { from: "2026-10-01", to: "2026-10-15" }, fields: f("a1", null) },
+          { id: e, valid: { from: "2026-10-15", to: "2026-11-01" }, fields: f("a1", "b1") },
+          { id: e, valid: { from: "2026-11-01", to: "2026-12-01" }, fields: f(null, "b1") },
+        ]),
+      });
+      const plan = await query(s.store, ctx(), {
+        table: "plan",
+        valid_during: ["2026-01-01", null],
+      } as never).then((r: Any) => r.rows);
+      expect(plan.map((r: Any) => [r.valid_from, r.valid_to, r.values.a, r.values.b])).toEqual([
+        ["2026-10-01", "2026-10-15", "a1", null],
+        ["2026-10-15", "2026-11-01", "a1", "b1"],
+        ["2026-11-01", "2026-12-01", null, "b1"],
+      ]);
+      await replaysTheSame();
+    },
+    T,
+  );
+  it(
+    "a privacy deletion on a row written before a switch that rebuilt its table: refused, not worked out on old shapes",
+    async () => {
+      const r1 = await w({ table: "notes", intent: "insert", set: { a: "kept", b: "only-b" } });
+      const said = `said ${n}`;
+      const id1 = r1.ops[0].target.row as string;
+      const d = await draftFrom(1, [{ ...NOTES, fields: [TXT("a"), K(1)], drop_fields: ["b"] }]);
+      const t = d.compiled.tables.find((x: Any) => x.name === "notes");
+      const [a, k] = ["a", "k"].map((x) => t.fields.find((f: Any) => f.name === x).id);
+      await migrate(d, 1, `m_${"0".repeat(15)}4`, [t.id], {
+        [`tables/${t.id}`]: check([{ id: id1, fields: { [a]: "kept", [k]: null } }]),
+      });
+      const source = await read(
+        async (tx) =>
+          (
+            await tx.query<Any>(
+              `SELECT so.source_id FROM sources so JOIN content c ON c.seq = so.seq
+               WHERE c.path = 'text' AND c.body LIKE $1`,
+              [`%${JSON.stringify(said)}%`],
+            )
+          ).rows[0].source_id as string,
+      );
+      const e = await previewDeletion(s.store, { sources: [source] }).catch((x: Any) => x);
+      expect({ code: e.code, reason: e.detail?.reason, kind: e.detail?.kind }).toEqual({
+        code: "internal",
+        reason: "not_implemented",
+        kind: "schema_switch",
+      });
     },
     T,
   );

@@ -55,6 +55,11 @@ export interface SettleItem {
   readonly valid: IntervalSet;
   readonly content: SettleContent;
   readonly reverted: readonly Registration[];
+  /**
+   * A schema switch's constant `backfill`: on an event or timeless table it does not by itself make
+   * a row exist (03-deletion «行 / 实体的存在»: some field with a value that is not a constant's).
+   */
+  readonly constant?: true;
 }
 
 export interface ItemKey {
@@ -243,7 +248,9 @@ function settleRow(table: SettleTable, items: readonly SettleItem[]): Settled {
   const contributes = (f: FieldId, nonEmpty: boolean) =>
     items.some(
       (x) =>
-        x.target === f && x.content.kind === "value" && (!nonEmpty || x.content.value !== null),
+        x.target === f &&
+        x.content.kind === "value" &&
+        (!nonEmpty || (x.content.value !== null && x.constant !== true)),
     );
   const exists =
     table.required.every((f) => contributes(f, false)) &&

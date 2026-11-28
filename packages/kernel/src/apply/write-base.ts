@@ -86,7 +86,11 @@ export function settleTable(t: CompiledBaseTable): SettleTable {
   return {
     kind: t.time.type === "state" ? "state" : t.time.type === "event" ? "event" : "timeless",
     fields: t.fields.map((f) => f.id),
-    required: t.fields.filter((f) => f.required === true).map((f) => f.id),
+    // A field given a constant `backfill` (added required, optional made required) is not a
+    // required one for existence (03-deletion «行 / 实体的存在»).
+    required: t.fields
+      .filter((f) => f.required === true && !(f.backfill !== undefined && "const" in f.backfill))
+      .map((f) => f.id),
   };
 }
 

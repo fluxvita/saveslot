@@ -35,7 +35,7 @@ import {
 } from "@fluxvita/saveslot-contract-core";
 import { physical, selectOf } from "../store/layout.ts";
 import type { ReadTx, SqlValue } from "../store/ports.ts";
-import { interval, WHOLE } from "../time/index.ts";
+import { type IntervalSet, interval, meet, minus, sameSet, unionOf, WHOLE } from "../time/index.ts";
 import { canonical, rationalOf } from "../values/index.ts";
 import { type ConvertFailure, convertFieldValue, type TableMap } from "./convert.ts";
 import { ApplyError, type Backfill, type Change } from "./model.ts";
@@ -140,6 +140,7 @@ function constItems(spec: RebuildSpec, rowId: string): SettleItem[] {
         valid: interval(s.from as never, s.to as never),
         content: { kind: "value", value: by(s.field) },
         reverted: [],
+        constant: true,
       });
     }
   } else {
@@ -153,6 +154,7 @@ function constItems(spec: RebuildSpec, rowId: string): SettleItem[] {
         valid: [WHOLE],
         content: { kind: "value", value: by(field) },
         reverted: [],
+        constant: true,
       });
     }
   }
@@ -285,33 +287,40 @@ export async function planRebuildRow(
     "schema_switch",
   );
 
-  // 3. The settled cells held to the converted open cells.
-  // What is left of a converted cell a constant cut (it covers only part of it): the same field and
-  // source, inside that cell, with its value.
-  const remainder = (cell: (typeof settled.cells)[number]) =>
-    state &&
-    cell.by !== null &&
-    cell.valid !== undefined &&
-    openCells.some((c) => {
-      const from = cell.valid?.from as string;
-      const to = cell.valid?.to ?? null;
-      return (
-        c.field === cell.field &&
-        c.src !== null &&
-        c.src.event === cell.by?.event &&
-        c.src.target === cell.by.target &&
-        c.src.k === cell.by.k &&
-        c.no_value === (cell.noValue === true) &&
-        c.valid_from !== null &&
-        c.valid_from <= from &&
-        (c.valid_to === null || (to !== null && to <= c.valid_to)) &&
-        canonicalize(
-          openValues.get(
-            identity(c.field, c.valid_from, c.valid_to, c.src, c.no_value),
-          ) as JsonValue,
-        ) === canonicalize(cell.value as JsonValue)
-      );
-    });
+  // 3. The settled cells held to the converted open cells and to the positions the switch records
+  // (its event's blocks, not the items made from them): a cell the switch gives lies inside them;
+  // a converted cell is closed only where they meet it, and what is left of it, less them, is
+  // covered exactly by its reopened remainders (same field and source, same value). Anything else,
+  // a constant spread wider than recorded included, is a defect.
+  const recorded = (field: string): IntervalSet =>
+    state
+      ? unionOf(
+          ...(spec.backfill.stretches.get(rowId) ?? [])
+            .filter((x) => x.field === field)
+            .map((x) => interval(x.from as never, x.to as never)),
+        )
+      : spec.backfill.rows.get(field as FieldId)?.has(rowId) === true
+        ? [WHOLE]
+        : [];
+  const cellSet = (from: string | null, to: string | null): IntervalSet =>
+    state ? interval(from as never, to as never) : [WHOLE];
+  const sameSrc = (
+    a: { event: number; target: string; k: number } | null,
+    b: { event: number; target: string; k: number } | null,
+  ) => a !== null && b !== null && a.event === b.event && a.target === b.target && a.k === b.k;
+  /** Settled cells with no converted cell of their identity: opened by the switch. */
+  const opened = settled.cells.filter(
+    (cell) =>
+      !openValues.has(
+        identity(
+          cell.field,
+          cell.valid?.from ?? null,
+          cell.valid?.to ?? null,
+          cell.by,
+          cell.noValue === true,
+        ),
+      ),
+  );
   for (const cell of settled.cells) {
     const key = identity(
       cell.field,
@@ -320,38 +329,52 @@ export async function planRebuildRow(
       cell.by,
       cell.noValue === true,
     );
-    const was = openValues.get(key);
-    if (was !== undefined || openValues.has(key)) {
-      if (canonicalize(was as JsonValue) !== canonicalize(cell.value as JsonValue))
+    if (openValues.has(key)) {
+      if (canonicalize(openValues.get(key) as JsonValue) !== canonicalize(cell.value as JsonValue))
         throw inconsistent(`cell of ${cell.field} settles to another value than converted`);
-    } else if (cell.by?.event !== spec.switchSeq && !emptyOf(cell) && !remainder(cell))
-      throw inconsistent(`cell of ${cell.field} settles where no converted cell is`);
+    } else if (cell.by?.event === spec.switchSeq) {
+      const at = cellSet(cell.valid?.from ?? null, cell.valid?.to ?? null);
+      if (!sameSet(meet(at, recorded(cell.field)), at))
+        throw inconsistent(`a constant of ${cell.field} settles where the switch records none`);
+    } else if (!emptyOf(cell)) {
+      // What is left of a converted cell the constant cut: inside one, with its source and value.
+      const inside = openCells.some(
+        (c) =>
+          c.field === cell.field &&
+          sameSrc(c.src, cell.by) &&
+          c.no_value === (cell.noValue === true) &&
+          sameSet(
+            meet(
+              cellSet(cell.valid?.from ?? null, cell.valid?.to ?? null),
+              cellSet(c.valid_from, c.valid_to),
+            ),
+            cellSet(cell.valid?.from ?? null, cell.valid?.to ?? null),
+          ) &&
+          canonicalize(
+            openValues.get(
+              identity(c.field, c.valid_from, c.valid_to, c.src, c.no_value),
+            ) as JsonValue,
+          ) === canonicalize(cell.value as JsonValue),
+      );
+      if (!inside) throw inconsistent(`cell of ${cell.field} settles where no converted cell is`);
+    }
   }
   const cellsChange = changes.find((c) => c.kind === "cells");
-  // A converted cell closed only where a constant is recorded on its field: on a state table, a cell
-  // meeting one of the field's recorded stretches. Not where it starts: a stretch a deletion took
-  // away can leave a constant covering only part of a cell, which cuts it.
-  const covered = (field: string, from: string | null, rec: number) => {
-    const cell = openCells.find(
-      (c) => c.field === field && c.valid_from === from && c.rec_from === rec,
-    );
-    const to = cell?.valid_to ?? null;
-    return consts.some(
-      (x) =>
-        x.target === field &&
-        (!state ||
-          x.valid.some(
-            (v) =>
-              from !== null &&
-              (v.to === null || from < v.to) &&
-              (to === null || v.from === null || v.from < to),
-          )),
-    );
-  };
   if (cellsChange?.kind === "cells")
-    for (const x of cellsChange.close)
-      if (!covered(x.field, x.valid_from, x.rec_from))
+    for (const x of cellsChange.close) {
+      const c = openCells.find(
+        (y) => y.field === x.field && y.valid_from === x.valid_from && y.rec_from === x.rec_from,
+      ) as OpenCell;
+      const whole = cellSet(c.valid_from, c.valid_to);
+      const left = minus(whole, recorded(c.field));
+      const remainders = unionOf(
+        ...opened
+          .filter((y) => y.field === c.field && sameSrc(y.by, c.src))
+          .map((y) => cellSet(y.valid?.from ?? null, y.valid?.to ?? null)),
+      );
+      if (sameSet(left, whole) || !sameSet(meet(remainders, whole), left))
         throw inconsistent(`converted cell of ${x.field} does not settle again`);
+    }
 
   // A field empty where nothing gives it a value, with no converted cell (a field a version added,
   // never written on this row): the switch opens no cell for it, so that a switch makes no version
