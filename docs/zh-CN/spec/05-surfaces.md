@@ -40,7 +40,7 @@
 - **工具列表按 scope 裁剪**：凭证没有某个工具所需的 scope，工具列表里就没有它。每个连接实例都有 `saveslot.read`（contract 第 12 节），所以 6 个读工具总在。`saveslot_resolve` 能用哪些处理方式，按 contract 第 6 节的 scope 表判断。服务器的 `instructions`（第 9 节）与 prompts 列表（10.1）按同一组 scope 生成。
 - **slot 范围不改变工具列表**：凭证限定到某几个 slot 时，工具照 scope 给出；范围外的 slot 对这个凭证与不存在完全相同，任何结果、报错、候选与提示里都不出现范围外的名字（第 7 节；contract 第 12 节）。
 - **越权怎么报**：
-  - 调用了不在自己工具列表里的工具（整个请求缺 scope）：MCP 端点在传输层返回 403，带 `WWW-Authenticate: Bearer error="insufficient_scope", scope="<所需 scope>"`（RFC 6750 第 3.1 节的质询；一次质询里给全这次调用需要的 scope）。MCP 授权规范把这个响应当作重新授权（step-up）的信号；客户端是否自动发起重新授权取决于它的实现，不发起时调用方看到的就是一次 403。
+  - 调用了不在自己工具列表里的工具（整个请求缺 scope）：MCP 端点在传输层返回 403，带 `WWW-Authenticate: Bearer error="insufficient_scope", scope="<所需 scope>"`（RFC 6750 第 3.1 节的质询）。一个请求里有多次工具调用时，质询给的是其中第一个被拒的调用所需的 scope；`saveslot_resolve` 有 write、schema、delete 任一个就能调用，它被拒时质询给 `saveslot.write`（RFC 6750 的 `scope` 列的是全部都需要的 scope，把三个都列上反而不对）。MCP 授权规范把这个响应当作重新授权（step-up）的信号；客户端是否自动发起重新授权取决于它的实现，不发起时调用方看到的就是一次 403。
   - `saveslot_resolve` 用了当前凭证不可用的处理方式：工具结果 `isError: true`，`error.code` 是 `insufficient_scope`。
 - **每个工具都有可选的 `task` 参数**（contract 第 13 节）。工具描述里写明：**任务标识是一个不含用户内容的短标签**（如 `weekly-review`），不要把用户的话或数据写进去——提交 schema、确认删除这类没有证据的操作，它的任务标识没有来源可沿着删，隐私删除清不到（删除预览的"不会删除"里会列出）。
 
@@ -52,7 +52,7 @@ MCP 按最差宿主设计（positioning「saveslot 管什么，不管什么」�
 |---|---|---|
 | `write` 的 op 级 `acknowledge` | **不暴露** | 高影响按写入结果判断，模型在写入之前看不到会被覆盖的段；一律走"待确认 → `saveslot_resolve`"，回执把被覆盖的段写清楚，方便模型转述给用户后再确认 |
 | 证据段上的 `level` | **不暴露**，级别只由证据 `kind` 推出 | 级别只在字面命中时参与裁决，覆盖它在 MCP 侧几乎没有作用 |
-| `history`、`sources` 的模式 | `inputSchema` 用 `oneOf` 按 `mode` 区分；不支持 `oneOf` 的客户端退化成扁平的可选参数表 | 模式与参数配错是最常见的参数错误；配错时报错给出该模式完整的示例 |
+| `history`、`sources` 的模式 | `history` 的 `inputSchema` 用 `oneOf` 按 `mode` 区分；不支持 `oneOf` 的客户端退化成扁平的可选参数表。`sources` 的 `mode` 是一个平的参数，`q`、`id` 是可选参数，哪个模式用哪个写在各参数的说明里 | 模式与参数配错是最常见的参数错误；配错时报错给出该模式完整的示例。`sources` 的三种模式各只多一两个参数，平的参数表已经说得清 |
 | `sql` 的 `cursor` | 不暴露；按结果预算截断，提示缩小条件 | 聚合结果翻页的意义不大 |
 | `deletion_preview` 的 `{confirm}`（按已有的 `dc_` 重出预览） | **不暴露** | 它是给"拿到别人生成的 `dc_`"的调用方用的；Agent 的 `dc_` 是自己预览得到的，要再看一遍就重新预览 |
 | 写操作的 `idempotency_key` | **暴露**，可选 | 重放文本让模型"确实是新的一条就带 idempotency_key 重新提交"，需要这个参数 |
@@ -77,7 +77,7 @@ MCP 按最差宿主设计（positioning「saveslot 管什么，不管什么」�
   - **长的值**：文本里每个不可信片段（字段值、名字、单位、别名、回显的参数等）与 JSON 原文里的每个字符串，超过 2,000 个字符时只显示前 2,000 个，并由服务的措辞注明总长，以及这一版经 MCP 只读得到前 2,000 个字符、完整的值要经 CLI 或 HTTP 读。存下的数据不截：截短的只是给模型读的文本。
   - **已知限制**：经 MCP 读不全一个超过 2,000 个字符的值。要不要给 MCP 加分段读，由评测（1d 一类）的结果决定（08-open-questions）。
   - **不可分页的读结果**超出预算时不截断，报 `too_large`（`result_budget`），附缩小的办法：`level: "schema"` 的文档、单个事项的详情、删除预览里 `rows` 之外的列表（这些列表本身各有 50 条的上限）。读操作什么都没落账，报错后缩小范围重读即可。
-  - **已经落账的操作不报 `too_large`**（`write`、`resolve`、`delete`、`schema_draft` 的回执）：操作已经生效，报错会让调用方以为没写，重发又命中同一个请求键、得到同一个错误。回执必给：操作号、每个 op 的目标与新 `ver`、生成的事项 ID 一定在；超出预算的部分（逐字段结果、`derived[]`、`affected_reads`、`premise_affected.rows`、各列表的后几条；`delete` 的逐行结果只留目标与新 `ver`；`schema_draft` 的逐项改动与回填后的文档全文）截短，结果带 `omitted[]` 列明省掉了什么，文本写明"回执已截短，写入已生效，可用 `history` 查看全部"。
+  - **已经落账的操作不报 `too_large`**（`write`、`resolve`、`delete`、`schema_draft` 的回执）：操作已经生效，报错会让调用方以为没写，重发又命中同一个请求键、得到同一个错误。回执必给：操作号、每个 op 的目标与新 `ver`、生成的事项 ID 一定在；连这些都放不下时（op 极多、实体键很长），先只列放得下的前几个 op、其余计数（`ops_omitted`），再放不下就不列 op、只列放得下的前几个事项、其余计数（`pending_omitted`），操作号始终保留，其余由 `history` 查看；超出预算的部分（逐字段结果、`derived[]`、`affected_reads`、`premise_affected.rows`、各列表的后几条；`delete` 的逐行结果只留目标与新 `ver`；`schema_draft` 的逐项改动与回填后的文档全文）截短，结果带 `omitted[]` 列明省掉了什么，文本写明"回执已截短，写入已生效，可用 `history` 查看全部"。
   - `saveslot_sql` 没有 `cursor`：超出时显示前若干行；有 `total` 时写明总数，没有时写明"还有更多"，都附"请加条件或聚合"。
 
 ## 4. 文本的渲染
