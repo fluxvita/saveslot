@@ -40,6 +40,7 @@ export interface DriverClient {
   end(): Promise<void>;
   on(event: "error", listener: (e: Error) => void): unknown;
   on(event: "end", listener: () => void): unknown;
+  on(event: "notice", listener: (n: { message?: string }) => void): unknown;
 }
 
 export type MakeClient = (config: pg.ClientConfig) => DriverClient;
@@ -103,6 +104,8 @@ export class Connection {
   readonly #onGone: (() => void)[] = [];
   /** The last statement asked for: the next one is sent once it has settled. */
   #tail: Promise<unknown> = Promise.resolve();
+  /** Where the server's notices go while `runWithNotices` runs a statement; nowhere otherwise. */
+  #notices: string[] | undefined;
 
   private constructor(client: DriverClient) {
     this.#client = client;
@@ -112,6 +115,9 @@ export class Connection {
     });
     client.on("end", () => {
       this.#lose({ message: "the connection has ended", sqlState: undefined, cause: undefined });
+    });
+    client.on("notice", (n) => {
+      this.#notices?.push(n.message ?? "");
     });
   }
 
@@ -191,6 +197,26 @@ export class Connection {
    * itself only as a deprecated behaviour). One still waiting when the connection ends is not sent:
    * it throws `Gone`.
    */
+  /**
+   * Runs `sql` as `run` does, without parameters, and gives the notices the server sent while it
+   * ran (`VACUUM (VERBOSE)` reports by notices).
+   */
+  async runWithNotices(
+    sql: string,
+  ): Promise<{ readonly result: Result; readonly notices: string[] }> {
+    const notices: string[] = [];
+    const r = this.#tail.then(async () => {
+      this.#notices = notices;
+      try {
+        return await this.#runNow(sql, undefined);
+      } finally {
+        this.#notices = undefined;
+      }
+    });
+    this.#tail = r.catch(() => {});
+    return { result: await r, notices };
+  }
+
   run(sql: string, params?: readonly SqlValue[]): Promise<Result> {
     const r = this.#tail.then(() => this.#runNow(sql, params));
     this.#tail = r.catch(() => {});

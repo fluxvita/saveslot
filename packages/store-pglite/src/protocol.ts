@@ -58,6 +58,23 @@ export interface CreateParams {
   readonly metaRows: readonly (readonly [string, string])[];
 }
 
+/**
+ * One step of the in-place residue clean-up (02-architecture §7 «残留清理的做法»). The statement of
+ * each is fixed in the DB Worker; a table is named, never SQL.
+ */
+export type MaintainStep =
+  | { readonly op: "rewrite"; readonly table: string }
+  | { readonly op: "analyze" }
+  | { readonly op: "rewrite_statistics" }
+  | { readonly op: "checkpoint" }
+  | { readonly op: "switch_wal" }
+  | { readonly op: "check" };
+
+/** What a `maintain` step reports: for `check`, the statistics rows dead but not yet removable. */
+export interface MaintainReply {
+  readonly notRemovable?: number;
+}
+
 export type Request =
   | { readonly kind: "create"; readonly params: CreateParams }
   | { readonly kind: "open"; readonly params: OpenParams }
@@ -67,6 +84,7 @@ export type Request =
   | { readonly kind: "commit" }
   | { readonly kind: "rollback" }
   | { readonly kind: "checkpoint" }
+  | { readonly kind: "maintain"; readonly step: MaintainStep }
   | { readonly kind: "analyze" }
   | { readonly kind: "upgrade" }
   | { readonly kind: "stats" }

@@ -403,7 +403,7 @@ describe("a storage that fails while taking an event", () => {
       const failing: TenantStore = {
         read: (fn) => s.read(fn),
         write: () => Promise.reject(new Error(`invalid input: "${TENANT}"`)),
-        purgeResidue: () => s.purgeResidue(),
+        purgeResidue: (t) => s.purgeResidue(t),
         snapshot: () => s.snapshot(),
         formatVersion: s.formatVersion,
         close: () => s.close(),

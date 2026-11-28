@@ -39,6 +39,8 @@ import {
   formatV1Ddl,
   META_KEYS,
   OLDEST_UPGRADABLE_FORMAT,
+  type PurgeOutcome,
+  PurgePermissionError,
   type QueryResult,
   type ReadTx,
   SESSION_SETTINGS,
@@ -66,6 +68,8 @@ export interface PostgresBackendOptions {
    * place of STORAGE_FORMAT_VERSION and UPGRADE_STEPS.
    */
   readonly formatUpgrade?: { readonly format: number; readonly steps: readonly UpgradeStep[] };
+  /** Tests only: how long the residue clean-up waits for other sessions' snapshots (default a minute). */
+  readonly purgeSnapshotWaitMs?: number;
   /**
    * Where the backend reports an upgrade at open, each with the tenant's database: `upgrading`
    * (from, to) before its first step, `upgrade_step` (from, to: the step's) before each, `upgraded`
@@ -169,6 +173,7 @@ export class PostgresBackend implements StorageBackend {
   readonly #format: number;
   readonly #upgradeSteps: readonly UpgradeStep[];
   readonly #onEvent: PostgresBackendOptions["onEvent"];
+  readonly #purgeSnapshotWaitMs: number;
 
   /** `make` is for tests: the driver's client is made by it instead. */
   constructor(opts: PostgresBackendOptions, make?: MakeClient) {
@@ -177,6 +182,7 @@ export class PostgresBackend implements StorageBackend {
     this.#format = opts.formatUpgrade?.format ?? STORAGE_FORMAT_VERSION;
     this.#upgradeSteps = opts.formatUpgrade?.steps ?? UPGRADE_STEPS;
     this.#onEvent = opts.onEvent;
+    this.#purgeSnapshotWaitMs = opts.purgeSnapshotWaitMs ?? SNAPSHOT_WAIT_MS;
   }
 
   /**
@@ -312,6 +318,8 @@ export class PostgresBackend implements StorageBackend {
       return new PostgresTenantStore({
         conn,
         formatVersion,
+        residueMode: await residueModeOf(conn),
+        purgeSnapshotWaitMs: this.#purgeSnapshotWaitMs,
         ...tenant,
       });
     } catch (e) {
@@ -633,12 +641,62 @@ class TxHandle implements Tx {
   }
 }
 
+/** What the role lacks for the in-place residue clean-up (02-architecture §7 «残留清理在 PostgreSQL 上需要的权限»). */
+export type ResidueGrant = "pg_maintain" | "pg_checkpoint" | "pg_switch_wal" | "wal_recycle";
+
+/**
+ * Which residue clean-up this store can do: `in_place`, with every grant §7 lists and the instance
+ * running with `wal_recycle = off`; otherwise a rebuild, and what is missing for the in-place one
+ * (02-architecture §7 «残留清理的做法»: «用哪一种由启动时核对决定»). The host shows it
+ * (`saveslot doctor`) and chooses.
+ */
+export type ResidueMode =
+  | "in_place"
+  | { readonly rebuild: true; readonly missing: readonly ResidueGrant[] };
+
+/** The role's grants and the instance's `wal_recycle`, as `ResidueMode`. A superuser has every grant. */
+async function residueModeOf(conn: Connection): Promise<ResidueMode> {
+  const member = (role: string) =>
+    `(SELECT rolsuper FROM pg_roles WHERE rolname = current_user)
+       OR (EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${role}')
+           AND pg_has_role(current_user, '${role}', 'member'))`;
+  const r = (
+    await conn.run(
+      `SELECT ${member("pg_maintain")} AS pg_maintain, ${member("pg_checkpoint")} AS pg_checkpoint,
+         has_function_privilege(current_user, 'pg_switch_wal()', 'EXECUTE') AS pg_switch_wal,
+         current_setting('wal_recycle') = 'off' AS wal_recycle`,
+      [],
+    )
+  ).rows[0] as Record<ResidueGrant, boolean>;
+  const missing = (
+    ["pg_maintain", "pg_checkpoint", "pg_switch_wal", "wal_recycle"] as const
+  ).filter((g) => r[g] !== true);
+  return missing.length === 0 ? "in_place" : { rebuild: true, missing };
+}
+
+/**
+ * Whether another session of this database, or a process of no database, holds a snapshot or a
+ * transaction ID: the dead statistics rows it could still see would stay. Only `backend_xmin` and
+ * `backend_xid`, shown to every role (02-architecture §7 «残留清理的做法», step 3).
+ */
+const SNAPSHOT_HELD_SQL = `SELECT EXISTS (
+  SELECT 1 FROM pg_stat_activity
+  WHERE pid <> pg_backend_pid()
+    AND coalesce(datname, current_database()) = current_database()
+    AND (backend_xmin IS NOT NULL OR backend_xid IS NOT NULL)) AS held`;
+/** How long the residue clean-up waits for those snapshots, and how often it looks. */
+const SNAPSHOT_WAIT_MS = 60_000;
+const SNAPSHOT_POLL_MS = 50;
+
 export class PostgresTenantStore implements TenantStore {
   readonly formatVersion: number;
   /** PostgreSQL enforces `statement_timeout` (the kernel sets one for a `sql` call). */
   readonly enforcesStatementTimeout = true;
   readonly database: string;
   readonly cell: string;
+  /** Which residue clean-up the role and the instance allow, as checked at open. */
+  readonly residueMode: ResidueMode;
+  readonly #purgeSnapshotWaitMs: number;
   readonly #conn: Connection;
   #state: State = "open";
   #tail: Promise<unknown> = Promise.resolve();
@@ -647,10 +705,14 @@ export class PostgresTenantStore implements TenantStore {
   constructor(init: {
     conn: Connection;
     formatVersion: number;
+    residueMode: ResidueMode;
+    purgeSnapshotWaitMs?: number;
     database: string;
     cell: string;
   }) {
     this.#conn = init.conn;
+    this.residueMode = init.residueMode;
+    this.#purgeSnapshotWaitMs = init.purgeSnapshotWaitMs ?? SNAPSHOT_WAIT_MS;
     this.formatVersion = init.formatVersion;
     this.database = init.database;
     this.cell = init.cell;
@@ -683,8 +745,87 @@ export class PostgresTenantStore implements TenantStore {
     return this.#enqueue(() => this.#transaction("reads", fn));
   }
 
-  async purgeResidue(): Promise<void> {
-    throw new Error("purgeResidue is not implemented in v1 P0: its method is set by experiment 7");
+  /**
+   * The in-place residue clean-up (02-architecture §7 «残留清理的做法»; the kernel port's
+   * `purgeResidue`), each statement on the store's connection between the tenant's transactions:
+   * each of `tables` rewritten; ANALYZE of every table and column (autovacuum gathers statistics
+   * on the content columns too, so the old ones are replaced, then cleared); a wait, at most a
+   * minute, until no other session of this database holds a snapshot (`snapshot_timeout`
+   * otherwise); the statistics rewritten; the write-ahead log; the check. A name that is not one of
+   * this database's tables is refused before any step runs. A statement refused for want of a
+   * grant throws `PurgePermissionError`; the caller turns to a rebuild (`residueMode`).
+   */
+  async purgeResidue(tables: readonly string[]): Promise<PurgeOutcome> {
+    const names = [...new Set(tables)].sort();
+    const known = new Set(
+      await this.read(async (tx) =>
+        (
+          await tx.query<{ name: string }>(
+            "SELECT relname AS name FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind = 'r'",
+          )
+        ).rows.map((r) => r.name),
+      ),
+    );
+    const unknown = names.filter((t) => !known.has(t));
+    if (unknown.length > 0) {
+      throw new Error(`purgeResidue: not tables of this database: ${unknown.join(", ")}`);
+    }
+    for (const t of names)
+      await this.#purgeStep("rewrite", `VACUUM FULL public."${t.replaceAll('"', '""')}"`);
+    await this.#purgeStep("analyze", "ANALYZE");
+    const until = Date.now() + this.#purgeSnapshotWaitMs;
+    for (;;) {
+      const r = await this.#purgeStep("wait_snapshots", SNAPSHOT_HELD_SQL, []);
+      if (r.result.rows[0]?.["held"] !== true) break;
+      if (Date.now() >= until) return { ok: false, why: "snapshot_timeout" };
+      await new Promise((f) => setTimeout(f, SNAPSHOT_POLL_MS));
+    }
+    await this.#purgeStep("rewrite_statistics", "VACUUM FULL pg_statistic");
+    await this.#purgeStep("checkpoint", "CHECKPOINT");
+    await this.#purgeStep("switch_wal", "SELECT pg_switch_wal()");
+    await this.#purgeStep("checkpoint", "CHECKPOINT");
+    await this.#purgeStep("checkpoint", "CHECKPOINT");
+    const check = await this.#purgeStep("check", "VACUUM (VERBOSE) pg_statistic");
+    const m = /(\d+) are dead but not yet removable/.exec(check.notices.join("\n"));
+    if (m === null) throw new Error("VACUUM (VERBOSE) pg_statistic reported no count of dead rows");
+    return Number(m[1]) === 0 ? { ok: true } : { ok: false, why: "dead_not_removable" };
+  }
+
+  /**
+   * One statement of `purgeResidue`, queued between the tenant's transactions, with the notices it
+   * gave. Refused for want of a grant (SQLSTATE 42501): `PurgePermissionError`, naming the step. So
+   * is a VACUUM that skipped its table: PostgreSQL does not refuse a VACUUM of a table the role may
+   * not vacuum, it warns and goes on, so the table would not be rewritten.
+   */
+  #purgeStep(step: string, sql: string, params?: readonly SqlValue[]) {
+    return this.#enqueue(async () => {
+      this.#ensureUsable();
+      try {
+        if (params !== undefined) return { result: await this.#conn.run(sql, params), notices: [] };
+        const r = await this.#conn.runWithNotices(sql);
+        const skipped = r.notices.find((n) => /^skipping "/.test(n));
+        if (skipped !== undefined) {
+          throw new PurgePermissionError(
+            `the role may not run the residue clean-up's ${step}: ${skipped}`,
+            step,
+          );
+        }
+        return r;
+      } catch (e) {
+        if (e instanceof PurgePermissionError) throw e;
+        if (e instanceof Gone && this.#state === "open") this.#state = "failed";
+        if (e instanceof Refused && e.sqlState === "42501") {
+          throw new PurgePermissionError(
+            `the role may not run the residue clean-up's ${step}`,
+            step,
+            {
+              cause: e,
+            },
+          );
+        }
+        throw storeError(e, "connection_lost");
+      }
+    });
   }
 
   async snapshot(): Promise<SnapshotRef> {

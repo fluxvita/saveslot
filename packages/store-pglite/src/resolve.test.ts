@@ -1259,7 +1259,7 @@ describe("confirmation_mismatch gives the item as it is now (04-contract-types Â
       const server: TenantStore = {
         write: (fn) => s.store.write(fn),
         read: (fn) => s.store.read(fn),
-        purgeResidue: () => s.store.purgeResidue(),
+        purgeResidue: (t) => s.store.purgeResidue(t),
         snapshot: () => s.store.snapshot(),
         formatVersion: s.store.formatVersion,
         close: async () => {},

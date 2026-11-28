@@ -45,7 +45,16 @@ import type { Durability, HostSyncStats } from "./protocol.ts";
  * the same; only how often a checkpoint comes.
  */
 const WAL_SIZE = { max_wal_size: "64", min_wal_size: "32" } as const; // MB, as pg_settings has them
-const walParams = Object.entries(WAL_SIZE).flatMap(([k, v]) => ["-c", `${k}=${v}MB`]);
+/**
+ * Old log segments are removed at a checkpoint, not renamed for reuse with their content: a reused
+ * segment keeps a deleted text until it is written over (02-architecture §7 «残留清理的做法», step
+ * 6). The WAL stays bounded all the same (experiment 7's report).
+ */
+const WAL_RECYCLE = { wal_recycle: "off" } as const;
+const walParams = [
+  ...Object.entries(WAL_SIZE).flatMap(([k, v]) => ["-c", `${k}=${v}MB`]),
+  ...["-c", "wal_recycle=off"],
+];
 
 /** PGlite start parameters for a durability mode. */
 export function startParams(durability: Durability): string[] {
@@ -67,9 +76,10 @@ export function startParams(durability: Durability): string[] {
 
 /** Settings that must hold after start for each mode; checked at open. */
 export function expectedSettings(durability: Durability): Record<string, string> {
-  if (durability === "pglite-default") return { fsync: "off", ...WAL_SIZE };
+  if (durability === "pglite-default") return { fsync: "off", ...WAL_SIZE, ...WAL_RECYCLE };
   return {
     ...WAL_SIZE,
+    ...WAL_RECYCLE,
     fsync: "on",
     wal_sync_method: "fsync",
     synchronous_commit: "on",

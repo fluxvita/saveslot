@@ -42,6 +42,31 @@ export interface SnapshotRef {
   readonly id: string;
 }
 
+/** What an in-place residue clean-up came to (`TenantStore.purgeResidue`). */
+export type PurgeOutcome =
+  | { readonly ok: true }
+  | {
+      readonly ok: false;
+      /**
+       * `dead_not_removable`: after it, `VACUUM (VERBOSE) pg_statistic` still reported dead rows
+       * not yet removable (a snapshot keeps them). `snapshot_timeout`: another session of this
+       * database held a snapshot or a transaction ID through the wait (PostgreSQL).
+       */
+      readonly why: "dead_not_removable" | "snapshot_timeout";
+    };
+
+/** A step of the residue clean-up refused for want of a grant (PostgreSQL): `purge_permission`. */
+export class PurgePermissionError extends Error {
+  readonly code = "purge_permission";
+  /** The statement refused, as the step names it. */
+  readonly step: string;
+  constructor(message: string, step: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "PurgePermissionError";
+    this.step = step;
+  }
+}
+
 export interface StorageBackend {
   /**
    * Opens a tenant's storage: checks the storage format version (a higher version than the kernel
@@ -67,8 +92,16 @@ export interface TenantStore {
   recordReads?<T>(fn: (tx: Tx) => Promise<T>): Promise<T>;
   /** Read transaction; on PGlite it goes through the same queue as writes. */
   read<T>(fn: (tx: ReadTx) => Promise<T>): Promise<T>;
-  /** Removes plaintext residue after a physical deletion. Each backend's method is set by experiment 7. */
-  purgeResidue(): Promise<void>;
+  /**
+   * Removes plaintext residue after a physical deletion, in place (02-architecture §7
+   * «残留清理的做法»): rewrites `tables`, then the statistics, then the write-ahead log, each step
+   * one statement from a list fixed in the backend. `tables` are this tenant's physical tables the
+   * deletion touched; a name that is not one is refused. Not done (`ok: false`) is no failure: the
+   * check after it found statistics rows a snapshot still kept, or another session held one past
+   * the wait; the caller tries again later. A statement that fails throws; one refused for want of
+   * a grant (PostgreSQL) throws a `PurgePermissionError`.
+   */
+  purgeResidue(tables: readonly string[]): Promise<PurgeOutcome>;
   /** Physical snapshot, only to speed things up; treated as a backup. Not in v1. */
   snapshot(): Promise<SnapshotRef>;
   readonly formatVersion: number;

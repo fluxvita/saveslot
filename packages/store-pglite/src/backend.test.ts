@@ -637,10 +637,9 @@ describe("durability configuration", () => {
   );
 
   it(
-    "does not offer purgeResidue or snapshot yet",
+    "does not offer snapshot (purge-residue.test.ts has the residue clean-up)",
     async () => {
       await withStore(tenantDir(), async (s) => {
-        await expect(s.purgeResidue()).rejects.toThrow(/experiment 7/);
         await expect(s.snapshot()).rejects.toThrow(/not in v1/);
       });
     },

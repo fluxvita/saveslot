@@ -2854,7 +2854,7 @@ describe.skipIf(TEST_BACKEND !== "postgres")("runServer: a use meets its connect
                 ) as Promise<T>,
             }
           : {}),
-        purgeResidue: () => store.purgeResidue(),
+        purgeResidue: (t) => store.purgeResidue(t),
         snapshot: () => store.snapshot(),
         formatVersion: store.formatVersion,
         ...(store.enforcesStatementTimeout !== undefined
@@ -3357,7 +3357,7 @@ describe("runServer: a storage newer than this version", () => {
           return {
             write: (fn) => refuse(() => store.write(fn)),
             read: (fn) => refuse(() => store.read(fn)),
-            purgeResidue: () => store.purgeResidue(),
+            purgeResidue: (t) => store.purgeResidue(t),
             snapshot: () => store.snapshot(),
             formatVersion: store.formatVersion,
             close: () => store.close(),
@@ -3870,7 +3870,7 @@ describe("runServer: call records", () => {
                   ) as Promise<T>,
               }
             : {}),
-          purgeResidue: () => store.purgeResidue(),
+          purgeResidue: (t) => store.purgeResidue(t),
           snapshot: () => store.snapshot(),
           formatVersion: store.formatVersion,
           ...(store.enforcesStatementTimeout !== undefined

@@ -55,7 +55,7 @@ const ctx = (t: string) =>
 const as = (store: TenantStore, recordReads?: TenantStore["recordReads"]): TenantStore => ({
   write: (fn) => store.write(fn),
   read: (fn) => store.read(fn),
-  purgeResidue: () => store.purgeResidue(),
+  purgeResidue: (t) => store.purgeResidue(t),
   snapshot: () => store.snapshot(),
   formatVersion: store.formatVersion,
   close: () => store.close(),
