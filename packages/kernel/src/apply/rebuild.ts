@@ -8,7 +8,8 @@
 // - The version table: every cell of the old version's version table, closed or open, carried with
 //   its value converted; cells of a dropped field are not carried; `rec_from`, `rec_to`, the source,
 //   `intent`, `revoked` and `no_value` stay as they are. The history is in the new version's shape
-//   (a premise check reads it). Reading as of a moment before the switch reads the retired table.
+//   (a premise check reads it). A read as of a moment before the switch is for the retired table
+//   (schema-change-p4.md §3), which is not open yet: it answers `not_in_this_version`.
 // - The business table: settled for the new definition from the row's items in effect, each
 //   converted from the version it was written in, with the switch's constant `backfill` items as
 //   the event records them. The settled cells are held to the converted open cells: the same cells
@@ -263,14 +264,19 @@ export async function planRebuildRow(
 
   // 2. The row's items in effect, each in the new version's shape; then the switch's constants.
   const items: SettleItem[] = [];
+  // Fields dropped on the way whose items the row has: they still decide whether it exists (a
+  // switch does not recompute existence, 09 §5.5), as they are, and give no value.
+  const gone = new Set<FieldId>();
   for (const x of await rowItems(tx, to.id, rowId, spec.constOf)) {
     if (x.event === spec.switchSeq) continue; // the constants come from the event below
     const sv = x.constSv ?? versionAt(spec.versions, x.shapeSeq);
     const c = contentThrough(mapsBetween(spec.versions, to.id, sv, spec.sv), x.target, x.content);
     if (!c.ok) throw new RebuildError(rowId, c);
-    if (c.content === null) continue;
     const { shapeSeq: _, constSv: __, ...item } = x;
-    items.push({ ...item, content: c.content });
+    if (c.content === null) {
+      gone.add(x.target as FieldId);
+      items.push(item);
+    } else items.push({ ...item, content: c.content });
   }
   const consts = constItems(spec, rowId);
   const { settled, changes } = settleRowChanges(
@@ -281,10 +287,11 @@ export async function planRebuildRow(
     0,
     spec.switchOp,
     "schema_switch",
+    new Set(),
+    [...gone],
   );
 
   // 3. The settled cells held to the converted open cells.
-  const filled = new Set(consts.map((x) => x.target));
   for (const cell of settled.cells) {
     const key = identity(
       cell.field,
@@ -301,9 +308,23 @@ export async function planRebuildRow(
       throw inconsistent(`cell of ${cell.field} settles where no converted cell is`);
   }
   const cellsChange = changes.find((c) => c.kind === "cells");
+  // A converted cell closed only where a constant is recorded on its field (a state table's cell
+  // starting inside one of the field's recorded stretches).
+  const coveredBy = (field: string, from: string | null) =>
+    consts.some(
+      (x) =>
+        x.target === field &&
+        (!state ||
+          x.valid.some(
+            (v) =>
+              from !== null &&
+              (v.from === null || v.from <= from) &&
+              (v.to === null || from < v.to),
+          )),
+    );
   if (cellsChange?.kind === "cells")
     for (const x of cellsChange.close)
-      if (!filled.has(x.field as FieldId))
+      if (!coveredBy(x.field, x.valid_from))
         throw inconsistent(`converted cell of ${x.field} does not settle again`);
 
   // A field empty where nothing gives it a value, with no converted cell (a field a version added,

@@ -350,8 +350,10 @@ export function settleRowChanges(
    * identity being what it covers and who gives it, not the value.
    */
   renewed: ReadonlySet<string> = new Set(),
+  /** Fields a schema switch dropped whose items the row still has (`SettleTable.gone`). */
+  gone: readonly FieldId[] = [],
 ): { settled: Settled; changes: Change[] } {
-  const shape = settleTable(t);
+  const shape: SettleTable = { ...settleTable(t), gone };
   const isState = shape.kind === "state";
   const changes: Change[] = [];
   const settled = settle(shape, items);

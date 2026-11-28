@@ -68,6 +68,12 @@ export interface SettleTable {
   readonly kind: "state" | "event" | "timeless";
   readonly fields: readonly FieldId[];
   readonly required: readonly FieldId[];
+  /**
+   * Fields a schema switch dropped: their items still count where the rule asks whether some field
+   * has a value (a switch does not recompute existence: 09 §5.5, 07 «确定性转换怎么重放»), and give
+   * no value and no cell.
+   */
+  readonly gone?: readonly FieldId[];
 }
 
 /** A row of the business table: a segment of a state table's entity, or the row. */
@@ -170,7 +176,12 @@ function settleState(table: SettleTable, items: readonly SettleItem[]): Settled 
     const governing = new Map(table.fields.map((f) => [f, fieldItem(items, f, piece, true)]));
     const valued = (f: FieldId) => governing.get(f)?.content.kind === "value";
     const has =
-      table.required.length > 0 ? table.required.every(valued) : table.fields.some(valued);
+      table.required.length > 0
+        ? table.required.every(valued)
+        : table.fields.some(valued) ||
+          (table.gone ?? []).some(
+            (f) => fieldItem(items, f, piece, true)?.content.kind === "value",
+          );
     if (!has) {
       let revoke: SettleItem | undefined;
       for (const f of table.required.length > 0 ? table.required : table.fields) {
@@ -236,7 +247,7 @@ function settleRow(table: SettleTable, items: readonly SettleItem[]): Settled {
     );
   const exists =
     table.required.every((f) => contributes(f, false)) &&
-    table.fields.some((f) => contributes(f, true));
+    [...table.fields, ...(table.gone ?? [])].some((f) => contributes(f, true));
   if (!exists && !revoked) return { rows: [], cells: [] };
   const values: Record<FieldId, FieldValue> = {};
   const cells: Cell[] = [];

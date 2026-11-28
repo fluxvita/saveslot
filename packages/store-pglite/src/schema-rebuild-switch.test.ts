@@ -80,6 +80,24 @@ const BUDGET_2 = {
   ],
 };
 
+const TXT = (name: string) => ({ name, type: "text", description: name });
+const K = (scale: number) => ({ name: "k", type: "decimal", description: "k", scale });
+/** No field required: a row exists where some field has a value. */
+const NOTES = {
+  name: "notes",
+  kind: "base",
+  description: "notes",
+  time: { type: "none" },
+  fields: [TXT("a"), TXT("b"), K(2)],
+};
+const PLAN = {
+  name: "plan",
+  kind: "base",
+  description: "a plan over time",
+  time: { type: "state", granularity: "date" },
+  fields: [TXT("a"), TXT("b"), K(2)],
+};
+
 let s: ReusableStore;
 let scratch: ReusableStore;
 let minute = 0;
@@ -131,7 +149,12 @@ beforeEach(async () => {
   minute = 0;
   await createTenant(s.store, ctx());
   await schemaDraft(s.store, ctx(), {
-    document: { slot: "home", base_version: null, timezone: "UTC", tables: [RUNS, BUDGET] },
+    document: {
+      slot: "home",
+      base_version: null,
+      timezone: "UTC",
+      tables: [RUNS, BUDGET, NOTES, PLAN],
+    },
   });
 }, T);
 
@@ -430,6 +453,20 @@ describe("a switch rebuilding tables", () => {
         ["2026-10-01", null, "schema_switch"],
       ]);
       expect(cells.newBudget.length).toBe(cells.oldBudget + 1);
+      // A cell closed before the switch is converted too: 100.25 from 10-01 on, closed when 90.5
+      // from 11-01 cut it, is 100.3 at one decimal.
+      const amountId = id(budgetT, "amount");
+      const closed = await read(
+        async (tx) =>
+          (
+            await tx.query<Any>(
+              `SELECT valid_to::text AS vt, f_${amountId}::text AS v FROM "t_t2_v2__ver"
+               WHERE field_id = $1 AND valid_from = '2026-10-01' AND rec_to IS NOT NULL ORDER BY rec_from`,
+              [amountId],
+            )
+          ).rows,
+      );
+      expect(closed[0]).toEqual({ vt: null, v: "100.3" });
 
       // The source table: the constant's item, of the switch, kind schema_const.
       const consts = await read(
@@ -448,7 +485,7 @@ describe("a switch rebuilding tables", () => {
         async (tx) =>
           (await tx.query<Any>("SELECT table_id, row_count::int AS n FROM counts ORDER BY 1")).rows,
       );
-      expect(counts).toEqual([
+      expect(counts.filter((c: Any) => c.table_id === "t1" || c.table_id === "t2")).toEqual([
         { table_id: "t1", n: 1 },
         { table_id: "t2", n: 3 },
       ]);
@@ -581,6 +618,87 @@ describe("a switch rebuilding tables", () => {
         open: false,
         intent: "update",
       });
+      // Closed before either switch (100.25 from 10-01 on, cut at 11-01): 100.25 → 100.25 → 100.
+      expect(amountCells).toContainEqual({
+        vf: "2026-10-01",
+        v: "100",
+        open: false,
+        intent: "insert",
+      });
+      await replaysTheSame();
+    },
+    T,
+  );
+  it(
+    "a dropped field that was a row's only value: the row still exists, every field empty (existence is not recomputed)",
+    async () => {
+      const r1 = await w({ table: "notes", intent: "insert", set: { b: "only-b" } });
+      const r2 = await w({ table: "notes", intent: "insert", set: { a: "has-a", b: "and-b" } });
+      const [id1, id2] = [r1.ops[0].target.row as string, r2.ops[0].target.row as string];
+      const d = await draftFrom(1, [{ ...NOTES, fields: [TXT("a"), K(1)], drop_fields: ["b"] }]);
+      const t = d.compiled.tables.find((x: Any) => x.name === "notes");
+      const [a, k] = ["a", "k"].map((n) => t.fields.find((f: Any) => f.name === n).id);
+      await migrate(d, 1, `m_${"3".repeat(16)}`, [t.id], {
+        [`tables/${t.id}`]: check([
+          { id: id1, fields: { [a]: null, [k]: null } },
+          { id: id2, fields: { [a]: "has-a", [k]: null } },
+        ]),
+      });
+      const got = (await rows("notes")).map((r: Any) => [r.row, r.values]);
+      expect(Object.fromEntries(got)).toEqual({
+        [id1]: { a: null, k: null },
+        [id2]: { a: "has-a", k: null },
+      });
+      await replaysTheSame();
+    },
+    T,
+  );
+
+  it(
+    "a dropped field that was a stretch's only value: the stretch still exists, every field empty",
+    async () => {
+      const b1 = await w({
+        table: "plan",
+        intent: "insert",
+        valid_from: "2026-10-01",
+        valid_to: "2026-11-01",
+        set: { a: "a1" },
+      });
+      const e = b1.ops[0].target.entity as string;
+      await w({
+        table: "plan",
+        intent: "update",
+        entity: e,
+        ver: b1.ops[0].ver,
+        valid_from: "2026-10-15",
+        valid_to: "2026-12-01",
+        set: { b: "b1" },
+      });
+      const d = await draftFrom(1, [{ ...PLAN, fields: [TXT("a"), K(1)], drop_fields: ["b"] }]);
+      const t = d.compiled.tables.find((x: Any) => x.name === "plan");
+      const [a, k] = ["a", "k"].map((n) => t.fields.find((f: Any) => f.name === n).id);
+      await migrate(d, 1, `m_${"4".repeat(16)}`, [t.id], {
+        [`tables/${t.id}`]: check([
+          {
+            id: e,
+            valid: { from: "2026-10-01", to: "2026-11-01" },
+            fields: { [a]: "a1", [k]: null },
+          },
+          {
+            id: e,
+            valid: { from: "2026-11-01", to: "2026-12-01" },
+            fields: { [a]: null, [k]: null },
+          },
+        ]),
+      });
+      const plan = await query(s.store, ctx(), {
+        table: "plan",
+        valid_during: ["2026-01-01", null],
+      } as never).then((r: Any) => r.rows);
+      expect(plan.map((r: Any) => [r.valid_from, r.valid_to, r.values])).toEqual([
+        ["2026-10-01", "2026-11-01", { a: "a1", k: null }],
+        ["2026-11-01", "2026-12-01", { a: null, k: null }],
+      ]);
       await replaysTheSame();
     },
     T,
