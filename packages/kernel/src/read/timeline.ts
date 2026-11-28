@@ -349,8 +349,8 @@ export async function timelineInTx(
   const texts = new Map<number, string>();
   if (expand && sourceSeqs.size > 0) {
     const r = await tx.query<{ seq: unknown; path: string; body: string | null }>(
-      `SELECT seq, path, body FROM ${readableContentOf("$1")} c
-       WHERE path IN ('text', 'file') AND body IS NOT NULL`,
+      `SELECT seq, path, body FROM ${readableContentOf("$1", "x.path IN ('text', 'file')")} c
+       WHERE body IS NOT NULL`,
       [[...sourceSeqs]] as never,
     );
     for (const x of r.rows) {

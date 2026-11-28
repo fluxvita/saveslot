@@ -33,8 +33,10 @@ export async function readPendingTargets(tx: ReadTx): Promise<PendingTargets> {
   if (pending.rows.length === 0) return NONE;
   const own = pending.rows.map((d) => Number(d.confirmed_seq));
   const blocks = await tx.query<{ seq: unknown; path: string; body: string }>(
-    `SELECT seq, path, body FROM ${rawContentOf("$1")} c WHERE body IS NOT NULL
-       AND (path = 'positions' OR path LIKE 'restated/%' OR path LIKE 'results/%/target')`,
+    `SELECT seq, path, body FROM ${rawContentOf(
+      "$1",
+      "x.path = 'positions' OR x.path LIKE 'restated/%' OR x.path LIKE 'results/%/target'",
+    )} c WHERE body IS NOT NULL`,
     [own] as never,
   );
   // Each deletion's rows named directly, and the events it points at.

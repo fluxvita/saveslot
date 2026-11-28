@@ -144,8 +144,8 @@ export async function rowDetails(
   if (wanted.length > 0) {
     const blocks = wanted.map(blockOf);
     const r = await tx.query<{ seq: unknown; path: string; body: string }>(
-      `SELECT c.seq, c.path, c.body FROM ${readableContentOf("$1")} c
-       WHERE c.path = ANY($2) AND c.removed_by IS NULL AND c.body IS NOT NULL`,
+      `SELECT c.seq, c.path, c.body FROM ${readableContentOf("$1", "x.path = ANY($2)")} c
+       WHERE c.removed_by IS NULL AND c.body IS NOT NULL`,
       [[...new Set(blocks.map((b) => b.seq))], [...new Set(blocks.map((b) => b.path))]] as never,
     );
     for (const x of r.rows) {

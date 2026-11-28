@@ -62,8 +62,10 @@ export async function declaringOps(
   }
   if (mine.length === 0) return out;
   const blocks = await tx.query<{ seq: unknown; path: string; body: string | null }>(
-    `SELECT seq, path, body FROM ${readableContentOf("$1")} c
-       WHERE (path ~ '^ops/[0-9]+/premises/[0-9]+$' OR path ~ '^ops/[0-9]+/premises_cleared$')`,
+    `SELECT seq, path, body FROM ${readableContentOf(
+      "$1",
+      "x.path ~ '^ops/[0-9]+/premises/[0-9]+$' OR x.path ~ '^ops/[0-9]+/premises_cleared$'",
+    )} c`,
     [[...new Set(mine.map((m) => m.op))]] as never,
   );
   const states = await tx.query<{

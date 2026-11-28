@@ -530,8 +530,8 @@ async function readInputs(tx: ReadTx, ev: ApplyEvent, p: Parsed): Promise<PlanIn
       target_row: string | null;
     }>(`SELECT seq, op, type, target_row FROM events WHERE seq IN (${params})`, list);
     const blocks = await tx.query<{ seq: unknown; path: string; body: string | null }>(
-      `SELECT seq, path, body FROM content WHERE seq IN (${params})`,
-      list,
+      `SELECT seq, path, body FROM ${rawContentOf("$1")} c`,
+      [list] as never,
     );
     const covered = new Map<Seq, CoveredEvent>();
     const paths = new Map<number, Set<string>>();

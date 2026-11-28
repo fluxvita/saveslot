@@ -65,6 +65,32 @@ function literals(c: string): { at: number; text: string }[] {
   return out;
 }
 
+/**
+ * Readers whose SQL reads `content` and has a `seq IN (…)` that is not a list of events whose
+ * blocks it reads, by file and top-level declaration.
+ */
+const BY_LIST_ALLOWED: readonly string[] = [
+  // The events on a row's items: `events.seq IN (SELECT c.seq FROM content c WHERE c.path =
+  // 'target' …)`, a search of the target blocks for the items (a scan, its TODO(index)), not
+  // blocks read by a list.
+  "write/reads.ts rowEvents",
+];
+
+/**
+ * Whether `sql` has a `seq = ANY (…)` or `seq IN (…)` condition on `content`'s `seq`: unqualified,
+ * or qualified by an alias `content` or READABLE_CONTENT is given in the same literal.
+ */
+function byList(sql: string): boolean {
+  const aliases = [
+    ...sql.matchAll(
+      /\b(?:FROM|JOIN)\s+(?:content|\$\{\s*READABLE_CONTENT\s*\})\s+(?:AS\s+)?(\w+)/gi,
+    ),
+  ].map((m) => m[1] as string);
+  return [...sql.matchAll(/(?:\b(\w+)\.|(?<![\w.]))seq\s*(?:=\s*ANY\b|IN\s*\()/gi)].some(
+    (m) => m[1] === undefined || aliases.includes(m[1]),
+  );
+}
+
 const META = "metadata blocks only, which no deletion lists";
 
 /**
@@ -263,20 +289,27 @@ describe("the kernel reads the log's content through the one definition that hid
     expect(problems).toEqual([]);
   });
 
-  it("reads some events' blocks by `content`'s key, one event at a time, not by `seq = ANY`", () => {
+  it("reads some events' blocks by `content`'s key, one event at a time, not by a list of `seq`", () => {
     // `content` is analyzed from a small sample, so the planner's estimate of the blocks a list of
     // events has can be off by orders of magnitude, and with a long list it scans the whole table
     // (store/readable-content.ts `readableContentOf`). An SQL literal reading `content`, itself or
-    // through READABLE_CONTENT, with a `seq = ANY` condition, is such a read.
+    // through READABLE_CONTENT, with a `seq = ANY (…)` or `seq IN (…)` condition (PostgreSQL turns
+    // an IN list into `= ANY`) is such a read, unless BY_LIST_ALLOWED names its reader.
+    //
+    // One string or template literal at a time: SQL put together from separate literals, or from a
+    // variable, is not seen.
     const problems: string[] = [];
     for (const f of files) {
+      const file = relative(SRC, f);
       const c = code(readFileSync(f, "utf8"));
+      const decls = [...c.matchAll(DECL)].map((m) => ({ at: m.index, name: m[1] ?? m[2] ?? "" }));
       for (const lit of literals(c)) {
         const reads = RAW_READ.test(lit.text) || /\$\{\s*READABLE_CONTENT\s*\}/.test(lit.text);
         RAW_READ.lastIndex = 0;
-        if (reads && /\bseq\s*=\s*ANY\b/i.test(lit.text)) {
-          problems.push(`${relative(SRC, f)}:${c.slice(0, lit.at).split("\n").length}`);
-        }
+        if (!reads || !byList(lit.text)) continue;
+        const reader = decls.filter((d) => d.at < lit.at).at(-1)?.name ?? "(top level)";
+        if (BY_LIST_ALLOWED.includes(`${file} ${reader}`)) continue;
+        problems.push(`${file}:${c.slice(0, lit.at).split("\n").length} (${reader})`);
       }
     }
     expect(

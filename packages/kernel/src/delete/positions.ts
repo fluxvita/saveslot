@@ -302,9 +302,10 @@ export async function readPositionIndex(
   const srcSet = new Set(sources);
   const sourceBlocks = (
     await tx.query<{ seq: unknown; path: string }>(
-      `SELECT c.seq, c.path FROM events e JOIN ${rawContentOf("$1")} c ON c.seq = e.seq
-       WHERE e.type = 'source.recorded' AND e.seq = ANY($1)
-         AND c.path IN ('text', 'file', 'request', 'stated_at') AND c.body IS NOT NULL`,
+      `SELECT c.seq, c.path
+       FROM events e
+       JOIN ${rawContentOf("$1", "x.path IN ('text', 'file', 'request', 'stated_at')")} c ON c.seq = e.seq
+       WHERE e.type = 'source.recorded' AND e.seq = ANY($1) AND c.body IS NOT NULL`,
       [sources as never],
     )
   ).rows.map((r) => ({ seq: Number(r.seq), path: r.path }));
@@ -442,7 +443,7 @@ export async function readDeletionPositions(
   const out = new Map<Seq, BlockAddress[]>();
   if (seqs.length === 0) return out;
   const r = await tx.query<{ seq: unknown; body: string | null }>(
-    `SELECT c.seq, c.body FROM events e JOIN ${rawContentOf("$1")} c ON c.seq = e.seq AND c.path = 'positions'
+    `SELECT c.seq, c.body FROM events e JOIN ${rawContentOf("$1", "x.path = 'positions'")} c ON c.seq = e.seq
      WHERE e.type = 'deletion.confirmed' AND e.seq = ANY($1) AND c.body IS NOT NULL`,
     [[...seqs] as never],
   );

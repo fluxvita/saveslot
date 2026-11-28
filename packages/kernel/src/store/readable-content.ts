@@ -29,6 +29,8 @@ export const READABLE_CONTENT = `(SELECT rc.seq, rc.path, rc.removed_by, pb.dele
 /**
  * The events an SQL array of event numbers lists (`seqs`, e.g. `$1`), each once, as rows `s.seq`.
  */
+const inner = (where: string | undefined): string => (where === undefined ? "" : ` AND (${where})`);
+
 const eachSeq = (seqs: string): string =>
   `(SELECT DISTINCT u.seq FROM unnest(CAST(${seqs} AS bigint[])) AS u(seq)) s`;
 
@@ -42,18 +44,22 @@ const eachSeq = (seqs: string): string =>
  * `seq = ANY` of a few thousand events, the planner expected millions of rows and scanned the whole
  * of `content` (37.8 s for one write's receipt, on 30 million blocks). `OFFSET 0` keeps the lateral
  * subquery from being pulled up into a join, which the planner could then hash on that estimate.
+ *
+ * `where`, an SQL condition on the block as `x` (its path, say), is applied inside the lookup: a
+ * condition outside does not reach past `OFFSET 0`, so every block of each event would be read
+ * before it is filtered.
  */
-export const readableContentOf = (seqs: string): string =>
+export const readableContentOf = (seqs: string, where?: string): string =>
   `(SELECT b.* FROM ${eachSeq(seqs)} CROSS JOIN LATERAL
-     (SELECT x.* FROM ${READABLE_CONTENT} x WHERE x.seq = s.seq OFFSET 0) b)`;
+     (SELECT x.* FROM ${READABLE_CONTENT} x WHERE x.seq = s.seq${inner(where)} OFFSET 0) b)`;
 
 /**
  * As `readableContentOf`, of `content` itself (with its columns): blocks a pending deletion lists are read like any other. A direct read of
  * `content`, each use counted as one by content-readers.test.ts.
  */
-export const rawContentOf = (seqs: string): string =>
+export const rawContentOf = (seqs: string, where?: string): string =>
   `(SELECT b.* FROM ${eachSeq(seqs)} CROSS JOIN LATERAL
-     (SELECT x.* FROM content x WHERE x.seq = s.seq OFFSET 0) b)`;
+     (SELECT x.* FROM content x WHERE x.seq = s.seq${inner(where)} OFFSET 0) b)`;
 
 /**
  * SQL for the task of the operation whose head event is `seq` (an SQL expression): its `task`

@@ -158,8 +158,8 @@ async function contentOf(
   const out = new Map<number, Map<string, string>>();
   if (seqs.length === 0) return out;
   const r = await tx.query<{ seq: unknown; path: string; body: string | null }>(
-    `SELECT seq, path, body FROM ${readableContentOf("$1")} c
-     WHERE path IN ('text', 'file', 'request', 'stated_at')`,
+    `SELECT seq, path, body
+     FROM ${readableContentOf("$1", "x.path IN ('text', 'file', 'request', 'stated_at')")} c`,
     [[...seqs]] as never,
   );
   for (const x of r.rows) {

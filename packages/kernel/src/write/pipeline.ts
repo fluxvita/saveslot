@@ -968,8 +968,8 @@ async function storedTexts(
     body: string | null;
     pending_by: unknown;
   }>(
-    `SELECT seq, path, body, pending_by FROM ${readableContentOf("$1")} c
-     WHERE path IN ('text', 'file')`,
+    `SELECT seq, path, body, pending_by
+     FROM ${readableContentOf("$1", "x.path IN ('text', 'file')")} c`,
     [[...new Set(seqs)]] as never,
   );
   for (const x of r.rows) {
