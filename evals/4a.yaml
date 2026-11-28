@@ -56,22 +56,82 @@ assert:
   calls:
     - level: H
       text: '必须：第 1 步里 `saveslot_write`，目标是餐饮预算（`entity` 或 `entity_key`），`valid_from: "2026-11-02"`，`valid_to` 没传或是 `"next_change"`，amount 3000。`capture` 回执的 `seq` 为 `w_3000`。'
+      step: 1
+      must:
+        tool: saveslot_write
+        args:
+          "ops[0]": { in: [{ entity: $budget_food }, { "entity_key.category": 餐饮 }] }
+          "ops[0].valid_from": "2026-11-02"
+          "ops[0].valid_to": { in: [{ absent: true }, next_change] }
+          "ops[0].set.amount": { in: [{ quantity: { value: 3000, unit: CNY } }, 3000, "3000"] }
+      capture: { w_3000: seq }
     - level: H
       text: '不得：第 1 步里 `valid_to: "open"` 或晚于 2026-11-10 的日期。'
+      step: 1
+      must_not:
+        tool: saveslot_write
+        args: { "ops[*].valid_to": { in: [open, { gt: "2026-11-10" }] } }
     - level: H
       text: '必须：第 2 步里 `saveslot_write`，`revert.undo: $w_3000`，没有 `include_later`；结果 `status: "pending"`，`ops[0].fields.amount` 的各段 `result` 都是 `"awaiting"`（状态类表的逐字段结果是按段的数组）。`capture` 事项为 `item`。'
+      step: 2
+      must:
+        tool: saveslot_write
+        args:
+          "ops[0].revert.undo": $w_3000
+          "ops[0].revert.include_later": { in: [{ absent: true }, false] }
+        result: { status: pending, "ops[0].fields.amount": { every: { result: awaiting } } }
+      capture: { item: "ops[0].fields.amount[0].item" }
     - level: S
       text: '不得：第 3 步之前出现 `saveslot_resolve`（`decision: "confirm"`）。'
+      before_step: 3
+      must_not:
+        tool: saveslot_resolve
+        args: { decision: confirm }
     - level: H
       text: '必须：第 3 步里 `saveslot_resolve`，`id: $item`，`decision: "confirm"`。'
+      step: 3
+      must:
+        tool: saveslot_resolve
+        args: { id: $item, decision: confirm }
   state:
     - level: H
       after_step: 1
       text: "`spans`：`[10-01, 11-02)` 5000，`[11-02, 11-10)` 3000，`[11-10, ∞)` 4000。"
+      spans: { table: plan.budgets, entity: $budget_food }
+      expect:
+        - {
+            valid_from: "2026-10-01",
+            valid_to: "2026-11-02",
+            values: { amount: { quantity: { value: 5000, unit: CNY } } },
+          }
+        - {
+            valid_from: "2026-11-02",
+            valid_to: "2026-11-10",
+            values: { amount: { quantity: { value: 3000, unit: CNY } } },
+          }
+        - {
+            valid_from: "2026-11-10",
+            valid_to: null,
+            values: { amount: { quantity: { value: 4000, unit: CNY } } },
+          }
     - level: H
       text: "结束时 `spans`：`[10-01, 11-10)` 5000，`[11-10, ∞)` 4000。"
+      spans: { table: plan.budgets, entity: $budget_food }
+      expect:
+        - {
+            valid_from: "2026-10-01",
+            valid_to: "2026-11-10",
+            values: { amount: { quantity: { value: 5000, unit: CNY } } },
+          }
+        - {
+            valid_from: "2026-11-10",
+            valid_to: null,
+            values: { amount: { quantity: { value: 4000, unit: CNY } } },
+          }
     - level: H
       text: '`pending`：`$item` 已解决，`decision: "confirm"`。'
+      pending: { id: $item }
+      expect: { status: resolved, "resolution.decision": confirm }
   reply:
     - level: R
       step: 1

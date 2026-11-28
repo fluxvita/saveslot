@@ -1,7 +1,7 @@
 {
   "name": "@fluxvita/saveslot-evals",
   "version": "0.0.0",
-  "description": "The evaluation variants (docs/zh-CN/spec/10-evals.md) and the runner that installs their fixtures. Not published.",
+  "description": "The evaluation variants (docs/zh-CN/spec/10-evals.md), the runner that installs their fixtures, and the tools that judge a kept run. Not published.",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",

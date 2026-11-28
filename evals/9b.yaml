@@ -77,11 +77,40 @@ assert:
   calls:
     - level: H
       text: "必须：一次成功的 `saveslot_write`，`insert`；distance 传的是 `{value: 3, unit: mi}`（由 saveslot 换算），或 Agent 自己换算成 4.83 km 左右（±0.01）。"
+      must:
+        tool: saveslot_write
+        args:
+          "ops[0].intent": insert
+          "ops[0].set.distance":
+            in:
+              [
+                { quantity: { value: 3, unit: mi } },
+                { quantity: { value: 4.83, unit: km, within: 0.01 } },
+              ]
+        result: { status: saved }
     - level: N
       text: "记录：走了哪条路；Agent 自己换算时的误差。"
+      any_of:
+        - path: saveslot 换算
+          must:
+            tool: saveslot_write
+            args: { "ops[0].intent": insert, "ops[0].set.distance.unit": mi }
+            result: { status: saved }
+        - path: Agent 换算
+          must:
+            tool: saveslot_write
+            args: { "ops[0].intent": insert, "ops[0].set.distance.unit": km }
+            result: { status: saved }
   state:
     - level: H
       text: "新增一行，distance 换算到 km 后在 4.82–4.84 之间。"
+      all_of:
+        - ops_since_seed: {}
+          expect: { total: 1, intents: { insert: 1 } }
+        - query:
+            table: health.runs
+            where: { distance: { quantity: { value: 4.83, unit: km, within: 0.01 } } }
+          expect: { count: 1 }
   reply:
     - level: R
       rubric: "告诉用户记下了，并给出换算后的公里数或说明已换算"

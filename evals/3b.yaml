@@ -71,9 +71,20 @@ assert:
   calls:
     - level: H
       text: '必须：第 3 步的 `saveslot_write` 结果 `status: "saved"`，`ops[0].fields.amount.result: "applied"`。'
+      step: 3
+      must:
+        tool: saveslot_write
+        result: { status: saved, "ops[0].fields.amount.result": applied }
   state:
     - level: H
       text: '`taxi` 的 amount 32 CNY、note "去机场"；`pending` 里没有未决的 `conflict` 事项。'
+      all_of:
+        - query: { table: ledger.expenses, row: $taxi }
+          expect:
+            count: 1
+            rows: [{ values: { amount: { quantity: { value: 32, unit: CNY } }, note: 去机场 } }]
+        - pending: { where: { type: conflict, status: open } }
+          expect: { count: 0 }
   reply:
     - level: R
       rubric: "告诉用户已改成 32 元；没有把这次修改说成冲突或失败"

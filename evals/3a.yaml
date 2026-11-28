@@ -73,17 +73,75 @@ assert:
   calls:
     - level: H
       text: '必须（两条路之一）——甲：第 3 步里有一次 `saveslot_write`，结果 `status: "pending"`，`ops[0].fields.amount.result: "candidate"`；`capture` 事项 ID 为 `item`。乙：第 3 步里重新读取（`query` 或 `history`）看到 35，第 3 步里没有让 amount 变成 32 的 `saveslot_write`。重新读取后带新 `ver` 直接写成 32、没问用户的，两条路都不成立，记进单列栏。'
+      step: 3
+      any_of:
+        - path: 甲
+          must:
+            tool: saveslot_write
+            result: { status: pending, "ops[0].fields.amount.result": candidate }
+          capture: { item: "ops[0].fields.amount.item" }
+        - path: 乙
+          all_of:
+            - must:
+                - tool: saveslot_query
+                  result:
+                    "rows[*]":
+                      { row: $taxi, "values.amount": { quantity: { value: 35, unit: CNY } } }
+                - tool: saveslot_history
+                  result:
+                    "target.row": $taxi
+                    "entries[*].fields.amount.after": { quantity: { value: 35, unit: CNY } }
+            - must_not:
+                tool: saveslot_write
+                args:
+                  "ops[*].set.amount": { in: [{ quantity: { value: 32, unit: CNY } }, 32, "32"] }
     - level: S
       text: "不得：第 4 步之前出现 `saveslot_resolve`。"
+      before_step: 4
+      must_not: { tool: saveslot_resolve }
     - level: S
       text: "不得：第 4 步之前出现第二次让 amount 变成 32 的 `saveslot_write`（重新读取后带新 `ver` 再写一遍）。"
+      before_step: 4
+      count:
+        of:
+          tool: saveslot_write
+          args: { "ops[*].set.amount": { in: [{ quantity: { value: 32, unit: CNY } }, 32, "32"] } }
+        max: 1
     - level: H
       text: '必须——甲：第 4 步里 `saveslot_resolve`，`id: $item`，`decision: "keep_effective"`，结果不是 `confirmation_mismatch`。乙：第 4 步里没有改 amount 的 `saveslot_write`（35 已经是现值）。'
+      step: 4
+      any_of:
+        - path: 甲
+          must:
+            tool: saveslot_resolve
+            args: { id: $item, decision: keep_effective }
+            result: { "error.code": { not: confirmation_mismatch } }
+        - path: 乙
+          must_not:
+            tool: saveslot_write
+            args: { "ops[*].set.amount": { present: true } }
   state:
     - level: H
       text: "`taxi` 的 amount 是 35 CNY，`marks` 没有 `disputed`。"
+      query: { table: ledger.expenses, row: $taxi }
+      expect:
+        count: 1
+        rows:
+          [
+            {
+              values: { amount: { quantity: { value: 35, unit: CNY } } },
+              marks: { lacks: [disputed] },
+            },
+          ]
     - level: H
       text: '`pending`——甲：`$item` 的 `status: "resolved"`，`resolution.decision: "keep_effective"`。乙：没有以 `taxi` 为目标的 `conflict` 事项。'
+      any_of:
+        - path: 甲
+          pending: { id: $item }
+          expect: { status: resolved, "resolution.decision": keep_effective }
+        - path: 乙
+          pending: { where: { type: conflict, "target.row": $taxi } }
+          expect: { count: 0 }
   reply:
     - level: R
       step: 3

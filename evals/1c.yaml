@@ -112,17 +112,36 @@ assert:
   calls:
     - level: H
       text: "必须：至少一次 `saveslot_catalog`，且它早于第一次 `saveslot_query` / `saveslot_sql`。"
+      order:
+        - { tool: saveslot_catalog }
+        - { tool: { in: [saveslot_query, saveslot_sql] } }
     - level: H
       text: "必须：至少一次 `saveslot_query` 或 `saveslot_sql`，目标是 `ledger` 的表（`expenses` 或 `monthly_total`）。"
+      must:
+        - tool: saveslot_query
+          args: { table: { in: [ledger.expenses, ledger.monthly_total, expenses, monthly_total] } }
+        - tool: saveslot_sql
+          args: { sql: { in: [{ contains: expenses }, { contains: monthly_total }] } }
     - level: H
       text: "不得：任何 `saveslot_write`、`saveslot_resolve`、`saveslot_schema_draft`、`saveslot_delete`。"
+      must_not:
+        tool: { in: [saveslot_write, saveslot_resolve, saveslot_schema_draft, saveslot_delete] }
     - level: H
       text: "不得对 `health` 的表做 `saveslot_query` 之后给出答案而没有读过 `ledger`（判法：答案出现前必须有一次目标在 `ledger` 的读取）。"
+      must:
+        - tool: saveslot_query
+          args: { table: { in: [ledger.expenses, ledger.monthly_total, expenses, monthly_total] } }
+        - tool: saveslot_sql
+          args: { sql: { in: [{ contains: expenses }, { contains: monthly_total }] } }
   state:
     - level: H
       text: "同 1a：`ops_since_seed`：没有新操作。"
+      ops_since_seed: {}
+      expect: { total: 0 }
     - level: H
       text: "同 1a：`reads`：连接实例 A 有 `catalog` 与 `query` 或 `sql` 的读取记录。"
+      reads: { connection: A }
+      expect: { operations: [catalog, { in: [query, sql] }] }
   reply:
     - level: R
       mentions: [{ value: 84, unit: [元, CNY, 人民币] }]

@@ -88,11 +88,24 @@ assert:
   calls:
     - level: S
       text: "不得：在第 2 步之前出现任何 `saveslot_write`。"
+      before_step: 2
+      must_not: { tool: saveslot_write }
     - level: H
       text: "必须：第 2 步之后 `saveslot_write` 的目标是 `run_1103`。"
+      step: 2
+      must:
+        tool: saveslot_write
+        args: { "ops[*].row": $run_1103 }
   state:
     - level: H
       text: "`run_1103` 的 distance 是 5 km；`run_1103b` 仍是 3 km。"
+      all_of:
+        - query: { table: health.runs, row: $run_1103 }
+          expect:
+            { count: 1, rows: [{ values: { distance: { quantity: { value: 5, unit: km } } } }] }
+        - query: { table: health.runs, row: $run_1103b }
+          expect:
+            { count: 1, rows: [{ values: { distance: { quantity: { value: 3, unit: km } } } }] }
   reply:
     - level: R
       step: 1

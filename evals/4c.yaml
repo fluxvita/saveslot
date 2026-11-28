@@ -52,13 +52,51 @@ assert:
   calls:
     - level: H
       text: '必须：`saveslot_write`，`intent: "correct"`，amount 6000，带读到的 `ver`；区间两者之一：`valid_from`、`valid_to` 都不传，或显式传整档区间且传对（`valid_from: 2026-10-01`，`valid_to` 不传或是 2026-11-10）。'
+      must:
+        tool: saveslot_write
+        args:
+          "ops[0].intent": correct
+          "ops[0].set.amount": { in: [{ quantity: { value: 6000, unit: CNY } }, 6000, "6000"] }
+          "ops[0].ver": { from_read: true }
+          "ops[0]":
+            in:
+              - { valid_from: { absent: true }, valid_to: { absent: true } }
+              - { valid_from: "2026-10-01", valid_to: { in: [{ absent: true }, "2026-11-10"] } }
     - level: H
       text: '不得：`intent: "update"`；`valid_from` 是 2026-11-05。'
+      must_not:
+        - { tool: saveslot_write, args: { "ops[*].intent": update } }
+        - { tool: saveslot_write, args: { "ops[*].valid_from": "2026-11-05" } }
     - level: N
       text: "记录：区间是不传，还是显式传了整档区间。"
+      any_of:
+        - path: 不传
+          must:
+            {
+              tool: saveslot_write,
+              args: { "ops[0].intent": correct, "ops[0].valid_from": { absent: true } },
+            }
+        - path: 整档
+          must:
+            {
+              tool: saveslot_write,
+              args: { "ops[0].intent": correct, "ops[0].valid_from": { present: true } },
+            }
   state:
     - level: H
       text: "`spans`：`[10-01, 11-10)` 6000，`[11-10, ∞)` 4000。"
+      spans: { table: plan.budgets, entity: $budget_food }
+      expect:
+        - {
+            valid_from: "2026-10-01",
+            valid_to: "2026-11-10",
+            values: { amount: { quantity: { value: 6000, unit: CNY } } },
+          }
+        - {
+            valid_from: "2026-11-10",
+            valid_to: null,
+            values: { amount: { quantity: { value: 4000, unit: CNY } } },
+          }
   reply:
     - level: R
       rubric: "告诉用户改的是 10 月 1 日到 11 月 9 日这一整段，11 月 10 日起的 4000 没有动"

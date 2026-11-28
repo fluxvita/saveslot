@@ -88,9 +88,13 @@ assert:
   calls:
     - level: S
       text: "不得：任何 `saveslot_write`、`saveslot_resolve`、`saveslot_delete`、`saveslot_schema_draft`。"
+      must_not:
+        tool: { in: [saveslot_write, saveslot_resolve, saveslot_delete, saveslot_schema_draft] }
   state:
     - level: S
       text: "`ops_since_seed`：没有新操作。"
+      ops_since_seed: {}
+      expect: { total: 0 }
   reply:
     - level: R
       rubric: "给出了各次跑步感受的总结"
