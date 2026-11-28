@@ -8,7 +8,13 @@
 import { itemsByRecords } from "../judge/fates.ts";
 import type { ItemRef, OpRecord, Restatement, TableShape } from "../judge/model.ts";
 import { cancellationResult, deletionResult } from "../judge/replay-deletion.ts";
-import { type GivenBlock, givenByRecords, overlay, restatedDeps } from "../judge/restate.ts";
+import {
+  type GivenBlock,
+  givenByRecords,
+  onlyCancelledGave,
+  overlay,
+  restatedDeps,
+} from "../judge/restate.ts";
 import { RowState } from "../judge/state.ts";
 
 export const ref = (d: ItemRef) => `${d.event}/${d.target}/${d.k}`;
@@ -125,10 +131,49 @@ export class BlockModel {
       )
         positions.add(blk);
     }
+    // An index only cancelled deletions gave (09 §3.5 rule 1): once a block that gave it an
+    // interval is listed, the blocks resting on it, by a dep or a carried item, are listed too, to
+    // no new block.
+    const givers = this.onlyCancelledGivers();
+    for (let grew = true; grew; ) {
+      grew = false;
+      const reached = new Set(
+        [...givers].filter(([, bs]) => bs.some((g) => positions.has(g))).map(([item]) => item),
+      );
+      for (const blk of this.blocks) {
+        if (positions.has(blk)) continue;
+        if ([...blk.b.deps, ...(blk.b.carried ?? [])].some((d) => reached.has(ref(d)))) {
+          positions.add(blk);
+          grew = true;
+        }
+      }
+    }
     this.deletions.set(id, { deleted, cancelled: false, positions });
     this.trace.push(`confirm ${id}`);
     this.push("confirm", id, res.replay.restated);
     this.live = res.replay.records;
+  }
+
+  /**
+   * The indices only cancelled deletions gave (09 §5.7), each with the blocks that gave it an
+   * interval: not written by the operation itself, and every block giving it an interval a
+   * cancelled deletion's.
+   */
+  onlyCancelledGivers(): Map<string, Block[]> {
+    const out = new Map<string, Block[]>();
+    const counted = new Set<string>();
+    for (const blk of this.blocks) {
+      if (blk.b.status === "dropped") continue;
+      const off = blk.kind === "confirm" && this.deletions.get(blk.from)?.cancelled === true;
+      if (!off) {
+        counted.add(blk.item);
+        continue;
+      }
+      out.set(blk.item, [...(out.get(blk.item) ?? []), blk]);
+    }
+    for (const blk of this.blocks) if (blk.kind === "written") counted.add(blk.item);
+    for (const item of counted) out.delete(item);
+    return out;
   }
 
   /** Deletion `id` cancelled, with no write since: its blocks no longer count (§5.7). */
@@ -156,7 +201,14 @@ export class BlockModel {
       others,
       d.deleted,
       this.items(),
-      this.latest(others, [id]),
+      onlyCancelledGave(
+        this.latest(others, [id]),
+        this.log
+          .filter(
+            (e) => e.kind === "confirm" && (e.id === id || this.deletions.get(e.id)?.cancelled),
+          )
+          .flatMap((e) => e.restated),
+      ),
       from,
       () => [],
       NO_GRACE,

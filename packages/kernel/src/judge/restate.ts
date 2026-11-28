@@ -46,6 +46,13 @@ export interface GivenBlock {
    * lists it.
    */
   readonly restatement?: true;
+  /**
+   * An index only cancelled deletions gave (09 §5.7: a deletion numbered it, and every block that
+   * gave it an interval since came from a deletion cancelled): it has no original interval, lands
+   * on nothing, and the cancellation restates it as dropped (09 §5.9 «哪些项要重述» item 4). Last
+   * given as dropped here only for the cancellation's replay (`onlyCancelledGave`).
+   */
+  readonly unsaid?: true;
 }
 
 /**
@@ -91,6 +98,36 @@ export function givenByRecords(records: readonly OpRecord[]): Map<string, GivenB
   return out;
 }
 
+/**
+ * The blocks last given without the cancelled deletions' (09 §5.7), for a cancellation's replay,
+ * with each index only cancelled deletions gave laid over as dropped and still to be said
+ * (`unsaid`): an index not written by the operation itself (every index as written stays in
+ * `latest`), that `cancelledGave` gives an interval and no block counted gives at all. One a block
+ * counted last gave as dropped (a pending deletion's) is not said again: that block keeps its
+ * number already. On an (event, target) a deletion still pending removes whole it is not said
+ * either: the restatement step skips what is deleted (`restatements`). `cancelledGave`: the
+ * restatements of the deletion cancelled and of those cancelled before it.
+ */
+export function onlyCancelledGave(
+  latest: LatestGiven,
+  cancelledGave: readonly Restatement[],
+): Map<string, GivenBlock[]> {
+  const out = new Map<string, GivenBlock[]>([...latest].map(([et, bs]) => [et, [...bs]]));
+  for (const r of cancelledGave) {
+    if (r.status === "dropped") continue;
+    const et = key(r.item.event, r.item.target);
+    const blocks = out.get(et) ?? [];
+    // Any block counted gives it already (an interval, or a restatement as dropped that keeps
+    // its number): nothing to say.
+    if (blocks.some((b) => b.k === r.item.k)) continue;
+    out.set(et, [
+      ...blocks,
+      { k: r.item.k, status: "dropped", valid: [], deps: [], restatement: true, unsaid: true },
+    ]);
+  }
+  return normalized(out);
+}
+
 const byStart = (a: { valid: IntervalSet }, b: { valid: IntervalSet }) => {
   const x = startOf(a.valid);
   const y = startOf(b.valid);
@@ -105,7 +142,7 @@ const byStart = (a: { valid: IntervalSet }, b: { valid: IntervalSet }) => {
  * each index the log last gave stays on the first new item meeting its write-time block (an index
  * a deletion first gave: its block as last given); several landing on one item merge, the smallest
  * index stays; an index with no readable block left takes its number back; new items continue after
- * the largest index given. `fresh`: the items as the replay
+ * the largest index given (an index last given as dropped included). `fresh`: the items as the replay
  * judged them, numbered from 0. `writeTime`: the operation's own items as written.
  */
 export function renumber(
@@ -116,13 +153,15 @@ export function renumber(
   const items = [...fresh].sort(byStart);
   const base = [...latest].sort((a, b) => a.k - b.k);
   const landing = new Map<number, number[]>();
-  // An index with no readable block at all (only restated as dropped since, a contribution again)
-  // takes its number back, by index order, before new numbers are given.
+  // An index as written with no readable block at all (only restated as dropped since, a
+  // contribution again) takes its number back, by index order, before new numbers are given. An
+  // index a deletion numbered never does (09 §5.7): with no interval block left it lands nowhere,
+  // and its number counts as used.
   const back: number[] = [];
   for (const b of base) {
     const at = writeTime.find((w) => w.k === b.k)?.valid ?? b.landing ?? b.valid;
     if (isNothing(at)) {
-      back.push(b.k);
+      if (writeTime.some((w) => w.k === b.k)) back.push(b.k);
       continue;
     }
     const i = items.findIndex((it) => !isNothing(meet(it.valid, at)));
@@ -164,7 +203,8 @@ const sameSet = (a: IntervalSet, b: IntervalSet) =>
  * an item and was not deleted: `dropped`. `deleted`: by `${event}/${target}`. A cancellation's
  * rule 3: `cancelled`, the items (`${event}/${target}/${k}`) whose last interval block (not a
  * restatement as dropped) came from the deletion cancelled — `latest` is then the blocks without that deletion's (09 §5.7) — each still an
- * item restated as it is.
+ * item restated as it is. A cancellation's rule 4: an index only cancelled deletions gave (`unsaid`
+ * in `latest`, `onlyCancelledGave`) is restated as dropped.
  */
 export function restatements(
   replayed: readonly OpRecord[],
@@ -232,8 +272,11 @@ export function restatements(
       // that block (an earlier deletion's restatement, resting on the item it restates, which this
       // deletion alone restates): given again as dropped, or a replay from an empty store falls
       // back to the item's block as written (09 §5.9 rule 2).
+      // An index only cancelled deletions gave is said once, by the cancellation (09 §5.9
+      // «哪些项要重述» item 4): without deps, value or sources.
       if (
         b.status === "dropped" &&
+        b.unsaid !== true &&
         !(
           cleared !== undefined &&
           b.restatement === true &&

@@ -73,10 +73,10 @@ describe("renumber (step 6)", () => {
       [1, iv("11-07", "11-09")],
     ]);
   });
-  it("an index last given as dropped lands by its landing block; one with no block left takes its number back", () => {
+  it("an index last given as dropped lands by its landing block; one a deletion numbered with no block left is not used again", () => {
     // k 1 was given by a deletion and since restated as dropped (landing: [11-07, 11-09)); k 2 was
-    // given and dropped with no interval left. A replay with three items: k 1 lands, k 2 is reused
-    // before a new number.
+    // given by a deletion and dropped with no interval left (09 §5.7: only an index as written
+    // takes its number back). A replay with three items: k 1 lands, the new one takes 3.
     const written = [item(0, "11-01", "11-03")];
     const latest = [
       block(item(0, "11-01", "11-03")),
@@ -91,8 +91,23 @@ describe("renumber (step 6)", () => {
     const fresh = [item(0, "11-01", "11-03"), item(1, "11-04", "11-05"), item(2, "11-07", "11-09")];
     expect(renumber(fresh, latest, written).map((x) => [x.k, x.valid])).toEqual([
       [0, iv("11-01", "11-03")],
-      [2, iv("11-04", "11-05")],
+      [3, iv("11-04", "11-05")],
       [1, iv("11-07", "11-09")],
+    ]);
+  });
+
+  it("an index as written with no interval block left takes its number back before a new one", () => {
+    // k 1 was written, its block since gone (nothing to land by): a replay with two items reuses
+    // it for the second before a new number.
+    const written = [item(0, "11-01", "11-03"), { ...item(1, "11-07", "11-09"), valid: [] }];
+    const latest = [
+      block(item(0, "11-01", "11-03")),
+      { ...block(item(1, "11-07", "11-09")), status: "dropped" as const, valid: [] },
+    ];
+    const fresh = [item(0, "11-01", "11-03"), item(1, "11-04", "11-05")];
+    expect(renumber(fresh, latest, written).map((x) => [x.k, x.valid])).toEqual([
+      [0, iv("11-01", "11-03")],
+      [1, iv("11-04", "11-05")],
     ]);
   });
 

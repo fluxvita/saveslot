@@ -11,7 +11,7 @@ import {
   deletionResult,
   type ExternalFor,
 } from "../judge/replay-deletion.ts";
-import { type GivenBlock, givenByRecords } from "../judge/restate.ts";
+import { type GivenBlock, givenByRecords, onlyCancelledGave } from "../judge/restate.ts";
 import { RowState } from "../judge/state.ts";
 
 /** No deletion or cancellation event as L of the conflict criterion: no write after a deletion. */
@@ -67,7 +67,7 @@ export const cancellationReplayForTests = (
     others,
     deleted,
     itemsByRecords(new RowState(table, records)),
-    givenByRecords(records),
+    onlyCancelledGave(givenByRecords(records), restated),
     new Set(
       restated
         .filter((r) => r.status !== "dropped")
@@ -167,6 +167,13 @@ export class DeletionSessionForTests {
     return { ...res, alone };
   }
 
+  /** The restatements of deletion `id` and of the deletions cancelled before it. */
+  #cancelledGave(id: string): Restatement[] {
+    return this.#log
+      .filter((e) => e.kind === "confirm" && (e.id === id || this.#deletions.get(e.id)?.cancelled))
+      .flatMap((e) => e.restated);
+  }
+
   /** The replay of deletion `id` cancelled, recorded. */
   cancel(records: readonly OpRecord[], id: string, external: ExternalFor = NO_EXTERNAL) {
     const d = this.#deletions.get(id);
@@ -194,7 +201,7 @@ export class DeletionSessionForTests {
       others,
       d.deleted,
       itemsByRecords(new RowState(this.table, records)),
-      this.#latest(records, others, [id]),
+      onlyCancelledGave(this.#latest(records, others, [id]), this.#cancelledGave(id)),
       from,
       external,
       NO_GRACE,

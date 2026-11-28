@@ -9,7 +9,7 @@ import { advance } from "../judge/fates.fixture.ts";
 import { itemsByRecords } from "../judge/fates.ts";
 import type { ItemRef, Restatement } from "../judge/model.ts";
 import { cancellationResult, deletionResult, replayDeletion } from "../judge/replay-deletion.ts";
-import { type GivenBlock, givenByRecords, overlay } from "../judge/restate.ts";
+import { type GivenBlock, givenByRecords, onlyCancelledGave, overlay } from "../judge/restate.ts";
 import { deletedContributions, judged } from "../judge/scenarios.fixture.ts";
 import { RowState } from "../judge/state.ts";
 import { DeletionSessionForTests, deletionReplayForTests } from "./replay.fixture.ts";
@@ -461,13 +461,16 @@ describe("a cancellation laid over the blocks: an index a deletion numbered anew
       second,
       first,
       before,
-      withoutFirst,
+      onlyCancelledGave(withoutFirst, once.restated),
       fromFirst,
       () => [],
       NO_GRACE,
     );
     return {
       dropped: then.restated.some(
+        (r) => r.item.event === 51 && r.item.k === 1 && r.status === "dropped",
+      ),
+      droppedAgain: c.replay.restated.some(
         (r) => r.item.event === 51 && r.item.k === 1 && r.status === "dropped",
       ),
       laid: live(overlay(withoutFirst, c.replay.restated, second, records).get("51/f2")),
@@ -483,7 +486,12 @@ describe("a cancellation laid over the blocks: an index a deletion numbered anew
       const r = cancelFirst(a as string, b as string);
       expect(r.dropped).toBe(true);
       expect(r.laid).toEqual(r.replayed);
-      expect(r.laid.find((x) => x.k === 1)?.content).toEqual({ kind: "value", value: "9" });
+      // Index 1 only the cancelled deletion gave an interval; the second deletion's restatement
+      // as dropped keeps its number, so the cancellation does not say it again, and the stretch
+      // takes a new number (09 §5.7).
+      expect(r.droppedAgain).toBe(false);
+      expect(r.laid.find((x) => x.k === 1)).toBeUndefined();
+      expect(r.laid.find((x) => x.k === 2)?.content).toEqual({ kind: "value", value: "9" });
     });
   }
 });

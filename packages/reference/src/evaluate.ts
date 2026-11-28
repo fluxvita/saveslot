@@ -696,9 +696,9 @@ class Replay {
       if (originals.length > 1) segmentStats.merged++;
       it.k = originals[0]?.k ?? -1;
     }
-    // An original index with no readable block left (every block of it removed by deletions
-    // carried out; restated as dropped, now a contribution again) takes its number back, by
-    // start, before new numbers are given.
+    // An index as written with no readable block left (every block of it removed by deletions
+    // carried out) takes its number back, by start, before new numbers are given. An index a
+    // deletion numbered never does (09 §5.7).
     const readable = new Set(base.map((b) => b.k));
     const back = [
       ...new Set(
@@ -710,9 +710,13 @@ class Replay {
           .map((h) => h.k),
       ),
     ]
-      .filter((k) => !readable.has(k))
+      .filter((k) => !readable.has(k) && writeTime.some((w) => w.k === k))
       .sort((a, b) => a - b);
-    let next = Math.max(-1, ...base.map((b) => b.k), ...back) + 1;
+    // The largest index used, by the block each index was last given, a restatement as dropped
+    // included (09 §5.7): a cancelled deletion's blocks are not counted, the cancellation's
+    // restatement as dropped of an index only it gave is.
+    const used = hist.filter((h) => !this.rec.cancelled.has(h.by)).map((h) => h.k);
+    let next = Math.max(-1, ...base.map((b) => b.k), ...back, ...used) + 1;
     for (const it of fresh) {
       if (it.k >= 0) continue;
       const k = back.shift();
@@ -2747,9 +2751,48 @@ class Replay {
         if (xs.some((x) => x.k === b.k)) continue;
         added.push({ k: b.k, valid: b.valid, by, dropped: true });
       }
+      // A cancellation: an index a deletion numbered whose interval blocks all came from
+      // cancelled deletions is restated as dropped (09 §5.9 «哪些项要重述» item 4).
+      if (cancelled !== undefined) {
+        for (const k of this.onlyCancelledGave(key)) {
+          if (xs.some((x) => x.k === k) || added.some((a) => a.k === k)) continue;
+          added.push({ k, valid: [], by, dropped: true });
+        }
+      }
       if (added.length > 0)
         this.rec.history.set(key, [...(this.rec.history.get(key) ?? []), ...added]);
     }
+    // A cancellation also says such an index on an (event, target) left with no item. On one a
+    // deletion still pending removes whole, the result lists no dropped item (`deletedItem`) and
+    // the number counts either way.
+    if (cancelled === undefined) return;
+    for (const key of [...this.rec.history.keys()]) {
+      if (groups.has(key)) continue;
+      const dropped = this.onlyCancelledGave(key).map(
+        (k): HistoryEntry => ({ k, valid: [], by, dropped: true }),
+      );
+      if (dropped.length > 0)
+        this.rec.history.set(key, [...(this.rec.history.get(key) ?? []), ...dropped]);
+    }
+  }
+
+  /**
+   * The indices of (event, target) `key` only cancelled deletions gave an interval (09 §5.7): not
+   * written by the operation, every block of it a cancelled deletion's (one a block counted gave
+   * as dropped has its number kept already).
+   */
+  onlyCancelledGave(key: string): number[] {
+    const hist = this.rec.history.get(key) ?? [];
+    const written = new Set((this.rec.writeTime.get(key) ?? []).map((w) => w.k));
+    // Any block counted, a restatement as dropped included: given an interval, or its number
+    // kept already.
+    const counted = new Set(hist.filter((h) => !this.rec.cancelled.has(h.by)).map((h) => h.k));
+    const out = new Set<number>();
+    for (const h of hist) {
+      if (h.dropped || !this.rec.cancelled.has(h.by)) continue;
+      if (!written.has(h.k) && !counted.has(h.k)) out.add(h.k);
+    }
+    return [...out].sort((a, b) => a - b);
   }
 
   /** Who gave the index's block as last given, counting the deletion `cancelled` as not cancelled. */
