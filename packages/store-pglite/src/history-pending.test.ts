@@ -243,7 +243,7 @@ describe("history as_of: what a removed contribution gave is not given, the row 
   );
 
   it(
-    "state table: the stretch the removed write gave is still there, its value not given",
+    "state table: the stretch the removed write gave, its value and both its ends, is not listed",
     async () => {
       const a = await w("budget is 5000 from october", [
         { intent: "insert", table: "budget", valid_from: "2026-10-01", set: { amount: "5000" } },
@@ -263,13 +263,17 @@ describe("history as_of: what a removed contribution gave is not given, the row 
       await deleteSource("DELETED-WORDS");
       const r = await asOf("budget", { entity }, b.seq);
       expect(text(r)).not.toContain("SECRET-4000");
+      // Its dates are the removed write's words too (the decision on interval ends): its own
+      // stretch has nothing left and is not listed; its neighbours' ends there are not given.
+      expect(text(r.rows)).not.toContain("2026-11-10");
+      expect(text(r.rows)).not.toContain("2026-11-20");
       expect(
         r.rows.map((x: Any) => [x.valid_from, x.valid_to, x.values, x.marks?.partially_deleted]),
       ).toEqual([
-        ["2026-10-01", "2026-11-10", { amount: "5000", note: null }, undefined],
-        ["2026-11-10", "2026-11-20", { note: null }, true],
-        ["2026-11-20", null, { amount: "5000", note: null }, undefined],
+        ["2026-10-01", undefined, { amount: "5000", note: null }, true],
+        [undefined, null, { amount: "5000", note: null }, true],
       ]);
+      expect(r.partially_deleted).toBe(true);
     },
     T,
   );
@@ -408,12 +412,12 @@ describe("what the deletion itself gave, and the other reads by record time", ()
       expect(
         await outcome(query(s.store, ctx(), { ...during, position: first.next_position })),
       ).toEqual(["handle_expired", "deletion_changed"]);
-      // Read by record time as of the removed write: its stretch, the value withheld and marked.
+      // Read by record time as of the removed write: neither its value nor its dates, its own
+      // stretch not listed (nothing of it left), the result marked.
       const r = await asOf("budget", { entity }, b.seq);
       expect(text(r)).not.toContain("SECRET-4000");
-      const stretch = r.rows.find((x: Any) => x.valid_from === "2026-11-10");
-      expect(stretch, text(r)).toBeDefined();
-      expect(stretch.marks).toMatchObject({ partially_deleted: true });
+      expect(text(r.rows)).not.toContain("2026-11-10");
+      expect(r.partially_deleted).toBe(true);
     },
     T,
   );
@@ -535,11 +539,18 @@ describe("what the deletion itself gave, and the other reads by record time", ()
       ).toEqual(["handle_expired", "deletion_changed"]);
       const r = await asOf("budget", { entity }, b.seq);
       expect(text(r)).not.toContain("NOTE-SECRET");
-      expect(r.rows.map((x: Any) => [x.valid_from, x.marks?.partially_deleted])).toEqual([
-        ["2026-10-01", undefined],
-        ["2026-11-10", true],
-        ["2026-11-20", undefined],
+      // Three stretches still; the note's dates were the removed write's words, so the ends at
+      // 11-10 and 11-20 are not given either (the decision on interval ends), and the stretches
+      // whose start is not given come after the others.
+      expect(
+        r.rows.map((x: Any) => [x.valid_from, x.valid_to, x.values, x.marks?.partially_deleted]),
+      ).toEqual([
+        ["2026-10-01", undefined, { amount: "5000", note: null }, true],
+        [undefined, undefined, { amount: "5000" }, true],
+        [undefined, null, { amount: "5000", note: null }, true],
       ]);
+      expect(text(r.rows)).not.toContain("2026-11-10");
+      expect(text(r.rows)).not.toContain("2026-11-20");
     },
     T,
   );

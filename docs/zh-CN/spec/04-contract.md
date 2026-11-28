@@ -373,7 +373,7 @@
 | `corrected` | 该行被纠错过。状态类表上按段给：这一段里所读字段的值出自纠错写入（合并的段里任一段是即可） |
 | `revoked` | 该行已撤销；只在 `include_revoked: true` 时出现 |
 | `possibly_affected` | 本连接实例之前读过的版本后来受影响；值后来恢复则撤掉 |
-| `partially_deleted` | 按时刻读（`history` 的 `as_of`、`query` 的后续页）、还原时，当时的部分数据已删除：出自被删除去掉的贡献的值不给。`history` 的 `changes` 里同名字段标在一条上，表示那一侧不给；冲突事项详情的 `previous` 上的同名字段，表示合并基那一刻有值不给（`take_previous` 写回的是删除之后那个位置上的状态）；事项详情的 `effective`、`current`，以及 flagged 事项详情上的同名字段，表示那一侧（flagged 是 `matched_values`）有值不给 |
+| `partially_deleted` | 按时刻读（`history` 的 `as_of`、`query` 的后续页）、还原时，当时的部分数据已删除：出自被删除去掉的贡献的值不给。`history` 的 `changes` 里同名字段标在一条上，表示那一侧不给；冲突事项详情的 `previous` 上的同名字段，表示合并基那一刻有值不给（`take_previous` 写回的是删除之后那个位置上的状态）；事项详情的 `effective`、`current`，以及 flagged 事项详情上的同名字段，表示那一侧（flagged 是 `matched_values`）有值不给。`as_of` 的行上它也表示这一段有一端不给（那一端的键缺着）；`as_of` 的结果上它表示有内容因此没给出，含没列出的段 |
 | `pending_deletion` | 这一行受一项可撤回的删除影响（判据见 data-model「删除 · 撤回与宽限期」的"受影响"；这段时间里它上面的事项不能处理、写入不能 `undo`） |
 | `dangling_ref` | 这一行的某个 `ref` 字段指向的行 / 实体已撤销或已被隐私删除；引用方的值不变，只标出来。带字段与状态（`revoked` / `deleted`） |
 | `premise_changed` | 这一行当前的值所用到的前提（5.1）后来变了；值没有动，是否仍然成立由读方判断。**任何读取方**都看得到。带前提所在的行、声明的字段、声明时所见的版本、原因、使它变了的操作号、本行里由这条声明覆盖的字段、哪次写入声明的 |
@@ -468,6 +468,7 @@
 - 四种模式都按 `limit` / `cursor` 分页。
 - `timeline` 列出这一行 / 实体上的全部操作，含没有生效的（候选、待确认）与由 `resolve`、删除、撤回触发的；条目的 `via` 说明来由。内容已按删除移除的字段带 `removed: true`，它的 `result` 是 `removed`（不是 `dropped`：`dropped` 是删除重放后不再是贡献、内容还在的项）。schema 切换时常量 `backfill` 补出的值也是一条：`intent` 是 `schema_switch`，`via` 是 `{schema: {sv}}`，`actor` 是 `system`，没有源数据；它不改行的 `ver`，所以当前 `ver` 里的操作号可以比这一条早。回退写回的字段可能带 `no_value` 或 `uncovered`（含义见 5.4）。声明了前提的写入带 `premises`（目标、字段、所见版本、现在是否已变）；重申与清除也各是一条，清除的 `premises` 是空数组；同一请求里对同一行的几个 op 各是一条，按 op 下标从后往前。已不再作数的声明（被同一目标上更晚的声明取代，或被清除）给 `ended`，不带原因与 `since`。后面的页停在第一页的操作号上，但前提的状态是现在的，`since` 可以大于那个操作号。前提目标所在的表对读方不可见时，那一条只给 `hidden: true`、现在是否已变与 `since`，不给目标、字段、所见版本与原因：这是有意的例外，读方知道这次写入依据的某条记录变了以及从哪次操作起，不知道是什么、怎么变的。
 - `as_of` 接受操作号、时刻、`{read}`（任何连接实例的一次读取）或 `{task}`（**限本连接实例**的该任务，默认取它对这个目标的最后一次读取，`other_reads` 列出其余几次；`as_of` 自己的读取读到的是历史版本，不算在内）；后两种按那次读取所见状态的位置还原，那次读取读的是同一张表时另沿用它的业务时间条件，别的表的读取只取位置。早于第一条操作的时刻给 `seq: 0`、不带 `recorded_at`，结果为空。结果标明当时的 `sv`，值按它解释；早于这个 slot 第一次生效的位置，`sv` 取它的第一版（表名、字段名也按它）。`{read}` 指向一次不可见范围内的读取时报 `not_found`（`read`）；`{task}` 下没有读过这个目标报 `not_found`（`read`，`param` 为 `as_of/task`）。
+- `as_of` 在状态类表上，一段的起点或终点（含"一直到以后"）出自仍待执行的删除去掉的内容时不给：那一端的键缺着（不写成 `null`，`valid_to_inclusive` 随 `valid_to` 一起缺），这一段标 `partially_deleted`。值都不给、起点也不给的一段不列出。一端出自谁、怎么判，见 data-model「删除」的「版本表」与决定记录 [`interval-ends-of-deleted-content.md`](../process/decisions/interval-ends-of-deleted-content.md)。端点在合段之后、按合出来的段判；一段的终点不给，不因此与后一段并成一段。`valid_at`（与沿用的读取的业务时间条件）只凭给出的端点判命中：要凭不给的那一端才定得了的，不命中。起点不给的段排在同一实体各段之后，彼此之间照真实的先后；翻页位置里它的起点那个键是 `null`，另有一个序号键，所以这里的翻页位置格式比别处多一版，之前格式的位置报 `handle_expired`（`format_changed`）。有行带 `partially_deleted`，或有一段因此没列出时，结果带 `partially_deleted`，结果为空时也带。
   - 事件类表、无时间表上，到那时已撤销的行照样返回，带 `marks.revoked`；那时还不存在的目标结果为空。
   - 目标从未有过任何版本（对它的写入都没有生效，例如唯一的一次写入只成了候选或待确认）时报 `not_found`（`row` / `entity`），与 ID 不存在相同，各种模式都一样；目标有过版本、`as_of` 早于它的第一个版本时结果为空（上一条）。
 - 翻页同第 15 节：`timeline` 的后续页只列首页操作号及以前的条目，`ver` 取那一刻的；`reads` 只在首页给，返回并登记当前 `ver` 的也只有首页。`as_of` 的各页按段的起点；记录点（时刻、超出日志的操作号、`{read}`、`{task}`）在首页解析，截到首页的操作号，随位置带到后续页，之后的写入与读取不改变它。`changes` 的各页新的在前、同一操作内按目标 ID；窗口（`since` 与 `until` 解析成的操作号，`"my_last_read"` 也在首页解析）在首页定下，随位置带到后续页：之后的写入不进窗口，首页本身登记的读取也不改变后续页的 `since`。`reads.list` 的后续页只列到首页时最后一条读取记录。
@@ -784,7 +785,7 @@
 | `unauthenticated` | 凭证缺失（`missing`）、无效（`invalid`）、已吊销（`revoked`）、过期（`expired`）；服务器模式下租户属主的账户已停用（`account_disabled`） |
 | `insufficient_scope` | 凭证没有所需 scope（含 `resolve` 用了当前凭证不可用的处理方式）；连接实例调用只给用户会话的管理类操作（`required_scope: "user_session"`）；限定了 slot 范围的凭证新建 slot（`required_scope: "all_slots"`，见第 12 节） |
 | `rate_limited` | 限流或配额（`quota`）；同一租户已有一次对拍或导入在跑（`busy`） |
-| `handle_expired` | 签名句柄过期（`expired`）、恢复次数对不上（`restored`）、`dc_` 已经执行过而又拿它重出预览（`executed`）、翻页期间派生表被刷新过（`derived_changed`）、首页之后有删除被确认或撤回（`deletion_changed`） |
+| `handle_expired` | 签名句柄过期（`expired`）、恢复次数对不上（`restored`）、`dc_` 已经执行过而又拿它重出预览（`executed`）、翻页期间派生表被刷新过（`derived_changed`）、首页之后有删除被确认或撤回（`deletion_changed`）、位置是这一版之前的格式（`format_changed`：`history` 的 `as_of` 在状态类表上的位置） |
 | `not_in_this_version` | 调用了第一版不实现、或 0.2.0 尚未提供的参数、取值或操作。`reason` 说明是哪一种，附是哪个；schema 草稿里只对从未被写入的表放开的改动用在写入过的表上时，`reason` 是 `table_written` |
 | `unavailable` | 暂时不能处理：租户被占用或此刻打不开——写入排队、加锁超时、它的存储还没释放；或服务器模式下这次使用撞上租户的连接已断开、确定没有提交，或一次读的读取记录没能在应答之前写进去、这次读不交出内容（`busy`）；租户正在走恢复流程（`restoring`）；租户正在导入（`importing`；服务器模式下也来自导入换入期间写入撞上租户的封存标记）；对拍进入比较阶段而排队超时（`reconciling`）；服务刚启动还在补跑到期任务（`starting`）；服务正在停止，不再接新的请求，或服务器模式下这个进程比租户存储的格式旧、该被换下（`stopping`）。可重试时附 `retry_after` |
 | `internal` | 服务端内部错误。附 `incident`（供排查的编号，不含用户内容） |

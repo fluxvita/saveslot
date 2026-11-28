@@ -91,6 +91,24 @@ export const namedValues = (values: unknown): Part[] =>
   );
 
 /** A period of business time (05 §4.1): the dates and moments are values, inside. */
+/**
+ * A state row's stretch: an end left out, as one a deletion removed is (04-contract `history`
+ * `as_of`: the key absent, the row marked `partially_deleted`), written "(deleted)", not read as
+ * open; with both ends there, as any period.
+ */
+function rowPeriodOf(row: R): Part[] {
+  const hasFrom = Object.hasOwn(row, "valid_from");
+  const hasTo = Object.hasOwn(row, "valid_to");
+  if (hasFrom && hasTo) return periodOf(row);
+  const from = hasFrom ? untrusted(String(row["valid_from"])) : t`(deleted)`;
+  if (hasTo && row["valid_to"] === null) return t`from ${from}`;
+  const last = row["valid_to_inclusive"];
+  if (!hasTo) return t`${from} until (deleted)`;
+  return last !== undefined
+    ? t`${from} to ${untrusted(String(last))} (inclusive)`
+    : t`${from} until ${untrusted(String(row["valid_to"]))}`;
+}
+
 export function periodOf(x: unknown): Part[] {
   const p = obj(x);
   const from = p["valid_from"];
@@ -252,7 +270,8 @@ function rowLine(row: R, historical: boolean, first: boolean): Line[] {
   }
   if (row["key"] !== undefined) head.push(...t` ${namedValues(row["key"])}`);
   const cells: Part[][] = [];
-  if (Object.hasOwn(row, "valid_from")) cells.push(periodOf(row));
+  // A state row has a stretch, even with an end left out.
+  if (Object.hasOwn(row, "entity") && !Object.hasOwn(row, "key")) cells.push(rowPeriodOf(row));
   const values = namedValues(row["values"]);
   if (values.length > 0) cells.push(values);
   const tail = [...m.inline, inputMarksOf(row["input_marks"])].filter((x) => x.length > 0);
@@ -489,7 +508,15 @@ export function asOfResult(r: AsOfResult): Line[] {
   const rows = r.rows;
   return [
     t`as of ${op(at["seq"])}${at["recorded_at"] !== undefined ? t` (${inZone(at["recorded_at"], r.timezone)})` : []} · schema v${count(r.sv)}`,
-    ...(rows.length > 0 ? rowsOf(rows, true) : [t`it did not exist yet`]),
+    ...(rows.length > 0
+      ? rowsOf(rows, true)
+      : r.partially_deleted === true
+        ? []
+        : [t`it did not exist yet`]),
+    // Left out for what a deletion removed (04-contract `history` as_of): not "nothing then".
+    ...(r.partially_deleted === true
+      ? [t`part of what was recorded then has since been deleted and is left out`]
+      : []),
     ...pageOf(r as unknown as R, rows.length, () => t`rows`),
     ...warningsAndNotices(r),
   ];
