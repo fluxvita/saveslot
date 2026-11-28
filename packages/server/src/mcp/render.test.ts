@@ -472,7 +472,7 @@ describe("what 05 §6 asks for", () => {
     expect(d).toContain("version iv_8VEZWJ3J7BMKMXTV.13.0");
     expect(d).toMatch(new RegExp(`In effect: amount 54 ${B}CNY${E} \\(#10`));
     expect(d).toMatch(new RegExp(`Candidate 0: amount 50 ${B}CNY${E} \\(#13`));
-    // Each decision with what it would do (05 §6 `saveslot_pending`: 可选).
+    // Each decision with what it would do (05 §6 `saveslot_pending`: "Choices").
     expect(d).toContain(
       [
         "  Choices:",

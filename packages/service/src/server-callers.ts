@@ -1,8 +1,8 @@
-// The server mode's callers (docs/zh-CN/spec/02-architecture.md §5 "解析流程"): a request's token is
-// authenticated against the control plane and its tenant's log (`authenticateServer`), and the
-// tenant is borrowed from the pool for the request, never kept past it. Connections are issued and
-// revoked with their hashes in the control plane. Behind the same port as the local mode's
-// (callers.ts).
+// The server mode's callers (docs/zh-CN/spec/02-architecture.md §5 "How a request is resolved"): a
+// request's token is authenticated against the control plane and its tenant's log
+// (`authenticateServer`), and the tenant is borrowed from the pool for the request, never kept past
+// it. Connections are issued and revoked with their hashes in the control plane. Behind the same
+// port as the local mode's (callers.ts).
 
 import type { AuthFailure } from "./auth.ts";
 import type { CallerResolver, ServedTenant } from "./callers.ts";

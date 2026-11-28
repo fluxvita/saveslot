@@ -188,8 +188,8 @@ export type EventHeader = EventHeaders[keyof EventHeaders];
 export const GENESIS_PREV_HASH = "0".repeat(64);
 
 /**
- * The header fields that exist in v1 (§2.1: "除此之外，事件头没有别的字段"). Which of them a given
- * type may carry is defined by the types above and by HEADER_RULES.
+ * The header fields that exist in v1 (§2.1: "Apart from these, the event header has no other
+ * fields"). Which of them a given type may carry is defined by the types above and by HEADER_RULES.
  */
 export const HEADER_FIELDS = [
   "seq",

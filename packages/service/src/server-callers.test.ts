@@ -1,9 +1,9 @@
-// The server mode's callers (02-architecture §5 "解析流程"): the token goes to authenticateServer with
-// the identity provider and the credential check passed on as they are given, and the request's
-// time; a failure comes back as it is; a caller's tenant is borrowed from the pool for each use,
-// under the caller's tenant, and returned when the use ends; a tenant that does not serve now, or
-// that the pool cannot lend now, is unavailable by its reason. Stand-ins for authenticateServer and
-// the pool; fictional IDs.
+// The server mode's callers (02-architecture §5 "How a request is resolved"): the token goes to
+// authenticateServer with the identity provider and the credential check passed on as they are
+// given, and the request's time; a failure comes back as it is; a caller's tenant is borrowed from
+// the pool for each use, under the caller's tenant, and returned when the use ends; a tenant that
+// does not serve now, or that the pool cannot lend now, is unavailable by its reason. Stand-ins for
+// authenticateServer and the pool; fictional IDs.
 
 import { describe, expect, it } from "vitest";
 import type { Principal } from "./auth.ts";

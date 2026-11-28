@@ -1,4 +1,5 @@
-// Experiment 1, step 2 (pre-dev-w0-experiments 实验 1 步骤二): fault rounds on one data directory.
+// Experiment 1, step 2 (pre-dev-w0-experiments, experiment 1, step 2): fault rounds on one data
+// directory.
 //
 //   node --conditions=source experiments/exp1/kill-loop.ts --variant kill --durability host-fsync --rounds 1000
 //

@@ -1,7 +1,7 @@
 // saveslot_write by a connection whose range is some slots, against a running service (04-contract
 // «名字只在可见范围内解析»; 05-surfaces §6 `saveslot_write`): a name out of its range is answered as
 // one that does not exist, and nothing in the text names a slot, table or field out of range; a
-// table in range is written as by any credential (03-data-model/04-write-and-read «可见范围»: 写入),
+// table in range is written as by any credential (03-data-model/04-write-and-read «可见范围 · 写入»),
 // a bare name both in range and out of it naming the one in range.
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

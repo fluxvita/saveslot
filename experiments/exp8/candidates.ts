@@ -1,5 +1,5 @@
-// Experiment 8 lock candidates (pre-dev-w0-experiments 实验 8), all behind the store's DirLock
-// interface so the full store can run on each of them.
+// Experiment 8 lock candidates (pre-dev-w0-experiments, experiment 8), all behind the store's
+// DirLock interface so the full store can run on each of them.
 //
 //   A   operating-system file lock through a prebuilt native addon (the store's default lock):
 //       flock(LOCK_EX|LOCK_NB) on macOS, fcntl(F_OFD_SETLK) on Linux.

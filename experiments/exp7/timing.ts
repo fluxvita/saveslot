@@ -1,6 +1,6 @@
-// Experiment 7, cost of the cleanup (the decisions it feeds: pre-dev-w0-experiments 实验 7
-// "通过标准" 4). On a tenant of --rows rows: write latency as it is (wal_recycle on / off), then
-// the cleanup step by step with its time, and how long a write arriving during it waits.
+// Experiment 7, cost of the cleanup (the decisions it feeds: pre-dev-w0-experiments, experiment 7,
+// pass criterion 4). On a tenant of --rows rows: write latency as it is (wal_recycle on / off),
+// then the cleanup step by step with its time, and how long a write arriving during it waits.
 //
 //   node --conditions=source experiments/exp7/timing.ts --backend pglite|postgres --rows 10000
 //        --recycle on|off [--candidate C|D]

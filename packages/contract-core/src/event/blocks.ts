@@ -5,9 +5,10 @@
 // name → type map the vocabulary refers to.
 //
 // Conventions:
-// - Keys the spec describes as "`true` 表示…" (a flag whose absence means false) are typed as the
-//   literal `true`; keys written `<布尔>` are `boolean`. Absent optional keys are not encoded and are
-//   never `null` (§1.2); `null` appears only as a field value (an explicit empty value, §1.3).
+// - Keys the spec describes as "`true` means…" (a flag whose absence means false) are typed as the
+//   literal `true`; keys written `<boolean>` are `boolean`. Absent optional keys are not encoded
+//   and are never `null` (§1.2); `null` appears only as a field value (an explicit empty value,
+//   §1.3).
 // - "row / entity" targets are a union: `row` (event and timeless tables) or `entity` (state tables).
 // - Shapes the spec marks reserved or "not part of v = 1" are not admitted; comments say where.
 

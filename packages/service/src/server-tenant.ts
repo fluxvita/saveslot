@@ -1,4 +1,4 @@
-// A tenant of the server mode created (docs/zh-CN/spec/02-architecture.md §5 «租户目录», §8 租户存储,
+// A tenant of the server mode created (docs/zh-CN/spec/02-architecture.md §5 «租户目录», §8 «租户存储»,
 // §9): registered as `creating` in the control plane, its database made and its genesis written,
 // then `active`. Each step looks at what is there first, so a creation stopped at any point is
 // finished by calling it again; an owner with a tenant gets that tenant. The cell is checked against

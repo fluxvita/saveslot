@@ -138,7 +138,7 @@ export type KernelErrorReason<C extends KernelErrorCode> = KernelReasons[C][numb
 
 /**
  * What a kernel error carries beside its code and message: the reason, typed by the code, and the
- * code's other fields (04-contract-types §9 "其余附带字段", not typed here).
+ * code's other fields (04-contract-types §9 "Other accompanying fields", not typed here).
  */
 export type KernelErrorDetail<C extends KernelErrorCode> = {
   readonly reason?: KernelErrorReason<C>;

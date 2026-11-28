@@ -50,7 +50,7 @@ const CAUSES: ReadonlySet<string> = new Set<string>(CANDIDATE_CAUSES);
 const SUPERSEDED: ReadonlySet<string> = new Set<string>(SUPERSEDED_REASONS);
 const codeOf = (x: unknown, set: ReadonlySet<string>): Part => code(String(x ?? ""), set);
 
-/** How long since `opened` (06 §5.1 "已挂 3 小时"): minutes, hours or days, whole. */
+/** How long since `opened` (06 §5.1 "opened 3 h ago"): minutes, hours or days, whole. */
 export function openFor(opened: unknown, now: Date): Part[] {
   const at = typeof opened === "string" ? Date.parse(opened) : Number.NaN;
   if (Number.isNaN(at)) return [untrusted(String(opened))];
