@@ -286,7 +286,7 @@ P4b 是第一版之后的第一个增量。是否紧接着做，在 P4 结束、
 | 写入 | 四种意图（新增、变更、纠错、撤销）；按冲突单元的 `ver` 与冲突判定、候选与冲突事项；状态类表的区间、默认终点与无值区间；高影响写入进待确认；回退与撤回某次写入；幂等；证据与字段级来源、字面命中；按来源键写入（转移键除外）；相近键提示（`similar_keys`）；疑似重复（`duplicate_keys` → 已标记事项）；写入的前提 |
 | 读取 | 数据目录、`query`、`sql`、派生表（这一版的派生规则只读一张基础表）；`history` 的 `timeline`、`as_of`、`changes`；源数据；待处理事项；读取记录与 `ver` 的兜底；`query` 与 `history` 的 `as_of` 上的 `detail: "detailed"`（派生表上报 `not_in_this_version`） |
 | 待处理事项 | 冲突、待确认、已标记、schema 变更四类事项的查看与解决 |
-| schema | 新建 slot；改已有 slot 时只动数据目录的变更（改名、改说明与别名、放宽约束、新增表、删表等）；从未被写入的表上的结构改动；移除空 slot |
+| schema | 新建 slot；改已有 slot 时只动数据目录的变更（改名、改说明与别名、放宽约束、新增基础表、删表等）；从未被写入的表上的结构改动（改成派生表除外）；移除空 slot |
 | 日志 | 事件头链与校验和的校验（`saveslot verify`）；导出与导出的口令加密；导入到空租户 |
 | 接入面 | MCP 的九个工具（`saveslot_catalog`、`saveslot_query`、`saveslot_sql`、`saveslot_history`、`saveslot_sources`、`saveslot_pending`、`saveslot_write`、`saveslot_resolve`、`saveslot_schema_draft`）、HTTP、CLI。MCP 这一版还不收：op 自己的 `evidence`、`evidence_by_field`、`as`、`source_ref` 证据段、已标记事项的两种处理（`keep`、`revoke`）与 `detail: "detailed"`；这些 HTTP 与 CLI 收 |
 | 服务器模式 | 账户与登录、OAuth 授权、远程 MCP、导入、`saveslot server` 的运维命令 |
@@ -301,6 +301,6 @@ P4b 是第一版之后的第一个增量。是否紧接着做，在 P4 结束、
 | 隐私删除 | 预览（`deletion_preview` 与 `dc_` 句柄）；确认（`delete`、`saveslot_delete`、`saveslot delete`）；宽限期内撤回；到期物理删除、墓碑与残留清理；恢复备份后按删除登记补删 | HTTP 上这几个端点报 `not_in_this_version`；MCP 没有 `saveslot_delete` 工具；CLI 没有 `saveslot delete`。数据错了仍可以**撤销**（普通写入，保留历史，可以撤回）；要让内容彻底消失，0.2.0 做不到 |
 | 需要重建物理表的迁移 | 在**写入过的表**上加字段、删字段、收紧约束、改精度、同量纲换单位 | 这样的草稿可以提交、可以预览；会自动生效的，提交时就报 `not_in_this_version`；要确认的，确认时报 `not_in_this_version`，草稿留着。表从未被写入时这些改动照常生效（新表是空的，不需要迁移） |
 
-两种模式下尚未提供的是同样的这两块：服务器模式里同样没有隐私删除与重建迁移。另有几项同样尚未接入：重放对拍（`saveslot verify --replay`，即 `log.reconcile`；`POST /v1/log/reconcile` 报 `not_in_this_version`）、修改 slot 策略、read_log 的保留期清理（0.2.0 不清理读取记录，只增不减）、高水位的定期推进（0.2.0 只在关闭租户时推进）。第 3 节里判定为"后续"的各项（抽取作业、删除证据、按行隐私删除等）不在第一版里，自然也不在 0.2.0 里。
+两种模式下尚未提供的是同样的这两块：服务器模式里同样没有隐私删除与重建迁移。另有几项同样尚未接入：重放对拍（`saveslot verify --replay`，即 `log.reconcile`；`POST /v1/log/reconcile` 报 `not_in_this_version`）、修改 slot 策略、read_log 的保留期清理（0.2.0 不清理读取记录，只增不减）、高水位的定期推进（0.2.0 只在关闭租户时推进）、在已有的 slot 上新增派生表或改已有的派生表、把基础表改成派生表（表从未被写入时也一样；这几种草稿报 `not_in_this_version`，见 [`04-contract.md`](04-contract.md)「不收的改动（第一版与 0.2.0）」；新建 slot 时的派生表不受影响）、本机模式的恢复流程（`saveslot start` 不收 `--restored`；打开时遇到进行中的恢复或日志落后于高水位就停下，不对外服务；服务器模式有 `saveslot server restore`）。第 3 节里判定为"后续"的各项（抽取作业、删除证据、按行隐私删除等）不在第一版里，自然也不在 0.2.0 里。
 
 **对已有承诺的影响**：规格与讲解里凡是讲隐私删除的地方——"删除先预览、再确认""24 小时内可以撤回""到期物理删除""恢复备份不让删除复活"——讲的都是设计，0.2.0 里还用不上；K11 在 0.2.0 里没有可以触发它的操作。讲"schema 切换原子、读不停"（K6）的地方，在 0.2.0 里只对不重建表的切换成立，因为重建表的切换还不会发生。
