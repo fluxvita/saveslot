@@ -6,26 +6,25 @@ This chapter is for people who want to get their hands dirty: what you can do no
 
 ## 0. Where things stand now, and what to do first
 
-**saveslot is in early development: the design is settled, the first implementation step (the P0 scaffolding) is under way, and there is no usable version yet.** The code organization and the tests described in the sections below are designs that have already been decided; follow them when implementing.
+**saveslot is released and usable: local mode and server mode both ship, and the repository is public.** For what the current version provides and what it does not yet, see the [Status](../../README.md#status) section of the README and section 7 of the specification [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md). The commands for setting up, running the checks and making a first change are in [`../development.md`](../development.md). The code organization and the tests described in the sections below are how the repository works now.
 
 What you can take part in now:
 
 | What you can do | Where to start |
 |---|---|
-| Build the scaffolding (P0 in the implementation steps): create the repository and the packages, wire the dependency rules into the automatic checks, write the event format and the contract as types | The package table in section 1; [`../spec/09-event-format.md`](../spec/09-event-format.md), [`../spec/04-contract-types.md`](../spec/04-contract-types.md) |
-| Run experiment 1 (durability of the local database) and experiment 8 (the single-writer lock). They come first; the method and the pass criteria are already written, and they depend on only one file | [`../zh-CN/process/decisions/pre-dev-w0-experiments.md`](../zh-CN/process/decisions/pre-dev-w0-experiments.md) (Chinese); section 3 |
-| Write the reference evaluator: write the definition "as if that sentence had never been said" as the most plain-spoken program possible. It does not depend on any code of the kernel | Section 2; chapter 8, section 10 |
+| Implement what the specification settles and this version does not provide yet, as section 7 of 07 lists it: for example privacy deletion and the restore flow, and migrations that need a physical table rebuilt | Section 7 of [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md); chapter 8, chapter 9 section 5 |
+| Finish the experiments: those in the table of section 3 that have no result yet, and the remaining steps of those done only in part. The results so far are under `docs/zh-CN/process/experiments/` (Chinese) | [`../zh-CN/process/decisions/pre-dev-w0-experiments.md`](../zh-CN/process/decisions/pre-dev-w0-experiments.md) (Chinese); section 3 |
 | Walk through a new scenario as a walkthrough, or check a rule against its definition | Section 4, "Walkthroughs: a way to test the design" |
-| Claim a matter that is not yet decided | Section 5 |
+| Claim a matter that is not yet decided | [`../spec/08-open-questions.md`](../spec/08-open-questions.md); section 5 |
 
 ### The repository, the license, how we collaborate
 
 | Item | What it is |
 |---|---|
-| Repository | `fluxvita/saveslot`. It is made public once it is usable (the threshold is the end of P2 in the implementation steps: writing, reading, deletion and conflicts work end to end, and the evals can run); when it is made public it comes with its full commit history |
+| Repository | `fluxvita/saveslot`, public |
 | Packages | What is installed from outside is `@fluxvita/saveslot` (the command-line tool and the service); the other packages in the repository are named `@fluxvita/saveslot-<package name>`, with the package names in the package table in section 1 |
 | License | Apache-2.0, for code and documents alike. No agreement needs to be signed to contribute: each commit carries one `Signed-off-by` line (`git commit -s`). Use your real name, with the same email as the commit author. A change made with the help of AI is signed off by a person all the same, and the person who signs off is responsible for the change |
-| Where to talk | After the repository is made public: file bugs and tasks as Issues, ask questions and hold design discussions in Discussions, and report security issues through the repository's private vulnerability reporting. Before it is made public, use Issues and merge requests on the internal code hosting platform, which becomes read-only once the project moves to GitHub |
+| Where to talk | File bugs and tasks as Issues, ask questions and hold design discussions in Discussions, and report security issues through the repository's private vulnerability reporting |
 | How to submit | Create a branch from the main branch (fork first if you cannot push branches) → open a pull request against `main` using the template (every pull request targets `main`; a fix that has to be in a released version is cherry-picked by a maintainer onto the release branch `release/0.<minor>` after it is merged into `main`) → all the automatic checks on the pull request pass (the quick checks plus `pnpm check`), all review threads are resolved, and one maintainer approves → a maintainer merges it as one commit. Commit messages and pull request titles both use Conventional Commits (the `feat(kernel): …` style), and CI checks the title |
 | Language | Commit messages, code comments, identifiers, log and error messages are written in English. The specification and the guide have two editions, aligned in meaning: Chinese under `docs/zh-CN/`, English at the same path under `docs/` ([`docs/README.md`](../README.md) lists them); the decision records, walkthroughs and research notes are in Chinese only, and no English edition is scheduled. Change both editions in the same pull request; a difference between them is a defect. |
 | Versions | 0.x until 1.0. The event format has its own version number, independent of the package version |

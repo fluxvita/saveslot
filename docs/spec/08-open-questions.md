@@ -10,7 +10,7 @@ English · [简体中文](../zh-CN/spec/08-open-questions.md)
 
 Things that will be written into log events and are hard to change once settled. They block P1.
 
-**None at present.** The following have been settled: the unit vocabulary, the default precision and rounding, and the criteria for the same value (data model, "Field types, same value and units"); the default slot policy (data model, "What a slot contains"); the structure fingerprint of read records and the type of `visibility` (data model, "Reads"); how identifiers are written (data model, "How identifiers are written"). Undecided items that appear before the event format is frozen and that would enter events are recorded here.
+**None at present.** The following have been settled: the unit vocabulary, the default precision and rounding, and the criteria for the same value (data model, "Field types, same value and units"); the default slot policy (data model, "What a slot contains"); the structure fingerprint of read records and the type of `visibility` (data model, "Reads"); how identifiers are written (data model, "How identifiers are written"). Undecided items that appear from now on and that would enter events are recorded here too (the event format is frozen: it only grows, and an incompatible change needs a decision record first).
 
 ## II. To decide before a given phase starts
 

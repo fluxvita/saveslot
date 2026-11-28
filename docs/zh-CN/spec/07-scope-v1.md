@@ -26,9 +26,9 @@
 5. **云服务的法律底线不能砍。** 对外收费的云服务必须能做隐私删除、能导出，所以这两项不随"简化"一起后移。
 6. **关键取舍写明理由与不做的替代方案**（第 5 节）；仍未定的记在 open-questions，不在本文硬判。
 
-**事件格式的冻结点**：事件格式 v1（[`09-event-format.md`](09-event-format.md)）在 P0 定稿，第一次对外发布本机模式之前冻结。0.1.0 发布之后只增不改：新增事件类型、新增可选的块，旧事件照常解析、照常重放；不兼容的改动先有决定稿，审过才改，并且要同时说明旧日志怎么办（跨版本的数据兼容见 [`02-architecture.md`](02-architecture.md#格式版本导出导入与恢复)「格式版本、导出、导入与恢复」）。开发期间（P1–P4）产生的日志不承诺兼容——否则 P1 的事件里没有 P2 才实现的判定结果，按原则 1 就已经是补不回来的缺口。
+**事件格式的冻结点**：事件格式 v1（[`09-event-format.md`](09-event-format.md)）在 P0 定稿，第一次对外发布（0.1.0）时冻结，此后只增不改：新增事件类型、新增可选的块，旧事件照常解析、照常重放；不兼容的改动先有决定稿，审过才改，并且要同时说明旧日志怎么办（跨版本的数据兼容见 [`02-architecture.md`](02-architecture.md#格式版本导出导入与恢复)「格式版本、导出、导入与恢复」）。开发期间（P1–P4）产生的日志不承诺兼容——否则 P1 的事件里没有 P2 才实现的判定结果，按原则 1 就已经是补不回来的缺口。
 
-**事件格式 v1 现在可以冻结**：块的形状与词表已定。"回掉（回退与回到合并基）+ 删除重放"这一块以 [`03-data-model/03-deletion.md`](03-data-model/03-deletion.md)「重放规则 · 回掉的权威定义」的伪代码为权威定义。开发时**先实现参考求值器**（照伪代码写，不依赖内核的判定代码），再实现线上的 `judge` / `delete` / `apply`，用性质测试把两者对拍，并做整库检索不漏删的测试。设计阶段手推过的场景记在 [`../process/decisions/pre-dev-w6-final-fixes.md`](../process/decisions/pre-dev-w6-final-fixes.md) 的附录 A–I，它们要逐个转成测试用例（参考求值器的固定用例与对拍用例），不再靠手推。
+**事件格式 v1 已冻结**：块的形状与词表已定。"回掉（回退与回到合并基）+ 删除重放"这一块以 [`03-data-model/03-deletion.md`](03-data-model/03-deletion.md)「重放规则 · 回掉的权威定义」的伪代码为权威定义。开发时**先实现参考求值器**（照伪代码写，不依赖内核的判定代码），再实现线上的 `judge` / `delete` / `apply`，用性质测试把两者对拍，并做整库检索不漏删的测试。设计阶段手推过的场景记在 [`../process/decisions/pre-dev-w6-final-fixes.md`](../process/decisions/pre-dev-w6-final-fixes.md) 的附录 A–I，它们要逐个转成测试用例（参考求值器的固定用例与对拍用例），不再靠手推。
 
 ## 3. 机制清单
 
@@ -48,7 +48,7 @@
 | 对账（重放 vs 线上） | architecture §7、§11 | 简化 | 后台定期抽样；第一版只有用户会话手动触发的全量对拍（`log.reconcile`，CLI 的 `saveslot verify --replay`） | 用户量小，全量对拍可承受 | K12：第一版不主动发现绕过 `apply` 的改动 | P2 |
 | 单写者锁、所有权 epoch（本机模式；服务器模式以每个读写事务的格式核对代替）、PGlite 住在 DB Worker | architecture §7 | 做 | 慢查询"超时杀 Worker"按实验 2 结论决定是否启用；加锁做法按实验 8；`unavailable`（`busy`）随写队列的超时策略一起：这一版同一存储的写请求排队等待、没有超时，不会给出它 | 两个进程写同一目录会写坏数据 | — | P1 |
 | 存储后端：PGlite、PostgreSQL | architecture §8 | 做 | — | 两种部署都要；对拍要两个后端 | K12（对拍） | P1（PGlite）、P2（PostgreSQL） |
-| 存储格式版本升级 | architecture §8「格式版本、导出与恢复」 | 简化 | 第一版只有一个格式版本：只实现"更高版本拒绝打开"，升级流程后续 | 还没有旧格式要升 | — | P1 |
+| 存储格式版本升级 | architecture §8「格式版本、导出与恢复」 | 简化 | 只有一个存储格式；打开时原地升级的机制已有，升级的步骤随第一次改格式一起写 | 还没有旧格式要升 | — | P1 |
 | 物理快照 `snapshot()` | architecture §8 | 后续 | — | 只用来加速；不做就少一类要补删的备份 | — | — |
 
 ### 3.2 写入、来源与时间
@@ -283,12 +283,12 @@ P4b 是第一版之后的第一个增量。是否紧接着做，在 P4 结束、
 
 | 方面 | 提供什么 |
 |---|---|
-| 写入 | 四种意图（新增、变更、纠错、撤销）；按冲突单元的 `ver` 与冲突判定、候选与冲突事项；状态类表的区间、默认终点与无值区间；高影响写入进待确认；回退与撤回某次写入；幂等；证据与字段级来源、字面命中；按来源键写入（转移键除外）；相近键提示（`similar_keys`）；写入的前提 |
-| 读取 | 数据目录、`query`、`sql`、派生表；`history` 的 `timeline`、`as_of`、`changes`；源数据；待处理事项；读取记录与 `ver` 的兜底；`query` 与 `history` 的 `as_of` 上的 `detail: "detailed"`（派生表上报 `not_in_this_version`） |
-| 待处理事项 | 冲突、待确认、schema 变更三类事项的查看与解决 |
+| 写入 | 四种意图（新增、变更、纠错、撤销）；按冲突单元的 `ver` 与冲突判定、候选与冲突事项；状态类表的区间、默认终点与无值区间；高影响写入进待确认；回退与撤回某次写入；幂等；证据与字段级来源、字面命中；按来源键写入（转移键除外）；相近键提示（`similar_keys`）；疑似重复（`duplicate_keys` → 已标记事项）；写入的前提 |
+| 读取 | 数据目录、`query`、`sql`、派生表（这一版的派生规则只读一张基础表）；`history` 的 `timeline`、`as_of`、`changes`；源数据；待处理事项；读取记录与 `ver` 的兜底；`query` 与 `history` 的 `as_of` 上的 `detail: "detailed"`（派生表上报 `not_in_this_version`） |
+| 待处理事项 | 冲突、待确认、已标记、schema 变更四类事项的查看与解决 |
 | schema | 新建 slot；改已有 slot 时只动数据目录的变更（改名、改说明与别名、放宽约束、新增表、删表等）；从未被写入的表上的结构改动；移除空 slot |
 | 日志 | 事件头链与校验和的校验（`saveslot verify`）；导出与导出的口令加密；导入到空租户 |
-| 接入面 | MCP 的九个工具（`saveslot_catalog`、`saveslot_query`、`saveslot_sql`、`saveslot_history`、`saveslot_sources`、`saveslot_pending`、`saveslot_write`、`saveslot_resolve`、`saveslot_schema_draft`）、HTTP、CLI |
+| 接入面 | MCP 的九个工具（`saveslot_catalog`、`saveslot_query`、`saveslot_sql`、`saveslot_history`、`saveslot_sources`、`saveslot_pending`、`saveslot_write`、`saveslot_resolve`、`saveslot_schema_draft`）、HTTP、CLI。MCP 这一版还不收：op 自己的 `evidence`、`evidence_by_field`、`as`、`source_ref` 证据段、已标记事项的两种处理（`keep`、`revoke`）与 `detail: "detailed"`；这些 HTTP 与 CLI 收 |
 | 服务器模式 | 账户与登录、OAuth 授权、远程 MCP、导入、`saveslot server` 的运维命令 |
 | 部署与运维 | 服务器模式：一个进程同时打开的租户上限与空闲关闭（`SAVESLOT_TENANT_CONNECTIONS`、`SAVESLOT_TENANT_IDLE`）、就绪探针 `/ready` 与三步停机、调用记录（`SAVESLOT_CALL_RECORDS`）。两种模式：打开时原地升级存储格式（目前还没有升级的步骤），本机模式在升级之前先备份。`query` 在多数情形下只读出要返回的那一页（分页下推到存储） |
 
