@@ -27,6 +27,41 @@ export const READABLE_CONTENT = `(SELECT rc.seq, rc.path, rc.removed_by, pb.dele
    FROM content rc LEFT JOIN LATERAL (SELECT ${pendingBy("rc")} AS deletion) pb ON TRUE)`;
 
 /**
+ * The events an SQL array of event numbers lists (`seqs`, e.g. `$1`), each once, as rows `s.seq`.
+ */
+const inner = (where: string | undefined): string => (where === undefined ? "" : ` AND (${where})`);
+
+const eachSeq = (seqs: string): string =>
+  `(SELECT DISTINCT u.seq FROM unnest(CAST(${seqs} AS bigint[])) AS u(seq)) s`;
+
+/**
+ * `READABLE_CONTENT` limited to the blocks of the events `seqs` lists (an SQL array of event
+ * numbers, e.g. `$1`): use it where `${READABLE_CONTENT} c … WHERE seq = ANY($1)` would go, with
+ * the same columns. Each event's blocks are looked up by `content`'s primary key `(seq, path)`, one
+ * event at a time, so the plan does not turn on the planner's estimate of how many blocks an event
+ * has. `content` is analyzed from a small sample (store-pglite `CONTENT_STATISTICS_TARGET`), which
+ * underestimates its number of distinct `seq` values by orders of magnitude on a large store: with
+ * `seq = ANY` of a few thousand events, the planner expected millions of rows and scanned the whole
+ * of `content` (37.8 s for one write's receipt, on 30 million blocks). `OFFSET 0` keeps the lateral
+ * subquery from being pulled up into a join, which the planner could then hash on that estimate.
+ *
+ * `where`, an SQL condition on the block as `x` (its path, say), is applied inside the lookup: a
+ * condition outside does not reach past `OFFSET 0`, so every block of each event would be read
+ * before it is filtered.
+ */
+export const readableContentOf = (seqs: string, where?: string): string =>
+  `(SELECT b.* FROM ${eachSeq(seqs)} CROSS JOIN LATERAL
+     (SELECT x.* FROM ${READABLE_CONTENT} x WHERE x.seq = s.seq${inner(where)} OFFSET 0) b)`;
+
+/**
+ * As `readableContentOf`, of `content` itself (with its columns): blocks a pending deletion lists are read like any other. A direct read of
+ * `content`, each use counted as one by content-readers.test.ts.
+ */
+export const rawContentOf = (seqs: string, where?: string): string =>
+  `(SELECT b.* FROM ${eachSeq(seqs)} CROSS JOIN LATERAL
+     (SELECT x.* FROM content x WHERE x.seq = s.seq${inner(where)} OFFSET 0) b)`;
+
+/**
  * SQL for the task of the operation whose head event is `seq` (an SQL expression): its `task`
  * block as readable, NULL when it has none or when that block is not readable. `task` is a data
  * block (09 §5.1), listed by a deletion with the operation's blocks (§5.9).

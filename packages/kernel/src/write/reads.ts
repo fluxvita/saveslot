@@ -15,7 +15,12 @@ import type {
 import { SELFCHECK_TASK } from "@fluxvita/saveslot-contract-core";
 import { FieldVisibilityNotImplemented, type Visibility, visibleTables } from "../request/index.ts";
 import type { ReadTx } from "../store/ports.ts";
-import { READABLE_CONTENT, taskKnown, taskOfOperation } from "../store/readable-content.ts";
+import {
+  rawContentOf,
+  readableContentOf,
+  taskKnown,
+  taskOfOperation,
+} from "../store/readable-content.ts";
 import { WriteError } from "./errors.ts";
 import type { StoredEvent } from "./record.ts";
 
@@ -102,7 +107,7 @@ export interface RowEventsOptions {
  * takes its objects' key order from its blocks' order, and a replayed receipt gives the first one's
  * (04-contract §14), whatever order the database would scan them in.
  */
-export const BLOCKS_OF_EVENTS_SQL = `SELECT seq, path, body FROM ${READABLE_CONTENT} c WHERE seq = ANY($1) AND body IS NOT NULL ORDER BY seq, path COLLATE "C"`;
+export const BLOCKS_OF_EVENTS_SQL = `SELECT seq, path, body FROM ${readableContentOf("$1")} c WHERE body IS NOT NULL ORDER BY seq, path COLLATE "C"`;
 
 /** The events `where` selects, in order, with their blocks. */
 export async function eventsAt(
@@ -119,7 +124,7 @@ export async function eventsAt(
   const seqs = heads.rows.map((h) => Number(h.seq));
   const blocks = await tx.query<{ seq: unknown; path: string; body: string | null }>(
     o.includePendingDeletionBlocks === true
-      ? 'SELECT seq, path, body FROM content WHERE seq = ANY($1) AND body IS NOT NULL ORDER BY seq, path COLLATE "C"'
+      ? `SELECT seq, path, body FROM ${rawContentOf("$1")} c WHERE body IS NOT NULL ORDER BY seq, path COLLATE "C"`
       : BLOCKS_OF_EVENTS_SQL,
     [seqs] as never,
   );

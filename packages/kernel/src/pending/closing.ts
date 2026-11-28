@@ -4,7 +4,7 @@
 
 import type { SupersededReason } from "@fluxvita/saveslot-contract-core";
 import type { ReadTx } from "../store/ports.ts";
-import { READABLE_CONTENT } from "../store/readable-content.ts";
+import { READABLE_CONTENT, rawContentOf } from "../store/readable-content.ts";
 import type { Blocks } from "./detail.ts";
 
 /** A decision of this version, as `item.resolved` records it (09 §5.8; the request's `decision`). */
@@ -94,9 +94,10 @@ export async function closingOf(tx: ReadTx, id: string) {
 async function noteOf(tx: ReadTx, resolved: number): Promise<string | undefined> {
   const r = await tx.query<{ body: string }>(
     `SELECT q.body FROM content o
-     JOIN content t ON t.path = 'target' AND t.body IS NOT NULL
-       AND t.seq IN (SELECT jsonb_array_elements_text(o.body::jsonb)::bigint)
-       AND (t.body::jsonb ->> 'kind') = 'api_call'
+     CROSS JOIN LATERAL ${rawContentOf(
+       "ARRAY(SELECT jsonb_array_elements_text(o.body::jsonb)::bigint)",
+       "x.path = 'target' AND x.body IS NOT NULL AND (x.body::jsonb ->> 'kind') = 'api_call'",
+     )} t
      JOIN ${READABLE_CONTENT} q ON q.seq = t.seq AND q.path = 'request' AND q.body IS NOT NULL
      WHERE o.seq = $1 AND o.path = 'op_sources' AND o.body IS NOT NULL`,
     [resolved],

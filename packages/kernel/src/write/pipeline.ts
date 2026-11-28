@@ -103,7 +103,7 @@ import {
 } from "../request/index.ts";
 import { changedSinceOf, switchedVersions } from "../schema/index.ts";
 import type { ReadTx, Tx } from "../store/ports.ts";
-import { READABLE_CONTENT } from "../store/readable-content.ts";
+import { READABLE_CONTENT, readableContentOf } from "../store/readable-content.ts";
 import { restoreAt, restoreHistory, restorePoint, seenOfVer } from "../store/restore-point.ts";
 import { type IntervalSet, meet, unionOf, WHOLE } from "../time/index.ts";
 import type { ValueOut } from "../time/zone.ts";
@@ -968,8 +968,8 @@ async function storedTexts(
     body: string | null;
     pending_by: unknown;
   }>(
-    `SELECT seq, path, body, pending_by FROM ${READABLE_CONTENT} c
-     WHERE seq = ANY($1) AND path IN ('text', 'file')`,
+    `SELECT seq, path, body, pending_by
+     FROM ${readableContentOf("$1", "x.path IN ('text', 'file')")} c`,
     [[...new Set(seqs)]] as never,
   );
   for (const x of r.rows) {
