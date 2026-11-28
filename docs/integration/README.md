@@ -36,6 +36,7 @@ An operation or parameter this version does not have returns `not_in_this_versio
 Known limitations:
 
 - Local mode supports macOS and Linux and needs Node 24.22.1 or later on the 24 line, or 26.12.1 or later.
+- On Linux the package needs glibc: musl distributions such as Alpine are not supported yet.
 - Local-mode data can be reached from that machine only; local mode and server mode do not synchronize.
 - There is no graphical interface; people use the command line.
 - The rest is in [guide chapter 11, section 7](../guide/11-deployment.md#7-what-the-first-version-does-not-do).
