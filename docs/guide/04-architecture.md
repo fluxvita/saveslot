@@ -251,7 +251,7 @@ Specification: [`../spec/02-architecture.md`](../spec/02-architecture.md) §4 "T
 
 ## 6. What an event looks like
 
-Chapter 2 described the log in one sentence. Here the events of **write #25 (the correction of lunch)** are laid out in their real shape. The full field-level definition is in the event format specification [`../spec/09-event-format.md`](../spec/09-event-format.md), which is frozen before the first public release and only grows after that; what follows is one instance of it.
+Chapter 2 described the log in one sentence. Here the events of **write #25 (the correction of lunch)** are laid out in their real shape. The full field-level definition is in the event format specification [`../spec/09-event-format.md`](../spec/09-event-format.md), which has been frozen since the first public release and only grows from then on; what follows is one instance of it.
 
 > Skipping hint: the first half of this section (the event header, the basic shape of content blocks, where `apply` puts things) needs only the first three chapters. The `span` blocks on state tables, the block dependency index, and the last subsection, "After the content is deleted", use concepts that chapters 7 and 8 develop; on a first read you can skip those places, go straight to section 7, and come back after chapter 8.
 

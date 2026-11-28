@@ -6,17 +6,14 @@
 
 ## 0. 现在处在哪，第一步做什么
 
-**saveslot 已经发布了 0.1.0 和 0.2.0，仓库是公开的。** 0.2.0 提供哪些、尚未提供哪些，见规格 [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md) 第 7 节；搭环境、跑检查、做第一个改动的具体命令在 [`../development.md`](../development.md)。下面各节讲的代码组织和测试，就是仓库现在的做法。
+**saveslot 已经发布，可以用：本机模式和服务器模式都有，仓库是公开的。** 现在这一版提供哪些、还没有哪些，见 README 的[「状态」](../../../README.zh-CN.md#状态)一节和规格 [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md) 第 7 节。搭环境、跑检查、做第一个改动的具体命令在 [`../development.md`](../development.md)。下面各节讲的代码组织和测试，就是仓库现在的做法。
 
-已经有的：实现步骤（第 3 节）里的 P0 脚手架；参考求值器（`packages/reference`，第 2 节）；实验 1、7、8、9 的结果，在 `docs/zh-CN/process/experiments/` 下（实验 1 和 9 只做了一部分）。
-
-还开着、可以参与的事：
+现在能参与的事：
 
 | 可以做的事 | 从哪开始 |
 |---|---|
-| 隐私删除：预览、确认、宽限期内撤回、到期物理删除与残留清理、恢复备份后按删除登记补删；以及本机模式的恢复流程 | 第 8 章；第 11 章第 6 节；[`../spec/03-data-model/03-deletion.md`](../spec/03-data-model/03-deletion.md) |
-| 需要重建物理表的迁移：在写入过的表上加字段、删字段、收紧约束、改精度、换单位 | 第 9 章第 5 节；[`../spec/03-data-model/08-schema-migration.md`](../spec/03-data-model/08-schema-migration.md) |
-| 实验还没做完的步骤：实验 1 的断电与 Linux 上的系统调用跟踪，实验 9 余下的数据形状与 PostgreSQL 一侧，以及第 3 节表里还没有结果的实验 | [`../process/decisions/pre-dev-w0-experiments.md`](../process/decisions/pre-dev-w0-experiments.md)；第 3 节 |
+| 实现规格里定了、这一版还没提供的部分，以 07 第 7 节为准，比如隐私删除与恢复流程、需要重建物理表的迁移 | [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md) 第 7 节；第 8 章、第 9 章第 5 节 |
+| 把实验做完：第 3 节表里还没有结果的实验，以及只做了一部分的实验余下的步骤。已有的结果在 `docs/zh-CN/process/experiments/` 下 | [`../process/decisions/pre-dev-w0-experiments.md`](../process/decisions/pre-dev-w0-experiments.md)；第 3 节 |
 | 走一遍新场景的推演，或对照定义检查某条规则 | 第 4 节"推演" |
 | 认领一条还没定的事 | [`../spec/08-open-questions.md`](../spec/08-open-questions.md)；第 5 节 |
 

@@ -6,17 +6,14 @@ This chapter is for people who want to get their hands dirty: what you can do no
 
 ## 0. Where things stand now, and what to do first
 
-**saveslot has released 0.1.0 and 0.2.0, and the repository is public.** What 0.2.0 provides and what it does not yet, see the specification, [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md), section 7; the commands for setting up, running the checks and making a first change are in [`../development.md`](../development.md). The code organization and the tests described in the sections below are how the repository works now.
+**saveslot is released and usable: local mode and server mode both ship, and the repository is public.** For what the current version provides and what it does not yet, see the [Status](../../README.md#status) section of the README and section 7 of the specification [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md). The commands for setting up, running the checks and making a first change are in [`../development.md`](../development.md). The code organization and the tests described in the sections below are how the repository works now.
 
-What is in place: P0, the scaffolding of the implementation steps (section 3); the reference evaluator (`packages/reference`, section 2); the results of experiments 1, 7, 8 and 9, under `docs/zh-CN/process/experiments/` (Chinese; experiments 1 and 9 only in part).
-
-What is still open and you can take part in:
+What you can take part in now:
 
 | What you can do | Where to start |
 |---|---|
-| Privacy deletion: preview, confirmation, cancelling within the grace period, physical erasure at the due time and residue cleanup, re-applying deletions from the deletion register after a backup is restored; and the restore flow of local mode | Chapter 8; chapter 11, section 6; [`../spec/03-data-model/03-deletion.md`](../spec/03-data-model/03-deletion.md) |
-| Migrations that need a physical table rebuilt: adding a field, deleting a field, tightening a constraint, changing precision or changing a unit on a table that has been written | Chapter 9, section 5; [`../spec/03-data-model/08-schema-migration.md`](../spec/03-data-model/08-schema-migration.md) |
-| The steps of the experiments not done yet: the power cut of experiment 1 and the system-call trace on Linux, the remaining data shapes of experiment 9 and its PostgreSQL side, and the experiments in the table of section 3 that have no result yet | [`../zh-CN/process/decisions/pre-dev-w0-experiments.md`](../zh-CN/process/decisions/pre-dev-w0-experiments.md) (Chinese); section 3 |
+| Implement what the specification settles and this version does not provide yet, as section 7 of 07 lists it: for example privacy deletion and the restore flow, and migrations that need a physical table rebuilt | Section 7 of [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md); chapter 8, chapter 9 section 5 |
+| Finish the experiments: those in the table of section 3 that have no result yet, and the remaining steps of those done only in part. The results so far are under `docs/zh-CN/process/experiments/` (Chinese) | [`../zh-CN/process/decisions/pre-dev-w0-experiments.md`](../zh-CN/process/decisions/pre-dev-w0-experiments.md) (Chinese); section 3 |
 | Walk through a new scenario as a walkthrough, or check a rule against its definition | Section 4, "Walkthroughs: a way to test the design" |
 | Claim a matter that is not yet decided | [`../spec/08-open-questions.md`](../spec/08-open-questions.md); section 5 |
 
