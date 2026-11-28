@@ -100,7 +100,7 @@ During the write, saveslot also records the result of one mechanical check, call
 
 **The receipt.** `write` returns `status: "saved"`, the write number of this write `seq: 21`, the ID of this row and its version mark `ver: "v21.0"`, plus the affected derived values (the monthly total becomes 45).
 
-A is connected through MCP (MCP is the general protocol for agents to call external tools, mentioned in chapter 1), so what it actually receives is a piece of text. In this version the text is in English (the Chinese edition of this guide shows its Chinese rendering):
+A is connected through MCP (MCP is the general protocol for agents to call external tools, mentioned in chapter 1), so what it actually receives is a piece of text. In this version the agent receives English text (the Chinese edition writes it in Chinese). The untrusted-data lead line and the tags around strings are left out here (see chapter 6, section 7):
 
 ```
 Saved · ledger schema v1 · #21
