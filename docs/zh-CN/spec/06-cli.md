@@ -92,32 +92,43 @@
 
 ## 3. 上手流程（本地，从零到第一个 Agent 能用）
 
+本文的终端示例是示意：CLI 只输出英文，这里的示例写成中文；确切的措辞以 CLI 为准（`packages/cli/src/texts.ts`、`packages/daemon/src/texts.ts`）。
+
 一条命令（细则见 3.3）：
 
 ```
 $ npm install -g @fluxvita/saveslot    # 一个包装好 CLI 与 saveslot 服务；需要 Node 24.22.1 及以上（26 系列 26.12.1 及以上）
 $ saveslot setup
-[1/5] 已创建 ~/.saveslot（0700）
-[2/5] saveslot 服务已在后台启动 · pid 4211
-[3/5] 用哪个模板建第一个 slot？
-        1 [x] running   跑步记录 → slot health
-        2 [ ] spending  日常支出 → slot ledger
-        3 [ ] budget    预算 → slot plan
-      输入编号切换选中与否，直接回车确认：
+[1/5] 初始化 home
+      已创建 ~/.saveslot（0700）
+      …
+[2/5] saveslot 服务
+      saveslot 服务已在后台启动 · pid 4211 · 监听 ~/.saveslot/run/saveslot.sock
+用哪些模板建第一批 slot？
+  1 [x] running   跑步记录：runs（事件类）+ weekly_mileage（派生，每周跑量）
+  2 [ ] spending  日常支出：expenses（事件类，CNY）+ monthly_total（派生）
+  3 [ ] budget    预算：budgets（状态类，按 category）
+输入编号切换选中与否，直接回车确认：
+[3/5] 已按模板建 running
       已建 slot health · schema v1 · 2 张表（runs、weekly_mileage）
-[4/5] 接入哪些宿主？
-        1 [x] Claude Code（claude 2.x）
-        2 [x] Codex（codex 0.x）
-        3 [ ] Cursor（没有添加命令，需要手动粘贴配置：saveslot connect cursor）
-      输入编号切换选中与否，直接回车确认：
-[5/5] 将为每个宿主签发一个连接实例（scope saveslot.read saveslot.write saveslot.schema），并执行：
-        /usr/local/bin/claude mcp add saveslot --scope user -e SAVESLOT_TOKEN=<令牌> -- /usr/local/bin/saveslot mcp
-        /opt/homebrew/bin/codex mcp add saveslot --env SAVESLOT_TOKEN=<令牌> -- /usr/local/bin/saveslot mcp
-      执行以上 2 条命令？[Y/n]
+      时区：没给 --timezone，取本机的：Asia/Shanghai
+[4/5] 本机的宿主
+接入哪些宿主？
+  1 [x] Claude Code（claude 2.x）
+  2 [x] Codex（codex 0.x）
+  - Cursor：setup 不接它（没有添加命令），用 saveslot connect cursor 手动配置
+输入编号切换选中与否，直接回车确认：
+将为每个宿主签发一个连接实例，并执行宿主的命令（scope saveslot.read saveslot.write saveslot.schema）：
+  /usr/local/bin/claude mcp add saveslot --scope user -e SAVESLOT_TOKEN=<令牌> -- /usr/local/bin/saveslot mcp
+  /opt/homebrew/bin/codex mcp add saveslot --env SAVESLOT_TOKEN=<令牌> -- /usr/local/bin/saveslot mcp
+执行以上 2 条命令？[Y/n]
+[5/5] 接入宿主
 Claude Code：已接入 · MacBook · Claude Code（ci_01JF…）
 Codex：已接入 · MacBook · Codex（ci_01JG…）
-完成。在 Claude Code 里输入 /mcp__saveslot__overview（斜杠菜单里显示为 /saveslot:overview）；在任何宿主里也可以问一句"saveslot 里有什么"。
 可选：saveslot snippet claude-code（建议放进宿主自定义指令的一段文字）
+可选：saveslot snippet codex（建议放进宿主自定义指令的一段文字）
+可选：saveslot service install（登录时启动 saveslot 服务；不装的话 MCP 宿主连接时也会把它拉起）
+完成。在 Claude Code 里输入 /mcp__saveslot__overview（斜杠菜单里显示为 /saveslot:overview）；在任何宿主里也可以问一句"saveslot 里有什么"。
 ```
 
 **安装的前提**：`npm install -g` 要求 npm 的全局目录可写。Linux 上 Node 装在 `/usr/local` 时普通用户没有写权限，安装报 `EACCES`；说明文字给出 npm 的做法：设用户级的 prefix（`npm config set prefix ~/.npm-global`，并把 `~/.npm-global/bin` 加进 `PATH`），不建议用 `sudo`（装出来的文件属于 root，宿主登记的入口路径也随之落在系统目录里）。
@@ -134,11 +145,11 @@ $ saveslot init
   credentials/   用户会话令牌（0600）
   run/           saveslot 服务运行时（0700）：saveslot.lock（服务进程一级的锁）、saveslot.pid、saveslot.sock、last-failure.json（上一次启动失败的原因码与时刻，存储格式升级失败时另带失败的那一步；就绪后删掉）、saveslot.log（后台运行时服务的日志，0600，追加写；只记事件名与原因码，不含路径、令牌与用户数据。服务自己写这个文件，写完一行发现超过 10 MiB 就轮转：最旧的一份删掉，`saveslot.log.1` 改名为 `.2`，当前文件改名为 `.1`，再新开一个，最多留两份旧的；Node 崩溃时写到标准错误的内容进的是 `saveslot start` 交给进程的那个文件，轮转之后就是最新的那份旧文件）
 $ saveslot start
-saveslot 服务已在后台启动 · pid 4211 · 监听 ~/.saveslot/run/saveslot.sock · 数据 ~/.saveslot/data
+saveslot 服务已在后台启动 · pid 4211 · 监听 ~/.saveslot/run/saveslot.sock
 $ saveslot schema templates
 running   跑步记录：runs（事件类）+ weekly_mileage（派生，每周跑量）
-budget    预算：budgets（状态类，按 category）
 spending  日常支出：expenses（事件类，CNY）+ monthly_total（派生）
+budget    预算：budgets（状态类，按 category）
 $ saveslot slot create health --template running --timezone Asia/Shanghai
 已建 slot health · schema v1 · 2 张表（runs、weekly_mileage）
 $ saveslot connect claude-code --name "MacBook · Claude Code"
@@ -155,11 +166,12 @@ $ saveslot connect claude-code --name "MacBook · Claude Code"
 
 ```
 $ saveslot reads --connection "MacBook · Claude Code" --since 10m
-11-10 21:03  MacBook · Claude Code  catalog list  slot health（sv 1）  自检（saveslot connect）
-11-10 21:04  MacBook · Claude Code  catalog list  slot health（sv 1）
+2 次读取 · 保留自 2026-11-10T12:00:00.000Z
+2026-11-10T13:04:00.000Z  「MacBook · Claude Code」  catalog
+2026-11-10T13:03:00.000Z  「MacBook · Claude Code」  catalog  task 「saveslot-connect-selfcheck」  自检（saveslot connect）
 ```
 
-第一条是 `saveslot connect` 自己做的自检，不算数；看到自检之外的读取记录，才说明宿主确实经这个连接实例连上了 saveslot。再接 Codex 时重复 `saveslot connect codex --name "MacBook · Codex"`，两个 Agent 共用同一份数据、各自留痕。
+列表新的在前；列表一级的 `catalog` 不记 slot，所以这两行都不写 slot。标"自检"的那条是 `saveslot connect` 自己做的自检，不算数；看到自检之外的读取记录，才说明宿主确实经这个连接实例连上了 saveslot。再接 Codex 时重复 `saveslot connect codex --name "MacBook · Codex"`，两个 Agent 共用同一份数据、各自留痕。
 
 各步的要点：
 
@@ -293,14 +305,14 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
 | 宿主 | 生成什么 | `setup` 能自动接 |
 |---|---|---|
 | `claude-code` | `claude mcp add saveslot --scope user -e SAVESLOT_TOKEN=<令牌> -- <saveslot 的绝对路径> mcp`（另有 `claude mcp get` / `list` / `remove`；2.1.323 实测，写进 `~/.claude.json`） | 是 |
-| `codex` | `codex mcp add saveslot --env SAVESLOT_TOKEN=<令牌> -- <saveslot 的绝对路径> mcp`，或 `config.toml` 的 `[mcp_servers.saveslot]` 片段（另有 `codex mcp get` / `list` / `remove`，`get` 的行为见 3.3 第 7 条；0.171.0 实测，添加命令写进用户级的 `~/.codex/config.toml`；选择作用域的参数未核实） | 是 |
+| `codex` | `codex mcp add saveslot --env SAVESLOT_TOKEN=<令牌> -- <saveslot 的绝对路径> mcp`（另有 `codex mcp get` / `list` / `remove`，`get` 的行为见 3.3 第 7 条；0.171.0 实测，添加命令写进用户级的 `~/.codex/config.toml`；选择作用域的参数未核实） | 是 |
 | `cursor` | 没有添加命令：打印配置片段，由人粘贴，并写明放进 `~/.cursor/mcp.json`（对所有项目生效；只对某个项目时放进项目的 `.cursor/mcp.json`）的 `mcpServers` 里（3.31.15 实测：启动时读到并连上，Agent 能调用） | 否 |
 | `claude-desktop` | 没有添加命令：打印配置片段，由人粘贴，并写明放进 `claude_desktop_config.json`（设置 → Developer → Edit Config 打开的那个文件；macOS 在 `~/Library/Application Support/Claude/`，Linux 在 `~/.config/Claude/`）的 `mcpServers` 里，改完完全退出再打开（6.28899.6 实测：接上后出现在输入框 ＋ → 连接器 的列表里，与远程连接器在一处） | 否 |
 | `vscode` | `code --add-mcp '{"name": "saveslot", "command": "<saveslot 的绝对路径>", "args": ["mcp"], "env": {"SAVESLOT_TOKEN": "<令牌>"}}'`，**只打印、不执行**（`--apply` 是用法错误），下面写明三件事：在 GitHub Copilot Chat 的 Agent 模式里用；同名条目会被直接覆盖；写完把那个 `mcp.json` 改成 0600（`chmod 600`，见表下"宿主命令的写法"）。1.147.0 实测：写进用户级的 `mcp.json`（macOS 在 `~/Library/Application Support/Code/User/`；Linux 在 `~/.config/Code/User/`，未核实）的 `servers` 里 | 否 |
 | `generic` | 通用 JSON：`{"command": "<saveslot 的绝对路径>", "args": ["mcp"], "env": {"SAVESLOT_TOKEN": "<令牌>"}}` | 否 |
 | `http` | 不生成宿主配置，只打印令牌与套接字路径（给脚本与连接器用；`curl --unix-socket` 可直接调） | 否 |
 
-宿主怎么呈现 saveslot 的 prompts（[`05-surfaces.md`](05-surfaces.md) 10.1）：Claude Code（2.1.327 实测）的斜杠菜单显示为 `/saveslot:overview`，直接输入 `/saveslot:overview` 与 `/mcp__saveslot__overview` 都可以；但冒号写法后面带参数时报"Unknown command"，带参数只能写 `/mcp__saveslot__pending health`。参数按空白切开、按位置对应，多出来的词不进 prompt；含空格的值加引号。Cursor 的文档写着支持 prompts，没有写调用的写法（未核实）；Codex（0.167.2 实测）不支持 prompts：`/mcp verbose` 不列 prompts，两种写法都报"Unrecognized command"。`setup` 结尾的提示按这次的结果写：Claude Code 在接上的宿主里（这次接入或已有条目）时，写它的斜杠命令写法，再写"在任何宿主里也可以问一句"；不在时只写"在任何宿主里可以问一句"，不提 Claude Code。
+宿主怎么呈现 saveslot 的 prompts（[`05-surfaces.md`](05-surfaces.md) 10.1）：Claude Code（2.1.327 实测）的斜杠菜单显示为 `/saveslot:overview`，直接输入 `/saveslot:overview` 与 `/mcp__saveslot__overview` 都可以；但冒号写法后面带参数时报"Unknown command"，带参数只能写 `/mcp__saveslot__pending health`。参数按空白切开、按位置对应，多出来的词不进 prompt；含空格的值加引号。Cursor 的文档写着支持 prompts，没有写调用的写法（未核实）；Codex（0.167.2 实测）不支持 prompts：`/mcp verbose` 不列 prompts，两种写法都报"Unrecognized command"。`setup` 结尾的提示按这次的结果写：Claude Code 在接上的宿主里（这次接入或已有条目）时，写它的斜杠命令写法，再写"在任何宿主里也可以问一句"；不在时只写"在任何宿主里可以问一句"，不提 Claude Code。这句提示只在 `setup` 走完、这次至少有一个宿主"本次完成"、而且没有宿主失败时写；没有接上任何宿主（或宿主都是已有的条目、或有宿主失败）时不写，结尾没有这一句。
 
 - **宿主命令的写法**：服务名在前，`-e` / `--env` 在后，再接 `--` 与可执行文件。添加命令一律写**用户级**：saveslot 的数据按人不按项目，接入应当对这个用户的所有项目生效；Claude Code 的添加命令默认写"当前项目"这一档，所以显式带 `--scope user`，别的宿主有同类选项的同样处理。`vscode` 有添加命令，但 `--apply` 与 `setup` 都不执行它，只打印给用户自己执行：VS Code 的 MCP 宿主是 GitHub Copilot Chat 的 Agent 模式（Ask、Edit 模式不调用 MCP 工具），它的添加命令 `code --add-mcp '<JSON>'`（1.147.0 实测）写进用户级的 `mcp.json`（结构是 `{"servers": {"saveslot": {…}}, "inputs": []}`），同名时直接覆盖原条目、退出码 0、不提示，新建的文件权限是 0644，令牌落在本机其他用户可读的文件里；`code` 也没有查看单个条目的命令，3.3 第 7 条"先用宿主的查看命令判断已有条目"做不到。代为执行就等于悄悄覆盖用户已有的条目；收紧文件权限等于改宿主的配置文件，这两件 saveslot 都不做。所以 `connect vscode` 在命令下面写明：同名条目会被覆盖；令牌写进的 `mcp.json` 别的用户能读，写完自己 `chmod 600` 那个文件（macOS 与 Linux 各给出路径）。
 - **没有添加命令的宿主**（`cursor`、`claude-desktop`）只能手动粘贴，是第 1 节设计要求的已知例外。
@@ -324,7 +336,7 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
 - **`--slots` 的写法**：slot 名的逗号列表，不给 = 全部（含以后新建的）。给了的每个都必须存在（否则 `not_found`（`slot`）），不能为空。限定了范围的连接实例只看得到这几个 slot，不能新建 slot，之后别人新建的 slot 也不纳入；范围签发后不能改，要改就吊销后重签（[`04-contract.md`](04-contract.md)「调用方：凭证与 scope」）。自检的那次 `catalog` 照常做，它只会看到范围内的 slot。
 - **名字建议写"设备 · 宿主"**，它会出现在历史、事项发起者与读取审计里。
 - **连接器取得凭证**：连接器（定时把外部系统的数据搬进 saveslot 的程序，不是 saveslot 的一部分）用 `saveslot connect http --name "手环 · 连接器" --slots health` 取得一个只碰它负责的 slot 的静态令牌，经 HTTP 写入（[`05-surfaces.md`](05-surfaces.md) 第 13 节）。
-- **完成时的提示**：`connect` 与 `setup` 结束时在末尾提示一行"可选：saveslot snippet <宿主>"（3.4）。
+- **完成时的提示**：`connect` 与 `setup` 结束时在末尾提示一行"可选：saveslot snippet <宿主>"（3.4；`setup` 为每个接上的宿主各写一行）。`saveslot snippet` 不认的宿主没有这一行：`connect generic`、`connect http` 结束时不写，服务器 profile 上宿主自己登录的 `connect` 也不写。
 - **服务器模式（云服务或自部署）**：宿主走远程 MCP 自己做 OAuth 授权，`saveslot connect claude-code --profile cloud`（自部署换成它的 profile）打印远程形式的添加命令 `claude mcp add saveslot --scope user --transport http https://<域名>/mcp`（写法同样实测）；这条命令里**没有令牌**，所以 `--apply` 与 `saveslot setup --profile` 会代为执行它。授权页上由用户命名、选 scope，两项都有默认值；经授权得到的连接实例 slot 范围是全部，用户不改就只点一次"授权"（[`05-surfaces.md`](05-surfaces.md) 第 15 节）。授权完成后用 `saveslot connections list` 能看到它，改名、吊销照常。这时 CLI 不签发任何东西，`--name`、`--scope`、`--slots` 是用法错误（它们在授权页上定；要静态令牌用 `connect http`）；没有添加命令的宿主拿到的是要粘贴的条目（`cursor`：按公开资料它的远程授权要动态客户端注册，0.2.0 不提供，所以 0.2.0 里 Cursor 接服务器用 `connect http` 的静态令牌。输出不说"宿主自己授权"，而是写明这一点和签发的命令 `saveslot connect http --profile <profile> --name <名字>`，再给出 `mcpServers` 里的一项 `{"url": "https://<域名>/mcp", "headers": {"Authorization": "Bearer TOKEN"}}`，由用户把 `TOKEN` 换成签发的令牌，填进它的 `mcp.json`；`--json` 照样是 `{host, server, url}`。动态注册在后续版本，见 [`08-open-questions.md`](08-open-questions.md)；`generic`：`{"url": …}`）、只打印的添加命令（`vscode`：`code --add-mcp '{"name": "saveslot", "type": "http", "url": "https://<域名>/mcp"}'`，1.147.0 实测写进 `mcp.json` 的是 `{"type": "http", "url": …}`，它能不能凭这一项自己走完授权还没有实测；同名照样覆盖，条目里没有令牌，所以不提文件权限）或要在宿主界面里填的地址（`claude-desktop`：自定义连接器）。只有网页界面的宿主（Claude 网页端、ChatGPT）没有命令可执行，`saveslot connect <宿主> --profile cloud` 给出要在宿主界面里填的地址，这是设计要求的已知例外。没有 Agent 的脚本与连接器走不了 OAuth：`saveslot connect http --profile cloud [--slots …]` 由用户会话签发一个静态令牌，与本地一样按 scope 与 slot 范围、可吊销。
 
 ### 3.3 `saveslot setup`：一条命令完成上手
@@ -359,7 +371,7 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
 7. **重复运行是安全的**：每一步先看状态再决定做不做（上表最右一列）。"宿主里已有 saveslot 条目"用宿主自己的查看命令判断（Claude Code 的 `claude mcp get saveslot`；Codex 的 `codex mcp get saveslot`）。所以第二次运行只会补上没做完的步骤、接上新装的宿主，不会重复签发，也不会撞上"同名已存在"的报错。要换掉一个已有的接入：先用宿主的移除命令去掉条目、`saveslot connections revoke` 吊销旧的连接实例，再运行一次。
    - **宿主里有条目，不等于接入有效**：令牌不保存，`setup` 无法从条目反查它用的是哪个连接实例。按"已有条目"跳过时，先看条目里有没有这个 saveslot 的绝对路径：查看命令的标准输出与标准错误都看，先去掉终端转义序列（CSI、OSC 与单个 ESC），每条流最多读 1 MiB；路径两侧紧挨着的字符都不是路径字符（字母、数字、`.`、`_`、`-`、`/`、`~`、`+`、`@`），或者路径就在开头或结尾，才算"有"（`…/saveslot-old`、`…/saveslot+x`、`…/saveslot@2`、`…/saveslot~`、`/opt/usr/local/bin/saveslot`、`~/usr/local/bin/saveslot` 都不算；路径前后是括号、逗号、颜色码都算）。宿主换一种写法写路径（解析过的符号链接、`~`、加引号或转义）时看不出来；实测 Claude Code 2.1.327 与 Codex 0.167.2 都按添加时的原样写路径（不解析符号链接、不写 `~`，带空格也不加引号），所以按上面的规则能看到。实测的另两点：没有条目时两者都以退出码 1 结束、标准输出为空；`claude mcp get` 会启动服务器显示状态，启动失败时退出码仍是 0，所以查看命令成功只说明条目在，不说明它能用。看不到路径：记为"未确认"（`path_not_seen`），写明"没能确认它指向这个 saveslot；宿主里用着正常就不用管，否则移除后重跑"，并给出宿主的移除命令。看到路径：再看 `saveslot connections list` 里这个宿主的、未吊销的连接实例，分两档。第一档是名字正好等于 `setup` 在当前主机名下会起的名字（"<主机名> · <宿主显示名>"，可带序号）的：恰好一个，汇总记为"已有"并给出它；不止一个，仍记为"已有"，但**不指认**其中哪一个（令牌不保存，也不为了判断去读查看输出里的令牌），列出全部这些实例（ID、名字、最后一次自检之外的读取，没有就写明），由用户吊销不用的。没有第一档、只有第二档的——名字等于宿主显示名、或以" · <宿主显示名>"结尾（可带序号），也就是在别的主机名下签的（主机名会变：macOS 按网络给机器改名），或用户自己这样起的：不指认，记为"未确认"（`instance_unsure`），列出这些实例，写明"宿主里用着正常就不用管，否则移除后重跑"，给出宿主的移除命令，不新签发。两档都没有：记为"未确认"（`no_instance`），写明"宿主里有 saveslot 条目，但没有找到对应的有效连接实例"，给出宿主的移除命令。"未确认"不改变退出码。
    - **添加之后不靠路径定成败**：添加之前查过没有条目、添加命令成功、之后查到有条目，就是接上了，记为"本次完成"（`done`）；条目里看不到路径只多写一行说明（宿主各有各的写法）。"添加成功、条目却指向别的路径"只可能发生在添加之前就有条目时，而那时根本不会去添加。之后查不到条目是失败（第 8 条）。
-   - **同时只能有一个 `setup` 在运行**：`setup` 开始时（初始化之前；`~/.saveslot/` 与 `run/` 不存在就先以 0700 建出来）在 `~/.saveslot/run/setup/` 下取一把独占锁，与 saveslot 服务的锁分开，到结束才放；拿不到时什么都不做，退出码 7，提示"另一个 saveslot setup 正在运行"。否则两个终端会同时看到"没有 slot""没有条目"，各自去建、去签发，再各自报失败。
+   - **同时只能有一个 `setup` 在运行**：`setup` 确定要往下做时，在初始化之前（`~/.saveslot/` 与 `run/` 不存在就先以 0700 建出来）在 `~/.saveslot/run/setup/` 下取一把独占锁；非交互式又没给 `--yes` 时只写出将要做的步骤、什么都不建，也不取锁，home 无法照原样使用时也在取锁之前就拒绝（第 8 条）。这把锁与 saveslot 服务的锁分开，到结束才放；拿不到时什么都不做，退出码 7，提示"另一个 saveslot setup 正在运行"。否则两个终端会同时看到"没有 slot""没有条目"，各自去建、去签发，再各自报失败。
 8. **失败在中途时的状态与恢复**：
 
    | 失败在哪 | 留下什么 | 怎么恢复 |
@@ -371,7 +383,7 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
    | 自检 | 无：刚签发的连接实例立即吊销（同 `connect`） | 同上 |
    | 宿主的添加命令失败 | **无：刚签发的连接实例立即吊销** | 标准错误写明宿主命令的退出状态；继续下一个宿主；重跑会重试这个宿主 |
    | 宿主命令成功，之后查看命令查不到条目（或查看没有结束） | 连接实例保留（宿主可能已经在用它） | 汇总写明"宿主命令执行了，但查看命令里没有名为 saveslot 的条目"，并给出撤回的两条命令：宿主的移除命令与 `saveslot connections revoke <ID>`；这个宿主记为失败（`no_entry`；查看没有结束时是 `lookup_failed`） |
-   | 宿主的查看命令没有结束（5 秒） | 该宿主没有连接实例 | 这个宿主记为失败（`lookup_failed`），继续下一个宿主 |
+   | 添加之前的查看命令没有结束（5 秒） | 该宿主没有连接实例 | 这个宿主记为失败（`lookup_failed`），继续下一个宿主 |
    | 收到 SIGINT / SIGTERM / SIGHUP（终端关了）/ SIGQUIT | 正在执行的宿主命令（添加、`--version`、查看）连同它的进程组被杀，等服务就绪的那段也不再等；刚签发而宿主命令没有成功的连接实例尽力吊销，这个宿主照常记进结果（`interrupted`，带它的实例与吊销后的状态）；发现宿主时（`--version`）被打断，没探测完的宿主不记进结果，也不说它没找到 | 标准错误写一行"被要求停止"与已经做到哪一步，不写结尾的"完成"；按信号的惯例退出（129 / 130 / 131 / 143，即 128 加信号编号）。收到信号之后出的别的错误照它自己的原因报，退出码也按它 |
    | 某一问处输入结束 | 那一问之前做完的步骤 | 标准错误写明已经做了什么（已初始化、服务在运行、建了哪个 slot、接上了哪些宿主），退出码 8 |
    | 初始化：home 无法照原样使用——已存在且权限不是 0700（例如用户自己 `mkdir ~/.saveslot`）、是符号链接、是文件、属于别的用户，或还不存在而上面最近的已有目录当前用户写不了；home 里已有的 `control/`、`credentials/`、`run/` 是符号链接、是文件、属于别的用户或权限不是 0700 | 不变：在 home 里建任何东西（含 `setup` 的锁所在的 `run/`）之前就先查 | 写明路径、原因与对应的修法：权限不对给 `chmod 700 <路径>`，并写明目录里是空的还是已有几项（已有东西时也可以用 `--home` 换个位置）；符号链接要用 `--home` 给出它指向的目录；文件挡路要移开（写明挡路的是哪一个，如 `run`）；上级写不了要自己建好 home（0700）或换个位置；`control/` 一类子目录权限不对给 `chmod 700 <它的路径>`。退出码 1，`--json` 是 `{"initialized": "failed"}`；单独的 `saveslot init` 同样如此 |
@@ -415,7 +427,7 @@ My long-term records (things that change over time: spending, workouts, budgets,
 
 文案里没有任何用户数据，也不列 slot 名（那由 `instructions` 给，会随数据变）。
 
-**`saveslot snippet [<宿主>] [--lang en|zh-CN]`**：打印文案与该宿主的放置位置；不给宿主时打印文案与下表。它不是契约操作，不连 saveslot 服务。不叫 `instructions`：这个词已经指 MCP 的服务级说明。
+**`saveslot snippet [<宿主>] [--lang en|zh-CN]`**：打印文案与该宿主的放置位置；不给宿主时打印文案与下表。`<宿主>` 取 `claude-code`、`codex`、`vscode`、`cursor`、`gemini`、`antigravity`、`claude-desktop`、`chatgpt`（下表各行；`gemini`、`antigravity`、`chatgpt` 只有 `snippet` 认，`connect` 没有这几个宿主），别的写法是用法错误。它不是契约操作，不连 saveslot 服务。不叫 `instructions`：这个词已经指 MCP 的服务级说明。
 
 ```
 $ saveslot snippet claude-code
@@ -450,7 +462,7 @@ My long-term records (things that change over time: spending, workouts, budgets,
 
 | 命令 | 用途 | 关键参数 | 输出要点 | 出现于 |
 |---|---|---|---|---|
-| `saveslot setup` | 一条命令完成上手：编排初始化、启动、建 slot、接入宿主（3.3） | `--template`（可重复）、`--timezone`、`--host`（可重复）、`--scope`、`--yes`、`--profile`（服务器模式） | 每一步"已有 / 本次完成 / 失败"；每个宿主的连接实例与是否已接入；末尾提示 `saveslot snippet` | P1（`--profile` P5） |
+| `saveslot setup` | 一条命令完成上手：编排初始化、启动、建 slot、接入宿主（3.3） | `--template`（可重复）、`--timezone`、`--host`（可重复）、`--scope`、`--yes`、`--profile`（服务器模式）、`--device`（服务器模式下登录用设备码） | 每一步"已有 / 本次完成 / 失败"；每个宿主的连接实例与是否已接入；末尾提示 `saveslot snippet` | P1（`--profile` P5） |
 | `saveslot init` | 建目录、写租户创世、生成用户会话令牌 | `--data-dir`、`--rotate-session` | 各目录与权限；同步盘警告 | P1 |
 | `saveslot start` / `saveslot stop` | 启动 / 停止 saveslot 服务 | `--foreground`、`--restored`（数据目录刚从备份恢复：先走恢复流程；P3）、`--eval-clock`（测试时钟，只用于评测，第 3 节第 3 步）、`--no-upgrade-backup`（这次启动要升级存储格式时不先备份，第 3 节第 3 步） | pid、监听地址；走了恢复流程时写明补删了几项；`stop` 时有宽限期内的删除就提醒"到期时若 saveslot 没在运行，物理删除在下次启动时执行" | P1（`--restored` P3） |
 | `saveslot status` | 进程状态 + 概况 | — | 版本、数据目录、监听、单写者锁（经 `/health` 的 `writer_lock`）、启动时补跑了哪些到期任务；待处理事项数（经 `pending`）；逾期未物理删除的删除；提醒：系统时钟比日志末端的记录时刻早 5 分钟以上（日志末端经 `log.end`，与待处理数一样带用户会话；取不到时这一条不出，也不报错）、行数超过舒适线或实测线的表；服务没在运行而上一次启动失败了时，加一行写出失败的原因码与时刻（`run/last-failure.json`，服务就绪后删掉；只有原因码与时刻，存储格式升级失败时另有失败的那一步）；服务在升级存储格式或升级失败时，加一行写出从哪个格式到哪个格式、正在做或失败在哪一步；以测试时钟运行时，第一行写明测试时钟的当前时刻，时钟落后的提醒也按它算 | P1（删除相关 P3；规模提醒随 P2 的目录概况） |
@@ -512,7 +524,7 @@ My long-term records (things that change over time: spending, workouts, budgets,
 | `saveslot slot show <slot> [表…]` | `catalog`（`level: table`） | `--tables` | 字段、类型、单位、说明、规则原文、数据概况（同 MCP `saveslot_catalog` 的文本） | P1 |
 | `saveslot slot remove <slot 名或 sl_…>` | `slots.remove` | `--yes` | 移除的 slot 名与 ID；名字之后可以重用。先在全部 slot 里按 ID 精确匹配，没有才按名字；把名字解析成 `slot_id` 后在确认屏上显示，再按 `slot_id` 发（名字可以重用，按名字发的重试可能删掉同名新建的 slot）。没有终端可问、又没给 `--yes` 时不执行。有记录的 slot 拒绝（`slot_not_empty`） | P1 |
 | `saveslot schema templates` | 无（列 CLI 自带的模板） | — | 模板名、包含的表 | P1 |
-| `saveslot slot create <名字>` | `schema_draft`（`base_version: null`） | `--template` / `--file`、`--timezone` | 编译结果、回填的表 / 字段 ID、`sv: 1`；编译失败逐条列出位置 | P1 |
+| `saveslot slot create <名字>` | `schema_draft`（`base_version: null`） | `--template` / `--file`、`--timezone` | slot 名、schema 版本（`schema v1`）、表名；没给 `--timezone` 时写明取的是本机时区；回填的表 / 字段 ID 在 `--json` 里；编译失败逐条列出位置 | P1 |
 | `saveslot schema get <slot>` | `catalog`（`level: schema`） | `-o <文件>` | 完整 schema 文档（已填 `base_version`），可直接改了提交 | P4 |
 | `saveslot schema draft <文件>` | `schema_draft` | — | `changes[]` 逐项类别与兼容性、影响预览；`outcome: applied` 写新 `sv`，`pending` 写事项 ID 并提示用 `saveslot pending show` 确认 | P4 |
 | `saveslot policy show <slot>` | `policy.get` | — | 哪些改动自动生效、额外的高影响表 / 字段 | P6 |
@@ -524,7 +536,7 @@ My long-term records (things that change over time: spending, workouts, budgets,
 | `saveslot connect <宿主>` | `connections.issue` + 一次 `catalog` 自检 | `--name`、`--scope`、`--slots`、`--apply` | 连接实例 ID、scope、slot 范围、令牌（只此一次；`--apply` 成功时不显示）、宿主命令；末尾提示 `saveslot snippet` | P1（`--slots` P5） |
 | `saveslot connections list` | `connections.list` | — | 名字、ID、scope、slot 范围（"全部"、slot 名列表，或范围里的 slot 都已移除时写明"没有 slot"——不是"全部"）、签发时间、是否已吊销或已停用 | P1（范围一列 P5） |
 | `saveslot connections rename <名字或 ID> <新名字>` | `connections.update` | — | 新旧名字；历史里的 actor 不变，只是显示名变 | P6 |
-| `saveslot connections revoke <名字或 ID>` | `connections.revoke` | `--yes` | 吊销时刻；之后该令牌的请求一律拒绝。先在全部连接实例里按 ID 精确匹配，没有才按名字；按名字匹配到不止一个时拒绝（退出码 2）并列出它们的 ID | P1 |
+| `saveslot connections revoke <名字或 ID>` | `connections.revoke` | `--yes` | 吊销时刻；之后该令牌的请求一律拒绝。先在全部连接实例里按 ID 精确匹配，没有才按名字；按名字匹配到不止一个时拒绝（退出码 2）并列出它们的 ID——这是防御性检查：同一用户下连接实例的名字唯一，已吊销、已停用的也占用（[`04-contract.md`](04-contract.md)「调用方：凭证与 scope」），所以不会发生 | P1 |
 | `saveslot snippet [<宿主>]` | 无（打印 CLI 自带的文案，不连 saveslot 服务） | `--lang en\|zh-CN` | 建议贴进宿主自定义指令的文案与该宿主的放置位置（3.4） | P1（文案初稿；按评测结果在 P6 定稿） |
 
 ### 4.5 待处理事项
@@ -619,7 +631,7 @@ $ saveslot export --encrypt -o saveslot-2026-11.ndjson.age
 `saveslot pending` 按挂起时长排序，最早的在前；事项不过期，CLI 不提供"清理旧事项"的捷径。`saveslot pending show` 的渲染：
 
 ```
-pi_9B… 待确认 · marketing.budgets 推广 · 已挂 3 小时 · 版本 iv_7e…
+pi_9B… 待确认 · marketing.budgets 推广 · 未处理 · 3 小时前开启 · 版本 iv_7e…
   发起：MacBook · Codex，11-10 18:02 · 原因：抹掉已记录的变化点
   提议：11-02 起改为 3000 CNY（一直延续）
   会被覆盖的段：
@@ -687,7 +699,7 @@ runs r_01JC… 整行删除：date 只来自这句话
 ### 6.1 人读文本与 `--json`
 
 - **人读文本**（默认）：由 CLI 渲染器按契约字段生成。标记写法同 MCP（[`05-surfaces.md`](05-surfaces.md) 4.2「标记」、4.3「提醒与提示」），渲染器测试同样检查每个契约标记都出现在文本里；`notices[]` 写在末尾；`warnings[]` 全部渲染（含 `multi_segment_unmapped`，人可以据此回头补证据映射）。`saveslot pending show` 对 `flagged` 事项列出命中的行与命中的那一组键；读结果里 `dangling_ref` 标记照 MCP 的写法渲染。提示里的下一步写成 CLI 命令，不写 `saveslot_` 工具名。
-- **`--json`**：标准输出只有一个 JSON 值——契约的结构化结果，与 HTTP 回执同一形状，CLI 不改名、不删字段；`export` 例外，是 NDJSON 流。报错时输出契约的 `{"error": {...}}`；CLI 自己发现的错误（如 `connections revoke` 的名字对应不止一个连接实例时的 `ambiguous_name`）也用同一个外形，那时的 `code` 是 CLI 自己的，不在契约的错误码里。组合命令输出最后一个契约操作的结果（`pending resolve` 是 `resolve` 的，`delete --source` 是 `delete` 的）；`connect` 输出 `connections.issue` 的结果，另加 `selfcheck` 字段；服务器 profile 上宿主自己登录的 `connect`（§3.2「服务器模式」，什么都不签发）输出 `{host, server, url, command?, applied?}`：`server` 是 profile 的服务器地址，`url` 是远程 MCP 地址，`command` 是宿主的添加命令（参数数组，不含令牌；没有添加命令的宿主没有这一项），给了 `--apply` 时另带 `applied`（`true` / `false`，按宿主命令的结果）；`connect http --profile` 与本机一样，输出 `connections.issue` 的结果加 `selfcheck`；`profile list` 输出 `{current, profiles}`，`profiles` 是 `[{name, at}]`（`at` 是 `local` 的套接字路径或服务器地址；内置的 `local`、`cloud` 在前，登记的按名字排），`profile use` 输出 `{current}`；`setup` 输出一个对象，不含令牌：`initialized`（`existing` / `done` / `failed`；初始化失败时对象只有这一项）、`service`（`ready` / `failed`；启动失败时对象到此为止，退出码按 `start`）、`slots`（`[{template, slot}]`）、`slot_failed`（建 slot 失败时才有，是那个模板的名字；这时 `hosts` 是空数组，退出码按建 slot 的错误）、`hosts`（按参数或列表的次序，每项 `{host, state, reason?, connection?, connections?}`）。`state` 六个值：`existing`、`done`、`unconfirmed`、`failed`、`manual`（列出了但没有添加命令）、`not_found`（`--host` 给了但没找到）。`failed` 与 `unconfirmed` 带 `reason`，是稳定的码：`failed` 的是 `command_failed`、`command_signal`、`command_timeout`、`cannot_run`、`interrupted`、`no_entry`、`self_check_failed`、`issue_failed`、`lookup_failed`、`unshowable`；`unconfirmed` 的是 `path_not_seen`、`instance_unsure`、`no_instance`（§3.3 第 7 条）、`other_entry`（服务器这一支，§3.3 第 13 条）。别的状态不带 `reason`（`not_found` 本身就是原因）。`connection` 是 `{id, name, state}`，`state` 为 `live` 或 `revoked`；宿主已有条目而第一档的有效实例不止一个时（`existing`），或只有第二档的实例时（`unconfirmed` / `instance_unsure`），不给 `connection`，给 `connections`（`[{id, name, last_read}]`，`last_read` 是最后一次自检之外的读取时刻或 null）。中途停下时另带 `stopped`（`declined`、`input_ended`、`interrupted`），只表示人或输入让 `setup` 停下。服务器这一支（§3.3 第 13 条）没有 `initialized` 与 `service`，对象最前是 `signed_in`：`existing`（已登录：令牌可用或刷新成功）、`done`（这次登录成功）、`failed`（登录失败：签发方不对、被服务器拒、刷新与重新登录都不成；对象到此为止，退出码按 `login`）、`needed`（没登录、又没有终端可登录，什么都没做；对象到此为止，退出码 8，提示先 `saveslot login --profile <名字>`）；人在授权页上拒绝是 `signed_in: "failed"` 加 `stopped: "declined"`，退出码 8；之后是 `slots`、`slot_failed`、`hosts`，同本机这一支（`hosts` 的项没有 `connection` / `connections`：这一支不签发）。脚本必须看 `status` 等字段，不能只看退出码（同 HTTP 的规定）。
+- **`--json`**：标准输出只有一个 JSON 值——契约的结构化结果，与 HTTP 回执同一形状，CLI 不改名、不删字段；`export` 例外，是 NDJSON 流。报错时输出契约的 `{"error": {...}}`；CLI 自己发现的错误（如 `connections revoke` 的名字对应不止一个连接实例时的 `ambiguous_name`；这是防御性检查，名字唯一，见 4.4）也用同一个外形，那时的 `code` 是 CLI 自己的，不在契约的错误码里。组合命令输出最后一个契约操作的结果（`pending resolve` 是 `resolve` 的，`delete --source` 是 `delete` 的）；`connect` 输出 `connections.issue` 的结果，另加 `selfcheck` 字段；服务器 profile 上宿主自己登录的 `connect`（§3.2「服务器模式」，什么都不签发）输出 `{host, server, url, command?, applied?}`：`server` 是 profile 的服务器地址，`url` 是远程 MCP 地址，`command` 是宿主的添加命令（参数数组，不含令牌；没有添加命令的宿主没有这一项），给了 `--apply` 时另带 `applied`（`true` / `false`，按宿主命令的结果）；`connect http --profile` 与本机一样，输出 `connections.issue` 的结果加 `selfcheck`；`profile list` 输出 `{current, profiles}`，`profiles` 是 `[{name, at}]`（`at` 是 `local` 的套接字路径或服务器地址；内置的 `local`、`cloud` 在前，登记的按名字排），`profile use` 输出 `{current}`；`setup` 输出一个对象，不含令牌：`initialized`（`existing` / `done` / `failed`；初始化失败时对象只有这一项）、`service`（`ready` / `failed`；启动失败时对象到此为止，退出码按 `start`）、`slots`（`[{template, slot}]`）、`slot_failed`（建 slot 失败时才有，是那个模板的名字；这时 `hosts` 是空数组，退出码按建 slot 的错误）、`hosts`（按参数或列表的次序，每项 `{host, state, reason?, connection?, connections?}`）。`state` 六个值：`existing`、`done`、`unconfirmed`、`failed`、`manual`（列出了但没有添加命令）、`not_found`（`--host` 给了但没找到）。`failed` 与 `unconfirmed` 带 `reason`，是稳定的码：`failed` 的是 `command_failed`、`command_signal`、`command_timeout`、`cannot_run`、`interrupted`、`no_entry`、`self_check_failed`、`issue_failed`、`lookup_failed`、`unshowable`；`unconfirmed` 的是 `path_not_seen`、`instance_unsure`、`no_instance`（§3.3 第 7 条）、`other_entry`（服务器这一支，§3.3 第 13 条）。别的状态不带 `reason`（`not_found` 本身就是原因）。`connection` 是 `{id, name, state}`，`state` 为 `live` 或 `revoked`；宿主已有条目而第一档的有效实例不止一个时（`existing`），或只有第二档的实例时（`unconfirmed` / `instance_unsure`），不给 `connection`，给 `connections`（`[{id, name, last_read}]`，`last_read` 是最后一次自检之外的读取时刻或 null）。中途停下时另带 `stopped`（`declined`、`input_ended`、`interrupted`），只表示人或输入让 `setup` 停下。服务器这一支（§3.3 第 13 条）没有 `initialized` 与 `service`，对象最前是 `signed_in`：`existing`（已登录：令牌可用或刷新成功）、`done`（这次登录成功）、`failed`（登录失败：签发方不对、被服务器拒、刷新与重新登录都不成；对象到此为止，退出码按 `login`）、`needed`（没登录、又没有终端可登录，什么都没做；对象到此为止，退出码 8，提示先 `saveslot login --profile <名字>`）；人在授权页上拒绝是 `signed_in: "failed"` 加 `stopped: "declined"`，退出码 8；之后是 `slots`、`slot_failed`、`hosts`，同本机这一支（`hosts` 的项没有 `connection` / `connections`：这一支不签发）。脚本必须看 `status` 等字段，不能只看退出码（同 HTTP 的规定）。
 - 交互式提示、进度、"令牌只显示一次"这类话写标准错误，`--json` 时标准输出保持可解析。
 
 ### 6.2 退出码
@@ -696,7 +708,7 @@ runs r_01JC… 整行删除：date 只来自这句话
 |---|---|---|
 | 0 | 完成（含重放、`outcome: pending` 这类"已记下但未生效"——看输出） | — |
 | 1 | CLI 或 saveslot 服务内部错误；接入没有完成 | `internal`；`saveslot connect` 的自检失败（已吊销刚签发的连接实例）或 `--apply` 执行宿主命令失败（**保留**连接实例，命令已打印给人自己执行）；`saveslot setup` 有宿主失败（宿主命令失败时**吊销**刚签发的连接实例，因为令牌没有显示给任何人）、初始化失败、服务与 CLI 版本不一致 |
-| 2 | 命令用法错误（CLI 自己发现的） | 例如只取一个值的选项给了两次（不按"最后一个算数"）；`connections revoke` 的名字对应不止一个连接实例；`export` 的口令文件用不了（普通文件权限宽于 0600、不归当前用户、不是文件或管道、读不到、管道 30 秒没写来、为空、含控制字符，各自说明原因与改法；这是发请求之前的用法错误，不是 6，6 留给凭证）、`-o` 的文件已经在；`server init --user`、`server user add`、`server user passwd` 的口令文件用不了，或终端上三次输得两遍不同；`server restore` 的 `--tenant` 与 `--user` 都给了或都没给 |
+| 2 | 命令用法错误（CLI 自己发现的） | 例如只取一个值的选项给了两次（不按"最后一个算数"）；`connections revoke` 的名字对应不止一个连接实例（防御性检查，见 4.4）；`export` 的口令文件用不了（普通文件权限宽于 0600、不归当前用户、不是文件或管道、读不到、管道 30 秒没写来、为空、含控制字符，各自说明原因与改法；这是发请求之前的用法错误，不是 6，6 留给凭证）、`-o` 的文件已经在；`server init --user`、`server user add`、`server user passwd` 的口令文件用不了，或终端上三次输得两遍不同；`server restore` 的 `--tenant` 与 `--user` 都给了或都没给 |
 | 3 | 要先重读 / 内容已变 | `read_first`、`confirmation_mismatch`、`item_closed`、`preview_outdated`、`handle_expired`、`draft_outdated`、`schema_incompatible` |
 | 4 | 找不到 | `not_found`、`unknown_table`、`unknown_field`；`server restore` 指定的租户不在，或 `--user` 指定的账户不在；`server user disable`、`enable`、`passwd` 指定的账户不在 |
 | 5 | 请求被拒 | `saveslot init` 遇到已初始化的目录、非空的数据目录或正在运行的服务（什么都不改）、`saveslot start` 遇到未初始化的目录，或服务起来之后发现存储格式过旧或过新、存储格式升级失败（`upgrade_failed`；都要先处理存储，照原样重试没用）；`config.toml` 不合法（`saveslot start` 在派生进程之前、前台启动与 `saveslot config get` 都这样拒绝，见 4.2）；服务器模式的环境变量缺了或写法不对（4.1「服务器模式的配置」）；`invalid_argument`、`validation_failed`、`field_unmatched`、`sql_rejected`、`sql_timeout`、`too_large`、`derived_readonly`、`revoked`、`not_in_this_version`、`import_rejected`、`rate_limited`（`quota`）、`referenced`（后续）、`lease_expired`（后续）；`server restore` 遇到没有表或格式不认识的控制面库（`--user` 时含本地账户的表）、还没建完的租户（`--user` 时含账户在而租户没有登记）、设了外部登录时的 `--user`、没有日志的租户库（备份还没放回）、导入进行中的租户、删除登记里有条目的租户（这一版还不能补删，什么都不改）；`server restore`、`server user`、`server init` 打开租户时存储格式升级失败（`upgrade_failed`：只写失败的那一步与 SQLSTATE，不写数据库的报错原文，[`02-architecture.md`](02-architecture.md) §8）；`server start` 遇到 `server init` 还没建的表或格式不认识的表；`server user` 遇到这样的表、已被占用或不合规的名字、不合规的口令，或设了外部登录（`server init --user` 同样） |
@@ -710,12 +722,11 @@ runs r_01JC… 整行删除：date 只来自这句话
 
 ### 6.3 错误的展示
 
-文本由 `code` 与附带字段渲染（同 [`05-surfaces.md`](05-surfaces.md)「报错的文本」的内容），写到标准错误，第一行是 `错误 <code>：<一句话>`，之后是可执行的下一步：
+文本由 `code` 与附带字段渲染（同 [`05-surfaces.md`](05-surfaces.md)「报错的文本」的内容），写到标准错误，第一行是 `error <code>`，有 `reason` 时接着写在括号里，再接冒号与服务给的一句话（`message`）；之后是附带字段与可执行的下一步：
 
 ```
-错误 confirmation_mismatch：pi_9B… 自你查看以后内容已变
-  现在的提议：11-02 起改为 3500 CNY（一直延续）
-  重新查看：saveslot pending show pi_9B…
+error confirmation_mismatch (「changed」): 「the item changed since it was read」
+  the item's version now: iv_7e…
 ```
 
 校验类错误的 `details` 逐条一行：明细的 `code`（带 `max` / `min` 的在码后写"至多 N""至少 N"，与 MCP 的文本一致），再写它在哪里——`op`、`path`、`table`、`field`、`line` 中给了的那些（键是 CLI 自己的字样，值放在不可信边界内），带 `valid` 的（判定时发现的 `required_in_gap`）再写那一段区间，写法同读结果里的区间（起点开口、整段时间都照那里写）。slot 数已到上限（`path` 为 `slot` 的 `out_of_bounds`）时另起一行，指向移除空 slot 的命令（`saveslot slot remove`）。例如：
