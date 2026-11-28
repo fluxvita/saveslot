@@ -100,15 +100,15 @@ During the write, saveslot also records the result of one mechanical check, call
 
 **The receipt.** `write` returns `status: "saved"`, the write number of this write `seq: 21`, the ID of this row and its version mark `ver: "v21.0"`, plus the affected derived values (the monthly total becomes 45).
 
-A is connected through MCP (MCP is the general protocol for agents to call external tools, mentioned in chapter 1), so what it actually receives is a piece of text:
+A is connected through MCP (MCP is the general protocol for agents to call external tools, mentioned in chapter 1), so what it actually receives is a piece of text. In this version the agent receives English text (the Chinese edition writes it in Chinese). The untrusted-data lead line and the tags around strings are left out here (see chapter 6, section 7):
 
 ```
 Saved · ledger schema v1 · #21
-expenses r_01JC… inserted: date 2026-11-10 | category Dining | amount 45 CNY (ver=v21.0)
-Derived: monthly_total 2026-11 total — → 45 CNY
+ledger.expenses r_01JC… insert: date 2026-11-10; category Dining; amount 45 CNY (ver=v21.0)
+Derived: ledger.monthly_total (month 2026-11-01): total — → 45 CNY
 ```
 
-The first line is the status, the slot and schema version, and the write number; then, for each operation, its target, intent, the result for each field and the new `ver`; last, the affected derived values. The `…` is only for layout: in the real text the ID and the version mark are complete, because the agent must pass them back unchanged later. The exact wording follows the samples in the implementation; these elements are fixed.
+The first line is the status, the slot and schema version, and the write number; then, for each operation, its target, intent, the result for each field and the new `ver`; last, the affected derived values: one line per derived row, first the derived table and its group key (here the field `month`, whose value is the first day of the month), then each field that changed with its values before and after, "—" where there was no value before. The `…` is only for layout: in the real text the ID and the version mark are complete, because the agent must pass them back unchanged later. The exact wording follows the samples in the implementation; these elements are fixed.
 
 **What `ver` is, and why it exists.** It solves this problem: two agents both read the same row and each edits based on what it read; the later edit must not quietly overwrite the earlier one. It works in three steps:
 
@@ -228,7 +228,7 @@ The version of this row becomes `v33.0`.
 For the conflicting field, saveslot handles it as follows:
 
 1. **A's value is recorded as a "candidate" and does not take effect.** The current value is still the 35 that B wrote. The rule is deterministic: keep the current value, that is, the one committed first.
-2. **A pending item is created**, of type conflict, whose target is "the `amount` field of the taxi row", recording the current value, the candidate value and who wrote each. Conflict items are counted per field: if A had conflicted on two fields, there would be two items, each handled separately.
+2. **A pending item is created**, of type conflict, whose target is "the `amount` field of the taxi row", recording the current value, the candidate value and who wrote each. Conflict items are counted per conflict unit (a field, or a field group the schema declares): if A had conflicted on two fields not in one group, there would be two items, each handled separately.
 3. **The row is marked "disputed"**, and the mark says which item and which field.
 
 > In the complete design, if the candidate has a higher source level (for example, one side is something the user said in person and literally matches, and the other is only the agent's inference), saveslot lets the higher-level one take effect directly by rule. The first version does not do this; it always keeps the current value.
@@ -249,13 +249,14 @@ There is no derived write, because the value in effect did not change. The `ver`
 **The receipt.** What A receives is `status: "pending"`, not an error. The receipt says: `amount` became a candidate, the value in effect is 35, and gives the corresponding item ID and item version `item_ver`. The text A receives is:
 
 ```
-Noted, not in effect · ledger schema v1 · #37
-expenses r_01JD… correction: amount not in effect
-  amount: in the version you gave (#30) it was 30 CNY; now it is 35 CNY (#33, MacBook · Codex), ver=v33.0. Your value 32 CNY is recorded as a candidate, conflict item pi_7C… (version iv_2d…); the value in effect is still 35 CNY
-  To handle: saveslot_resolve pi_7C… (keep_effective / take_candidate / take_previous)
+Recorded, not in effect · ledger schema v1 · #37
+ledger.expenses r_01JD… correct: amount not in effect (see below) (ver=v33.0)
+  amount: at the version you gave (#29) it was 30 CNY; now it is 35 CNY, set by MacBook · Codex (#33), ver=v33.0. Your value 32 CNY did not take effect: it is a candidate in conflict item pi_7C… (version iv_2d…); the value in effect stays 35 CNY.
+  Tell the user this was not done: MacBook · Codex changed the record (#33) after the version you gave; ask what they want before resolving.
+  To resolve: saveslot_resolve pi_7C… (keep_effective / take_candidate / take_previous)
 ```
 
-It states four things in full: what it was in the version A gave, what it is now, who changed it in which write, and in which item A's value is recorded. ("The version A gave" is the version A read, provided A honestly passed back the ver it read.) A is in the middle of a conversation with the user and can tell them the situation right away.
+It states several things in full: what it was at the version A gave (as it stood after write #29), what it is now, who changed it in which write, that A's value did not take effect, and in which item it is recorded. ("The version A gave" is the version A read, provided A honestly passed back the ver it read.) The separate line is an instruction to A: tell the user this was not done and who changed it, and ask them before resolving. A is in the middle of a conversation with the user and can tell them the situation right away.
 
 **Why it is designed this way.** saveslot cannot assume there is a way to notify the user proactively, nor that the user will respond promptly. So a conflict is made a **persistent state**, not a one-time error:
 
