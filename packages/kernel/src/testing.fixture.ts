@@ -52,6 +52,12 @@ export { decodeColumns } from "./request/index.ts";
 // `keymatch@1`, for models that work out the keys written alike on their own.
 export { matchKey } from "./request/keymatch/index.ts";
 export * from "./store/anchor-conformance.fixture.ts";
+// An operation's events and their blocks, as receipts read them (store-pglite receipt-blocks.test).
+export {
+  READABLE_CONTENT,
+  rawContentOf,
+  readableContentOf,
+} from "./store/readable-content.ts";
 export { failPremiseDetectionForTests } from "./write/detect-premises.ts";
 export {
   createKeyCache,
@@ -77,7 +83,6 @@ export { tableShape } from "./write/plan.ts";
 // A write's `premise_affected` with a visibility of its own (tests pin the rows not listed).
 export { premiseAffected } from "./write/premise-affected.ts";
 export { premiseFanInLimitForTests } from "./write/premises.ts";
-// An operation's events and their blocks, as receipts read them (store-pglite receipt-blocks.test).
 export { BLOCKS_OF_EVENTS_SQL } from "./write/reads.ts";
 export { operationEvents } from "./write/receipt.ts";
 export { resolveInTx, revertEntriesOf } from "./write/resolve.ts";

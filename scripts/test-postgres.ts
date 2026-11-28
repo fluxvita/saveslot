@@ -65,6 +65,10 @@ export const EXCLUDED: readonly { readonly file: string; readonly why: string }[
     file: "packages/store-pglite/src/upgrade.test.ts",
     why: "tests PgliteBackend's upgrade at open (its `formatUpgrade` option, the DB Worker's `upgrade` request, the ANALYZE after it, its events and error class). The upgrade on PostgreSQL, under the tenant's lock and the ownership epoch, is tested in packages/store-postgres/src/upgrade.test.ts.",
   },
+  {
+    file: "packages/store-pglite/src/size-budget.slow.test.ts",
+    why: "bounds the disk a local home takes per row (#59), measured on PGlite: on PostgreSQL the size depends on the server's own settings and on what else shares the database, and the server's operator sizes its disk.",
+  },
 ];
 
 if (import.meta.main) {
