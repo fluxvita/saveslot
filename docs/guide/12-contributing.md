@@ -239,7 +239,7 @@ The implementation is divided into steps; each step adds to the one before, and 
 | P6 Wrap-up | Completing the command line (including the data-size warning of `saveslot doctor`), start at boot, tuning the tool descriptions, `instructions`, the suggested text and the various values according to the eval results | — |
 | P4b (not part of the first version) | Extraction jobs: the full flow for when a schema change needs re-extraction from the original words | The second half of schema changes |
 
-What is provided and what is not yet is as [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md), section 7, says. 0.2.0 provides local mode and server mode both; what it mainly lacks is privacy deletion and the restore flow from P3 and migrations that need a physical table rebuilt from P4, the same in both modes.
+What is provided and what is not yet is as [`../spec/07-scope-v1.md`](../spec/07-scope-v1.md), section 7, says. 0.2.0 provides local mode and server mode both; what it mainly lacks is privacy deletion from P3 and migrations that need a physical table rebuilt from P4, the same in both modes; the restore flow from P3 is missing in local mode only, and server mode has `saveslot server restore`.
 
 The restore flow is placed in P3 rather than P5: the acceptance tests of deletion need it, and local mode needs it too.
 
