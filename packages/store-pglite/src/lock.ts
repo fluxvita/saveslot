@@ -13,8 +13,20 @@
 
 import { closeSync, constants, openSync } from "node:fs";
 import { join } from "node:path";
-import fsx from "fs-native-extensions";
+import type fsxModule from "fs-native-extensions";
 import { PgliteStoreError } from "./errors.ts";
+
+let addon: Promise<typeof fsxModule> | undefined;
+
+/**
+ * The addon, loaded when a lock is first taken rather than when this module is: it has prebuilds for
+ * glibc only, and a command that takes no lock (`--version`, `--help`, a server profile's) runs on a
+ * platform without one, such as musl.
+ */
+function lockAddon(): Promise<typeof fsxModule> {
+  addon ??= import("fs-native-extensions").then((m) => m.default);
+  return addon;
+}
 
 export interface DirLockHandle {
   /**
@@ -36,6 +48,7 @@ export const LOCK_FILE = "saveslot.lock";
 export const osFileLock: DirLock = {
   name: "os-file-lock",
   async acquire(dir) {
+    const fsx = await lockAddon();
     const path = join(dir, LOCK_FILE);
     const fd = openSync(path, constants.O_RDWR | constants.O_CREAT, 0o600);
     let locked: boolean;
