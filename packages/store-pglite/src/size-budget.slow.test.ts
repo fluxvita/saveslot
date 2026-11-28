@@ -5,6 +5,8 @@
 // about 5.9 KB a row (#59, 33,800 rows of the same shape); the bound leaves a tenth over that.
 // Lower it when a change makes the store smaller. The WAL is not counted: it is bounded on its own
 // (`max_wal_size`, durability.ts).
+//
+// About 50 s: a `.slow.test.ts`, run by `test:prop` (the property tests' job), not by `test:unit`.
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
