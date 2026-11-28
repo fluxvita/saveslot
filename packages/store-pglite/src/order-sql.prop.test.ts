@@ -1,4 +1,5 @@
-// `query`'s order in SQL against `cmpKeys` (04-contract "默认排序", §15; kernel read/order-sql.ts):
+// `query`'s order in SQL against `cmpKeys` (04-contract «`query`», the default order; §15; kernel
+// read/order-sql.ts):
 // random rows of keys of every type a query orders by, nulls among them, put in the database as
 // a table would hold them, then
 //

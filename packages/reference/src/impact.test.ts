@@ -89,10 +89,10 @@ describe("high impact ① at a value ↔ no value boundary", () => {
 });
 
 it("an optional field the filling write did not give is empty, not a hole: no change point", () => {
-  // 05-time «无值区间»: 可选字段不带就是空. #21 revokes [11-01, 11-03); #31 fills it with f2 only;
-  // #41 writes 1 from 11-01 on. Undoing #41 writes back 9 there and no value after 11-03. f3 is
-  // empty on both sides of 11-03 (it appears in the log, on other days): no change point of f3
-  // is erased, so the undo is not high impact.
+  // 05-time «无值区间»: "An optional field that is not carried is empty." #21 revokes [11-01, 11-03);
+  // #31 fills it with f2 only; #41 writes 1 from 11-01 on. Undoing #41 writes back 9 there and no
+  // value after 11-03. f3 is empty on both sides of 11-03 (it appears in the log, on other days):
+  // no change point of f3 is erased, so the undo is not high impact.
   const ops: Op[] = [
     {
       ...put(10, 0, { f2: "1" }, "10-01", "open"),

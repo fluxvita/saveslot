@@ -91,8 +91,9 @@ function modelOf(items: readonly (readonly Segment[])[]) {
 
 /**
  * Fixed samples, every run (counted among the runs): a hit, a miss, an `na`; and a corroboration
- * of a value changed away and back again, which still counts (01-objects «出处项»: 佐证证明的是这个
- * 值). Each reached by construction, not by chance.
+ * of a value changed away and back again, which still counts (01-objects «出处项»: "corroboration
+ * proves this value, not that it did not change during that time"). Each reached by construction,
+ * not by chance.
  */
 const FIXED: [Step[]][] = [
   [[{ t: "create", value: 0, evidence: [{ who: "user", names: true }] }]],
@@ -142,8 +143,9 @@ describe("detail: detailed, a field's literal result and level, against a model"
         // The model: each row's value, version, and the evidence of the items its value rests on.
         // `items`: the evidence of the write giving the value now; `corroborations`: every
         // corroboration with its value. A corroboration counts while the value is its value again
-        // (not reverted): the rule `delta/sources.ts` gives the 出处项, as the marks of premises
-        // take them; the spec (01-objects «出处项») says "当前仍作数的佐证项" and no more.
+        // (not reverted): the rule `delta/sources.ts` gives the origin items, as the marks of
+        // premises take them; the spec (01-objects «出处项») says "the corroboration items that
+        // still count" and no more.
         const rows: {
           row: string;
           ver: string;

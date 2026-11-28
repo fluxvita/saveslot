@@ -1329,7 +1329,8 @@ describe.each(both)("%s table", (_, schema, state) => {
     // writes in between: nothing is kept in effect.
     // Unless the cancellation keeps an item superseded, which a write made while a candidate was
     // taken out by any pending deletion can cause, an earlier one in the log too, cancelled since:
-    // "结果只取决于被删集合"只在宽限期内没有写入、撤回没有留下保持生效与保持已被取代时成立
+    // "the result depends only on the deleted set" holds only when there were no writes during
+    // the grace period and cancelling left no kept-in-effect or kept-superseded cases
     // (03-deletion «撤回与宽限期»). Such an order is not compared, and counted (`cancelKeeps`); the
     // fixed case below holds one.
     // Measured share of hits: about 0.66 (state) and 0.64 (event).

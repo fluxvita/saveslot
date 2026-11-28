@@ -2,7 +2,7 @@
 // 范围内解析», «不存在与不可见报同一个错误»): a slot, table or field out of its range is answered as
 // one that does not exist. Each request is sent to a tenant with slots out of range and to one
 // without them; the answers must be the same, key for key. A table in range is written as by any
-// other credential (03-data-model/04-write-and-read «可见范围»: 写入).
+// other credential (03-data-model/04-write-and-read «可见范围 · 写入»).
 
 import {
   catalog,

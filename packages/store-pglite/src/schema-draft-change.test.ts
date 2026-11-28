@@ -598,7 +598,7 @@ describe("a draft whose every change is automatic", () => {
       });
       const q = await query(s.store, ctx(), { table: "budgets" });
       expect(q.rows.map((x) => x.values)).toEqual([{ label: "food" }]);
-      // Version 1 has no such table: named in it, the name is not there (07 "旧版写入").
+      // Version 1 has no such table: named in it, the name is not there (07, old-version writes).
       await expect(
         write(s.store, ctx(), {
           sv: 1,

@@ -329,7 +329,7 @@ it("each case starts from the tables as they were written: every table, row for 
   expect(readBufferOf(s.store).size).toBe(0);
 });
 
-describe('the profile of the tables written above (`catalog`, 04-contract §10 "概况")', () => {
+describe("the profile of the tables written above (04-contract §10 «`catalog`»)", () => {
   it("gives the rows and the business time range of each kind of table, in the form the table keeps it", async () => {
     const r = await catalog(s.store, ctx(), {
       level: "table",

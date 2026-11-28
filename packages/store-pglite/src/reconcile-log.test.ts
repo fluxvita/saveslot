@@ -1,8 +1,8 @@
-// `log.reconcile` on either backend (04-contract-types §8.4; 02-architecture §7 "对拍", §8 the "对拍"
-// column, §11 K12): the log replayed from an empty storage into a scratch one equals the live
-// tables, a restored tenant's and a derived table's too; a table changed without `apply` is found,
-// named by IDs only; batches, a write between batches and a write during the comparison change
-// nothing of that. Fictional IDs.
+// `log.reconcile` on either backend (04-contract-types §8.4; 02-architecture §7 replay comparison,
+// §8 the "Replay comparison" column, §11 K12): the log replayed from an empty storage into a
+// scratch one equals the live tables, a restored tenant's and a derived table's too; a table
+// changed without `apply` is found, named by IDs only; batches, a write between batches and a write
+// during the comparison change nothing of that. Fictional IDs.
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

@@ -462,16 +462,18 @@ async function runScenario(first: string, steps: readonly Step[], seen: Record<s
       // Every open candidate: which of them are in the item on this unit is the reference's to say
       // (its K, by its own record of which conflicts met a revoke), not the test's. Given only the
       // latest on existence, the reference closed that one and kept the item's others pending,
-      // where a decision closes every candidate of its item (01-objects «take_candidate»: 其余候选
-      // 不生效; «处理之后事项不重开»: 没被采纳的候选不再出现在任何未决事项里).
+      // where a decision closes every candidate of its item (01-objects «take_candidate»: "The
+      // other candidates do not take effect"; «处理之后事项不重开»: "a candidate that was not taken
+      // appears in no open item any more").
       const open = evaluateLog(TIMELESS, log).final.items.filter(
         (x) => x.status === "candidate" && !x.closed,
       );
       // The reference models no supersession, so the test supplies it: a write whose item a write
-      // that had read it overwrote is no longer a candidate in any item (01-objects «不过期»:
-      // 读过该事项的当前版本 → 已被取代; a closed item takes no decision), and the decision on a
-      // later item does not close it. Left to the reference, its K would put it in this item's
-      // conflict and close it with the rest, while the kernel keeps it in the superseded item.
+      // that had read it overwrote is no longer a candidate in any item (01-objects «不过期»: "Has
+      // read the current version of the item" → superseded; a closed item takes no decision), and
+      // the decision on a later item does not close it. Left to the reference, its K would put it
+      // in this item's conflict and close it with the rest, while the kernel keeps it in the
+      // superseded item.
       const gone = new Set(
         (await liveItems(["superseded"]))
           .flatMap((x) => x.writes)

@@ -694,7 +694,7 @@ describe("input marks of derived rows", () => {
   );
 });
 
-describe('the profile of a derived table (`catalog`, 04-contract §10 "概况")', () => {
+describe("the profile of a derived table (04-contract §10 «`catalog`»)", () => {
   it(
     "its rows are the derived table's own rows, as `query` counts them; it has no business time",
     async () => {

@@ -1,5 +1,5 @@
 // The names of the printed text against the physical tables (11-restricted-sql.md «执行的文本里没有留给
-// 数据库解析的名字»; the rewrite of 07 "改写"). The text `sql` prints uses the logical names of
+// 数据库解析的名字»; the rewrite of step 7, «改写»). The text `sql` prints uses the logical names of
 // tables and fields, `"t<n>"."<field>"`. On a physical table that is not a column: PostgreSQL reads
 // `"t1"."to_json"` as the function `to_json("t1")` on the whole row, with the table's internal
 // columns in it. So a table reference is rewritten to a subquery that has the logical names as its

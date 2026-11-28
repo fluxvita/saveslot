@@ -1580,7 +1580,7 @@ describe("ver: the version a receipt gives is one a later write may bring back (
       // ① The undo's receipt gives its own operation as the version.
       expect(verAt(u)).toBe(`v${u.seq}.0`);
       // ② It closes the fill's cells and opens one: the field defining "has a value" (b, required)
-      // gets a cell without a value where the entity has none (02-architecture §8 版本表).
+      // gets a cell without a value where the entity has none (02-architecture §8 «版本表»).
       expect(await cellsOf(u.seq)).toEqual({
         opened: [{ field_id: "f2", f: "2026-11-01", t: "2026-11-03" }],
         closed: [
@@ -1607,7 +1607,7 @@ describe("ver: the version a receipt gives is one a later write may bring back (
   );
 });
 
-describe("ver: a new version when a cell changes, its value or where it comes from (04-contract §2 `ver`; 02-architecture §8 版本表)", () => {
+describe("ver: a new version when a cell changes, its value or where it comes from (04-contract §2 `ver`; 02-architecture §8 «版本表»)", () => {
   // Each step below takes effect where what is shown is already what it writes. Whether it gives a
   // new version depends only on the version table: a revoke inside a span already revoked gives
   // the existence cells there a new source (this revoke); a restore on a table without time adds

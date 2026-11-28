@@ -1,5 +1,5 @@
 // apply of a request with several ops on one entity (09-event-format §4.2, §5.7; 02-architecture
-// §8 版本表): the version table keeps one version per cell and operation, so a later op of the
+// §8 «版本表»): the version table keeps one version per cell and operation, so a later op of the
 // operation overwrites an earlier op's cell in place; what is left agrees with judge. The
 // comparison's scenarios have one op per request; this is the case they do not reach.
 

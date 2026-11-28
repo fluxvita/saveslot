@@ -1202,9 +1202,10 @@ describe.each(both)("%s table", (_, schema: TableSchema, isState) => {
   });
 
   // A confirmed include_later undo writes back "no value" on a field the first undo of the same
-  // write already left without one: same value, a new giver (02-architecture §8 版本表; 04-contract
-  // §2 `ver`: 值没变而这一格改由本次操作给出). The confirmation is a version; a later write naming
-  // the first undo's version names one that is no longer current.
+  // write already left without one: same value, a new giver (02-architecture §8 «版本表»;
+  // 04-contract §2 `ver`: "the value did not change but the cell is now given by this
+  // operation"). The confirmation is a version; a later write naming the first undo's version
+  // names one that is no longer current.
   it.runIf(!isState)("a confirmed undo re-giving a no-value cell gives a version", async () => {
     const ops = [
       {

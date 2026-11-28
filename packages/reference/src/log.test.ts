@@ -4681,7 +4681,7 @@ describe("a deletion carried out at expiry (03-deletion «到期物理删除»; 
   });
 });
 
-describe("保持已被取代 ②: a write's change judged as it was when written", () => {
+describe("kept superseded ②: a write's change judged as it was when written", () => {
   // Found by the property "a cancelled deletion leaves no trace". #21 (f3 = a, S3) is a
   // candidate; pi_30 deletes S3; #40 writes f2 in its grace period (it changes f2, not f3); pi_30
   // is cancelled at #50 and keeps nothing superseded. A later deletion A = {S1, S3} cancelled
