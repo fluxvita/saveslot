@@ -1,0 +1,21 @@
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideas are discussed here before they become issues. Start from the problem: a proposal is easier to weigh when we know what it is for.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do, and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+      description: How saveslot could help. Rough is fine.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you have tried or considered

@@ -1,0 +1,33 @@
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ask anything about using saveslot. Search first: the answer may be here already, or in the [guide](https://github.com/fluxvita/saveslot/tree/main/docs/guide) and the [integration guide](https://github.com/fluxvita/saveslot/blob/main/docs/integration/README.md).
+        Something that does not work as documented is a [bug report](https://github.com/fluxvita/saveslot/issues/new/choose); a security issue is never posted in public ([SECURITY.md](https://github.com/fluxvita/saveslot/blob/main/SECURITY.md)).
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: What `saveslot --version` prints.
+      placeholder: "0.2.0"
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - Local mode
+        - Server mode, self-hosted
+        - Hosted service
+        - Not sure
+  - type: input
+    id: host
+    attributes:
+      label: Agent or program
+      description: What talks to saveslot, for example the agent host or your own program over HTTP.
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: What you are trying to do, what you did, and what you saw. Leave out tokens, passwords and personal data.
+    validations:
+      required: true
