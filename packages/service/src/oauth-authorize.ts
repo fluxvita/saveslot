@@ -62,6 +62,8 @@ export interface PageRefusal {
   readonly reason: "client" | "redirect_uri";
   /** The client's problem, when it was the client document. */
   readonly client?: ClientError["code"];
+  /** With `client`: the status the client's host answered the fetch with, when it answered. */
+  readonly clientStatus?: number;
 }
 
 /** A request refused back to the client (RFC 6749 §4.1.2.1 codes; RFC 8707 `invalid_target`). */
@@ -155,7 +157,14 @@ export async function checkAuthorizationRequest(o: {
     try {
       client = await o.resolveClient(clientId);
     } catch (e) {
-      if (e instanceof ClientError) return { kind: "page", reason: "client", client: e.code };
+      if (e instanceof ClientError) {
+        return {
+          kind: "page",
+          reason: "client",
+          client: e.code,
+          ...(e.status !== undefined ? { clientStatus: e.status } : {}),
+        };
+      }
       throw e;
     }
   }

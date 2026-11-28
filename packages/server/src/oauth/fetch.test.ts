@@ -26,6 +26,7 @@ interface Seen {
   host?: string;
   servername?: string;
   connectedTo?: string;
+  headers?: Record<string, string>;
 }
 
 /** An HTTPS request that answers `status`, `headers` and `body`, and records where it connected. */
@@ -36,6 +37,7 @@ function fakeRequest(
   return ((options: Record<string, unknown>, cb: (res: unknown) => void) => {
     const req = new EventEmitter() as EventEmitter & { end(): void; destroy(): void };
     seen.host = options["host"] as string;
+    seen.headers = { ...(options["headers"] as Record<string, string>) };
     const servername = options["servername"] as string | undefined;
     if (servername !== undefined) seen.servername = servername;
     req.destroy = () => {};
@@ -133,6 +135,8 @@ describe("client fetcher", () => {
       host: "client.example",
       servername: "client.example",
       connectedTo: "93.184.215.14",
+      // saveslot by name, with no contact, when the caller names no version.
+      headers: { accept: "application/json", "user-agent": "saveslot" },
     });
     expect(resolve.calls).toBe(1);
     expect(doc).toEqual({ body: new Uint8Array(Buffer.from("{}")), cacheControl: "max-age=60" });
@@ -201,6 +205,43 @@ describe("client fetcher", () => {
       ).toBe("fetch_failed");
     },
   );
+
+  it("the User-Agent the server gives is the one sent", async () => {
+    const seen: Seen = {};
+    await clientFetcher({
+      userAgent: "saveslot/9.9.9",
+      resolve: resolver(["93.184.215.14"]),
+      request: fakeRequest(seen),
+    })(URL_);
+    expect(seen.headers?.["user-agent"]).toBe("saveslot/9.9.9");
+  });
+
+  it.each([403, 404, 500, 302])(
+    "answered %i: the status rides on the error, for the request's log",
+    async (status) => {
+      const e = await clientFetcher({
+        resolve: resolver(["93.184.215.14"]),
+        request: fakeRequest({}, { status }),
+      })(URL_).then(
+        () => undefined,
+        (x: unknown) => x,
+      );
+      expect(e).toBeInstanceOf(ClientError);
+      expect(e).toMatchObject({ code: "fetch_failed", status });
+    },
+  );
+
+  it("no answer at all (the host could not be resolved): no status", async () => {
+    const e = await clientFetcher({
+      resolve: async () => [],
+      request: fakeRequest({}),
+    })(URL_).then(
+      () => undefined,
+      (x: unknown) => x,
+    );
+    expect(e).toMatchObject({ code: "fetch_failed" });
+    expect((e as ClientError).status).toBeUndefined();
+  });
 
   it("one byte past the limit: document_too_large", async () => {
     const big = Buffer.alloc(CLIENT_DOCUMENT_MAX_BYTES + 1, 0x20);

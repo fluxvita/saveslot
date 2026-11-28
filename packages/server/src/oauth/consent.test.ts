@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   CLIENT_FETCH_BOUNDS,
+  ClientError,
   type ClientFetchBounds,
   ClientFetchLimits,
   type IdentityProvider,
@@ -82,6 +83,10 @@ let base: string;
 let clientName = "Example <Agent>";
 /** The redirect URIs the client document lists. */
 let redirects = [REDIRECT];
+/** In place of the client document's fetch, when a case sets it: what it answers or throws. */
+let fetched: (() => Promise<{ body: Uint8Array }>) | undefined;
+/** The request log lines of the OAuth routes. */
+const logged: Record<string, string | number>[] = [];
 let names = 0;
 /** A connection name not used before in this file's tenant. */
 const freshName = (what: string) => `${what} ${names++}`;
@@ -94,11 +99,14 @@ beforeAll(async () => {
     user: USER,
     now: NOW,
     external: EXT,
-    fetchClient: async () => ({
-      body: new TextEncoder().encode(
-        JSON.stringify({ client_id: ID, client_name: clientName, redirect_uris: redirects }),
-      ),
-    }),
+    fetchClient: async () =>
+      fetched !== undefined
+        ? fetched()
+        : {
+            body: new TextEncoder().encode(
+              JSON.stringify({ client_id: ID, client_name: clientName, redirect_uris: redirects }),
+            ),
+          },
   });
   // The CLI's code is redeemed from the login it was consented under.
   bed.logins.set("session-1", USER);
@@ -109,7 +117,7 @@ beforeAll(async () => {
       identity,
       remote: () => "127.0.0.1",
       now: () => NOW,
-      log: () => {},
+      log: (f) => logged.push({ ...f }),
       warn: () => {},
     }).then((handled) => {
       if (!handled) {
@@ -128,6 +136,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   loginsBegun = [];
+  fetched = undefined;
+  logged.length = 0;
   clientName = "Example <Agent>";
   redirects = [REDIRECT];
   await bed.control.write((tx) => tx.exec("DELETE FROM oauth_clients"));
@@ -244,6 +254,121 @@ describe("fetching the client document bounded: its own page, not the client's e
       } finally {
         bounds = undefined;
       }
+    },
+    T,
+  );
+});
+
+describe("a client refused: why, in the request's log line; the page as before", () => {
+  const doc = (o: Record<string, unknown>) => async () => ({
+    body: new TextEncoder().encode(
+      JSON.stringify({ client_id: ID, redirect_uris: [REDIRECT], ...o }),
+    ),
+  });
+  const throws =
+    (code: ConstructorParameters<typeof ClientError>[0], status?: number) => async () => {
+      throw new ClientError(code, "client document: refused", status);
+    };
+  it.each<[string, () => Promise<{ body: Uint8Array }>, Record<string, string | number>]>([
+    [
+      "the host answered 403",
+      throws("fetch_failed", 403),
+      { client_problem: "fetch_failed", client_status: 403 },
+    ],
+    ["no answer", throws("fetch_failed"), { client_problem: "fetch_failed" }],
+    [
+      "an address that is not public",
+      throws("address_refused"),
+      { client_problem: "address_refused" },
+    ],
+    ["too large", throws("document_too_large"), { client_problem: "document_too_large" }],
+    [
+      "not JSON",
+      async () => ({ body: new TextEncoder().encode("<html>a challenge</html>") }),
+      { client_problem: "document_malformed" },
+    ],
+    [
+      "another client_id",
+      doc({ client_id: "https://other.example/c.json" }),
+      { client_problem: "client_id_mismatch" },
+    ],
+    ["no redirect URIs", doc({ redirect_uris: [] }), { client_problem: "redirect_uris_missing" }],
+    [
+      "a redirect URI not usable",
+      doc({ redirect_uris: ["not a uri"] }),
+      { client_problem: "redirect_uri_malformed" },
+    ],
+    [
+      "a confidential client",
+      doc({ token_endpoint_auth_method: "client_secret_basic" }),
+      { client_problem: "auth_method_unsupported" },
+    ],
+    [
+      "no authorization code",
+      doc({ grant_types: ["client_credentials"] }),
+      { client_problem: "grant_type_unsupported" },
+    ],
+  ])(
+    "%s",
+    async (_, answer, why) => {
+      fetched = answer;
+      const r = await get(query(), "s-user");
+      expect(r.status).toBe(400);
+      const page = await r.text();
+      // The page the user sees says what it always said, and nothing of why.
+      expect(entities(page)).toContain("This app's client ID isn't one saveslot can use.");
+      expect(page).not.toContain(String(why["client_problem"]));
+      const line = logged.at(-1);
+      expect(line).toMatchObject({ method: "GET", route: "oauth.authorize", status: 400, ...why });
+      if (why["client_status"] === undefined) expect(line).not.toHaveProperty("client_status");
+    },
+    T,
+  );
+
+  it(
+    "a client ID that is not a document URL: its code, nothing fetched",
+    async () => {
+      fetched = async () => {
+        throw new Error("not fetched");
+      };
+      expect(
+        (await get(query({ client_id: "http://client.example/c.json" }), "s-user")).status,
+      ).toBe(400);
+      expect(logged.at(-1)).toMatchObject({
+        route: "oauth.authorize",
+        client_problem: "client_id_malformed",
+      });
+    },
+    T,
+  );
+
+  it.each<[string, Partial<ClientFetchBounds>, number, string]>([
+    ["past the source's fetches", { perSource: 0 }, 429, "fetch_limited"],
+    ["fetches under way at their bound", { concurrent: 0 }, 503, "fetch_busy"],
+  ])(
+    "%s: its code with its own status",
+    async (_, b, status, problem) => {
+      bounds = { ...CLIENT_FETCH_BOUNDS, ...b };
+      try {
+        expect((await get(query(), "s-user")).status).toBe(status);
+        expect(logged.at(-1)).toMatchObject({
+          route: "oauth.authorize",
+          status,
+          client_problem: problem,
+        });
+      } finally {
+        bounds = undefined;
+      }
+    },
+    T,
+  );
+
+  it(
+    "a client that passes: no client_problem in the line",
+    async () => {
+      await get(query(), "s-user");
+      expect(logged.at(-1)).toMatchObject({ route: "oauth.authorize" });
+      expect(logged.at(-1)).not.toHaveProperty("client_problem");
     },
     T,
   );

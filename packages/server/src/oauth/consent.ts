@@ -375,6 +375,8 @@ export async function handleAuthorize(
   req: IncomingMessage,
   res: ServerResponse,
   ctx: ConsentContext,
+  /** Adds to this request's log line (the route's): why its client was refused, when it was. */
+  note: (fields: Readonly<Record<string, string | number>>) => void = () => {},
 ): Promise<number> {
   const t = oauthTexts(langOf(req.headers["accept-language"]));
   if (req.method !== "GET" && req.method !== "POST") {
@@ -396,6 +398,14 @@ export async function handleAuthorize(
   });
   if ("kind" in checked) {
     if (checked.kind === "redirect") return redirect(res, checked.to);
+    // Why, for the operator: the code, and the status the client's host answered the fetch with.
+    // Not on the page, and nothing of the document.
+    if (checked.client !== undefined) {
+      note({
+        client_problem: checked.client,
+        ...(checked.clientStatus !== undefined ? { client_status: checked.clientStatus } : {}),
+      });
+    }
     // Bounded fetches: not the client's fault, so not its error page.
     if (checked.client === "fetch_limited") return errorPage(res, t, 429, t.errors.clientLimited);
     if (checked.client === "fetch_busy") return errorPage(res, t, 503, t.errors.clientBusy);

@@ -160,6 +160,8 @@ export async function handleOAuth(
   ctx: OAuthRoutesContext,
 ): Promise<boolean> {
   const started = Date.now();
+  /** What a handler adds to this request's log line (the authorization page: why its client). */
+  const extra: Record<string, string | number> = {};
   // The path as parsed, as `/v1/` and `/mcp` are matched: an absolute-form target is taken the
   // same way.
   const path = new URL(req.url ?? "/", "http://local").pathname;
@@ -204,7 +206,7 @@ export async function handleOAuth(
     case OAUTH_PATHS.authorize:
       name = "oauth.authorize";
       status = await pageOrError(res, ctx, "oauth.authorize_failed", () =>
-        handleAuthorize(req, res, ctx),
+        handleAuthorize(req, res, ctx, (f) => Object.assign(extra, f)),
       );
       break;
     case OAUTH_PATHS.deviceVerify:
@@ -216,7 +218,7 @@ export async function handleOAuth(
     default:
       return false;
   }
-  ctx.log({ method: req.method ?? "", route: name, status, ms: Date.now() - started });
+  ctx.log({ method: req.method ?? "", route: name, status, ms: Date.now() - started, ...extra });
   return true;
 }
 

@@ -88,20 +88,30 @@ const systemResolve: Resolve = (host) =>
     ),
   );
 
-const fail = (code: "fetch_failed" | "address_refused" | "document_too_large", what: string) =>
-  new ClientError(code, `client document: ${what}`);
+const fail = (
+  code: "fetch_failed" | "address_refused" | "document_too_large",
+  what: string,
+  status?: number,
+) => new ClientError(code, `client document: ${what}`, status);
+
+/** The `User-Agent` a fetch sends when none is given: saveslot, by name, with no contact. */
+export const CLIENT_FETCH_USER_AGENT = "saveslot";
 
 /**
- * The client fetcher of the server mode. The options are for tests: a resolver that answers what
- * the test says, and the HTTPS request function, so that no test goes out to the network.
+ * The client fetcher of the server mode. `userAgent` names saveslot to the client's host
+ * (`saveslot/<version>` from the server; a host that treats a request without one as a bot more
+ * readily can allow it by rule). The other options are for tests: a resolver that answers what the
+ * test says, and the HTTPS request function, so that no test goes out to the network.
  */
 export function clientFetcher(
   o: {
+    readonly userAgent?: string;
     readonly resolve?: Resolve;
     readonly request?: typeof httpsRequest;
     readonly timeoutMs?: number;
   } = {},
 ): ClientFetcher {
+  const userAgent = o.userAgent ?? CLIENT_FETCH_USER_AGENT;
   const resolve = o.resolve ?? systemResolve;
   const request = o.request ?? httpsRequest;
   const timeoutMs = o.timeoutMs ?? CLIENT_FETCH_TIMEOUT_MS;
@@ -138,7 +148,7 @@ export function clientFetcher(
           port: url.port === "" ? 443 : Number(url.port),
           path: `${url.pathname}${url.search}`,
           method: "GET",
-          headers: { accept: "application/json" },
+          headers: { accept: "application/json", "user-agent": userAgent },
           // The connection goes to the address checked above, whatever DNS says now.
           lookup: (_name, options, cb) => {
             if ((options as { all?: boolean }).all === true) {
@@ -153,7 +163,13 @@ export function clientFetcher(
         (res) => {
           if (res.statusCode !== 200) {
             res.resume();
-            reject(fail("fetch_failed", `answered ${res.statusCode} (redirects are not followed)`));
+            reject(
+              fail(
+                "fetch_failed",
+                `answered ${res.statusCode} (redirects are not followed)`,
+                res.statusCode,
+              ),
+            );
             return;
           }
           const chunks: Buffer[] = [];

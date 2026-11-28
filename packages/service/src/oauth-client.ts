@@ -67,9 +67,12 @@ export type ClientProblem =
 export class ClientError extends Error {
   override readonly name = "ClientError";
   readonly code: ClientProblem;
-  constructor(code: ClientProblem, message: string) {
+  /** With `fetch_failed`: the HTTP status the client's host answered with, when it answered. */
+  readonly status?: number;
+  constructor(code: ClientProblem, message: string, status?: number) {
     super(message);
     this.code = code;
+    if (status !== undefined) this.status = status;
   }
 }
 

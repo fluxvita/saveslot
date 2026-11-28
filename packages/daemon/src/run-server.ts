@@ -395,7 +395,7 @@ export async function runServer(o: RunServerOptions): Promise<RunningServer> {
       control,
       pool: { use: (tenant, fn) => lentPool.use(tenant, fn) },
       identity,
-      fetchClient: o.fetchClient ?? clientFetcher(),
+      fetchClient: o.fetchClient ?? clientFetcher({ userAgent: `saveslot/${o.version}` }),
       external: config.publicUrl,
       windows,
     };
