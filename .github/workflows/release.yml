@@ -82,7 +82,7 @@ jobs:
           git push origin --tags
       # `next` follows a release: `changeset publish` moves `latest` only, so `next` would stay on
       # the last prerelease and `@next` would be older than `@latest` (RELEASING.md).
-      - if: steps.publish.outcome == 'success'
+      - if: ${{ !cancelled() && steps.publish.outcome == 'success' }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
@@ -93,7 +93,7 @@ jobs:
           done
       # The GitHub Release of the tag, its notes gathered from the published packages' changelogs:
       # each entry once, without the lines that only bump a dependency.
-      - if: steps.publish.outcome == 'success'
+      - if: ${{ !cancelled() && steps.publish.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -106,13 +106,19 @@ jobs:
           done |
             grep -v -e '^### ' -e '^- Updated dependencies' -e '^ *- @fluxvita/' \
               -e '^No changes in this release' |
-            awk 'NF == 0 { next } !seen[$0]++' > "$RUNNER_TEMP/notes.md"
+            awk '
+              function flush() { sub(/\n+$/, "", block); if (key != "" && !seen[key]++) printf "%s\n\n", block; key = ""; block = "" }
+              /^- [0-9a-f]+: / { flush(); key = $0; block = $0; next }
+              /^- / { flush(); next }
+              key != "" { block = block "\n" $0 }
+              END { flush() }
+            ' > "$RUNNER_TEMP/notes.md"
           gh release create "v${version}" --verify-tag --title "v${version}" \
             --notes-file "$RUNNER_TEMP/notes.md" --latest
 
   image:
     needs: publish
-    if: needs.publish.outputs.published == 'true'
+    if: ${{ !cancelled() && needs.publish.outputs.published == 'true' }}
     permissions:
       contents: read
       packages: write # the image on ghcr.io
