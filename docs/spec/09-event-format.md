@@ -1543,7 +1543,7 @@ The judgement is made online, once, at the time: comparing "the value now" with 
 Used for the `checksum` of `write.derived` and the `tables/<table ID>` of `schema.switched`.
 
 - **One derived row**: arrange the result columns, ordered by the lexicographic order of the field IDs, into the object `{<field ID>: <value>}` (the values follow §1.3), and take the SHA-256 of the JCS bytes.
-- **One table**: computed over the final logical rows of the table of the new version, taking the value after the backfill when there is a constant backfill. Write each logical row as `{"id": <row or entity ID>, "valid": <interval, only for a state table>, "fields": {<field ID>: <value>}}`, and sort by `id`, then by `valid.from`; take the JCS bytes of each row and join them with a newline (`0x0A`); take the SHA-256 of the whole. Revoked rows are not counted.
+- **One table**: computed over the final logical rows of the table of the new version, taking the value after the backfill when there is a constant backfill. Write each logical row as `{"id": <row or entity ID>, "valid": <interval, only for a state table>, "fields": {<field ID>: <value>}}`: `fields` lists every field of the table in the new version, `null` for one without a value; `valid` is written as §1.2 writes an interval, without `to` when it is open. Sort by `id`, then by `valid.from`; take the JCS bytes of each row and join them with a newline (`0x0A`); take the SHA-256 of the whole, written as a hash (§1.2). Revoked rows are not counted.
 
 ---
 

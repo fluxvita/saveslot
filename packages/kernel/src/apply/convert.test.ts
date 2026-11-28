@@ -17,6 +17,7 @@ import {
   type ResultIn,
   type TableMap,
   tableMapOf,
+  tightenedOf,
 } from "./convert.ts";
 
 const M: CompiledUnit = { code: "m", dimension: "length", to_base: "1" };
@@ -112,6 +113,34 @@ describe("tableMapOf", () => {
       expect(Object.fromEntries([...t.fields].map(([k, m]) => [k, m.op]))).toEqual(c.fields);
       expect(t.added).toEqual(c.added ?? []);
     });
+
+  it("a kept field tightened by this switch carries its constant; one an earlier version filled does not", () => {
+    const from = table(dist(M, 2), note);
+    const to = table(dist(M, 2, { min: "5", backfill: { const: { value: "5", unit: "m" } } }), {
+      ...note,
+      required: true,
+      backfill: { const: "none" },
+    } as CompiledBaseField);
+    // The switch tightens f1 only: f2's constant came with an earlier version.
+    const t = tableMapOf(
+      from,
+      to,
+      tightenedOf(
+        [
+          { change: "tighten_constraint", target: { table: "t1", field: "f1" } },
+          { change: "tighten_constraint", target: { table: "t9", field: "f2" } },
+          { change: "rename_field", target: { table: "t1", field: "f2" } },
+        ],
+        "t1",
+      ),
+    );
+    expect(t.tightened).toEqual([
+      { field: fid("f1"), backfill: { const: { value: "5", unit: "m" } } },
+    ]);
+    expect(t.added).toEqual([]);
+    // Without the changes, nothing is filled.
+    expect(tableMapOf(from, to).tightened).toEqual([]);
+  });
 
   it("a convert carries both sides' unit and precision", () => {
     const t = tableMapOf(table(dist(M, 2)), table(dist(KM, 3)));

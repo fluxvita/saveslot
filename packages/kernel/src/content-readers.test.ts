@@ -160,8 +160,16 @@ const ALLOWED: Record<string, { readonly why: string; readonly readers: Record<s
         readDeletion: 4,
         readCancellation: 5,
         lastGiven: 1,
-        readRow: 3,
+        readRow: 1,
       },
+    },
+    "apply/row-items.ts": {
+      why: "apply: a row's items in effect and the content that gives them, as settling them must see it (moved from readRow); a version's compiled definition (metadata)",
+      readers: { rowItems: 2, constsOf: 1 },
+    },
+    "apply/shapes.ts": {
+      why: "a slot's versions: their compiled definitions and changes (metadata)",
+      readers: { slotVersions: 2 },
     },
     "apply/confirmation.ts": {
       why: "checksums of item entries (confirmation_mismatch): only the hash is used",

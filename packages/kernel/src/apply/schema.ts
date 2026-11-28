@@ -24,13 +24,16 @@ import {
   type CompiledSchema,
   type CompiledTable,
   canonicalize,
+  type FieldId,
+  type FieldValue,
   type JsonValue,
   type Seq,
 } from "@fluxvita/saveslot-contract-core";
 import { derivedLayout, evaluationRefusal } from "../rules/index.ts";
 import { isKnownRsqlVersion } from "../rules/version.ts";
+import { type TableMap, tableMapOf, tightenedOf } from "./convert.ts";
 import { derivedTableDdl } from "./derived.ts";
-import { ApplyError, type Change } from "./model.ts";
+import { ApplyError, type Backfill, type Change } from "./model.ts";
 import { fold } from "./names.ts";
 
 type Obj = Readonly<Record<string, JsonValue>>;
@@ -243,6 +246,8 @@ export function planSchema(
     readonly remove?: RemoveInput;
     readonly migration?: MigrationInput;
   },
+  op: Seq = seq,
+  present: Obj = {},
 ): Change[] | undefined {
   const notYet = (what: string) =>
     new ApplyError("not_implemented", seq, `${what} is not applied yet`);
@@ -366,7 +371,7 @@ export function planSchema(
     // §5.5: build the version's new physical tables, point the slot at it.
     case "schema.switched": {
       const t = block("target");
-      if ("from_version" in t) return planSwitchFrom(seq, slot, t, input);
+      if ("from_version" in t) return planSwitchFrom(seq, op, slot, t, present, input);
       const to = input.switchTo;
       if (to === undefined) {
         throw new ApplyError("inconsistent", seq, `no compiled version ${String(t["to_version"])}`);
@@ -468,14 +473,14 @@ function physicalShape(t: CompiledTable): string {
  */
 function planSwitchFrom(
   seq: Seq,
+  op: Seq,
   slot: string | undefined,
   t: Obj,
+  present: Obj,
   input: { readonly switchTo?: SwitchInput; readonly slot?: SlotInput },
 ): Change[] {
   const inconsistent = (what: string) => new ApplyError("inconsistent", seq, what);
   const rebuilt = t["rebuilt_tables"] as readonly string[];
-  if (rebuilt.length > 0)
-    throw new ApplyError("not_implemented", seq, "a switch rebuilding tables is not applied yet");
   const to = input.switchTo;
   if (to === undefined) throw inconsistent(`no compiled version ${String(t["to_version"])}`);
   const c = to.compiled;
@@ -557,6 +562,43 @@ function planSwitchFrom(
   const cleared = prev.tables.filter(
     (y) => keyOf(y) !== undefined && keyOf(y) !== keyOf(c.tables.find((x) => x.id === y.id)),
   );
+  // The tables rebuilt from the log: base tables of both versions with another physical table each
+  // (08 «物理做法»), each rebuilt row by row from the earlier one (./rebuild.ts), the switch's
+  // constants where the event records them, then held to its `tables/<t>`.
+  const rebuilds = rebuilt.map((id): Change => {
+    const was = prev.tables.find((y) => y.id === id);
+    const now = c.tables.find((x) => x.id === id);
+    if (
+      was?.kind !== "base" ||
+      now?.kind !== "base" ||
+      was.physical.table === now.physical.table ||
+      !recreated.has(id)
+    )
+      throw inconsistent(
+        `table ${id} is listed as rebuilt, but has no new physical table to rebuild`,
+      );
+    const map = tableMapOf(was, now, tightenedOf(to.changes ?? [], id));
+    const check = present[`tables/${id}`] as Obj | undefined;
+    return {
+      kind: "table_rebuild",
+      slot: c.slot,
+      op,
+      from: was,
+      to: now,
+      map,
+      version: { sv: c.sv, compiled: c, changes: to.changes ?? [] },
+      backfill: backfillOf(seq, present, now, map),
+      ...(check !== undefined
+        ? { verify: { rows: check["rows"] as number, checksum: check["checksum"] as string } }
+        : {}),
+    };
+  });
+  const listed = new Set(rebuilt);
+  for (const path of Object.keys(present)) {
+    const m = /^(?:backfill_rows|backfill|tables)\/(t[0-9]+)(?:\/|$)/.exec(path);
+    if (m !== null && !listed.has(m[1] as string))
+      throw inconsistent(`${path} is of table ${m[1]}, which the switch does not rebuild`);
+  }
   return [
     ...cleared.map((y): Change => ({ kind: "external_keys_clear", table_id: y.id })),
     {
@@ -572,6 +614,7 @@ function planSwitchFrom(
         ? [{ kind: "counts_init", table_id: x.id } as Change]
         : []),
     ]),
+    ...rebuilds,
     {
       kind: "version_switch",
       slot: c.slot,
@@ -581,6 +624,54 @@ function planSwitchFrom(
       draft_id: t["draft_id"] as string,
       name: c.name,
       timezone: c.timezone,
+      ...(typeof t["migration_id"] === "string" ? { migration: t["migration_id"] } : {}),
     },
   ];
+}
+
+/**
+ * Where the switch's constant `backfill` gave table `table` a value, as its blocks record it (09
+ * §5.5): `backfill_rows/<t>/<f>/<n>` on an event or timeless table, `backfill/<t>/<f>/<n>` on a
+ * state table (a block a deletion removed is not there: that stretch is filled no more). Each field
+ * filled must have its constant in the map; anything else is the log at odds with itself.
+ */
+function backfillOf(seq: Seq, present: Obj, table: CompiledBaseTable, map: TableMap): Backfill {
+  const inconsistent = (what: string) => new ApplyError("inconsistent", seq, what);
+  const values = new Map<FieldId, FieldValue>();
+  for (const x of [...map.added, ...map.tightened])
+    if (x.backfill !== undefined) values.set(x.field, x.backfill.const as FieldValue);
+  const state = table.time.type === "state";
+  const blocks = Object.keys(present)
+    .flatMap((path) => {
+      const m = /^(backfill_rows|backfill)\/([^/]+)\/([^/]+)\/([0-9]+)$/.exec(path);
+      return m === null || m[2] !== table.id
+        ? []
+        : [{ kind: m[1] as string, field: m[3] as FieldId, n: Number(m[4]), path }];
+    })
+    .sort((a, b) => (a.field < b.field ? -1 : a.field > b.field ? 1 : a.n - b.n));
+  const rows = new Map<FieldId, Set<string>>();
+  const stretches = new Map<string, { field: FieldId; from: string; to: string | null }[]>();
+  for (const b of blocks) {
+    if (!values.has(b.field))
+      throw inconsistent(`${b.path}: field ${b.field} has no constant backfill in this switch`);
+    if ((b.kind === "backfill") !== state)
+      throw inconsistent(`${b.path}: not a block of a ${table.time.type} table`);
+    const body = present[b.path] as JsonValue;
+    if (b.kind === "backfill_rows") {
+      const set = rows.get(b.field) ?? new Set<string>();
+      rows.set(b.field, set);
+      for (const id of body as readonly string[]) set.add(id);
+    } else {
+      const x = body as Obj;
+      const v = x["valid"] as Obj;
+      const list = stretches.get(x["entity"] as string) ?? [];
+      stretches.set(x["entity"] as string, list);
+      list.push({
+        field: b.field,
+        from: v["from"] as string,
+        to: (v["to"] as string | undefined) ?? null,
+      });
+    }
+  }
+  return { rows, stretches, values };
 }

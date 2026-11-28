@@ -86,7 +86,11 @@ export function settleTable(t: CompiledBaseTable): SettleTable {
   return {
     kind: t.time.type === "state" ? "state" : t.time.type === "event" ? "event" : "timeless",
     fields: t.fields.map((f) => f.id),
-    required: t.fields.filter((f) => f.required === true).map((f) => f.id),
+    // A field given a constant `backfill` (added required, optional made required) is not a
+    // required one for existence (03-deletion «行 / 实体的存在»).
+    required: t.fields
+      .filter((f) => f.required === true && !(f.backfill !== undefined && "const" in f.backfill))
+      .map((f) => f.id),
   };
 }
 
@@ -314,7 +318,7 @@ export const BASE_SOURCE_COLUMNS = [
 ];
 
 /** A field value as the columns of its field take it (02-architecture §8 «业务表»). */
-function columnValues(t: CompiledBaseTable, f: FieldId, v: FieldValue): SqlValue[] {
+export function columnValues(t: CompiledBaseTable, f: FieldId, v: FieldValue): SqlValue[] {
   const def = t.fields.find((x) => x.id === f);
   const zoned = def?.type === "zoned_datetime";
   if (v === null) return zoned ? [null, null] : [null];
@@ -351,7 +355,15 @@ export function settleRowChanges(
    */
   renewed: ReadonlySet<string> = new Set(),
 ): { settled: Settled; changes: Change[] } {
-  const shape = settleTable(t);
+  // Items on fields the table no longer has (a schema switch dropped them): they still decide
+  // whether the row or entity exists, on every path that settles it (`SettleTable.gone`).
+  const own = new Set<string>(t.fields.map((f) => f.id));
+  const gone = [
+    ...new Set(
+      items.flatMap((x) => (x.target === "existence" || own.has(x.target) ? [] : [x.target])),
+    ),
+  ];
+  const shape: SettleTable = { ...settleTable(t), gone };
   const isState = shape.kind === "state";
   const changes: Change[] = [];
   const settled = settle(shape, items);
