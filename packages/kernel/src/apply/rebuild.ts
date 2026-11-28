@@ -285,7 +285,6 @@ export async function planRebuildRow(
 
   // 3. The settled cells held to the converted open cells.
   const filled = new Set(consts.map((x) => x.target));
-  const added = new Set(map.added.map((x) => x.field));
   for (const cell of settled.cells) {
     const key = identity(
       cell.field,
@@ -298,11 +297,7 @@ export async function planRebuildRow(
     if (was !== undefined || openValues.has(key)) {
       if (canonicalize(was as JsonValue) !== canonicalize(cell.value as JsonValue))
         throw inconsistent(`cell of ${cell.field} settles to another value than converted`);
-    } else if (
-      cell.by?.event !== spec.switchSeq &&
-      !(cell.by === null && cell.value === null && added.has(cell.field as FieldId))
-    )
-      // Besides a constant's cells, only a field the version adds, empty where nothing fills it.
+    } else if (cell.by?.event !== spec.switchSeq && !emptyOf(cell))
       throw inconsistent(`cell of ${cell.field} settles where no converted cell is`);
   }
   const cellsChange = changes.find((c) => c.kind === "cells");
@@ -311,6 +306,38 @@ export async function planRebuildRow(
       if (!filled.has(x.field as FieldId))
         throw inconsistent(`converted cell of ${x.field} does not settle again`);
 
+  // A field empty where nothing gives it a value, with no converted cell (a field a version added,
+  // never written on this row): the switch opens no cell for it, so that a switch makes no version
+  // but its constants' (09 §6.2 `schema_switch`); the row's next operation opens it, as for any
+  // field. The cells change lists the columns of `settleRowChanges`.
+  const withoutEmpty = (c: Change): Change => {
+    if (c.kind !== "cells") return c;
+    const at = (name: string) => c.columns.indexOf(name);
+    const [iField, iFrom, iTo, iSrc, iNoValue] = [
+      "field_id",
+      "valid_from",
+      "valid_to",
+      "src_event",
+      "no_value",
+    ].map(at) as [number, number, number, number, number];
+    return {
+      ...c,
+      rows: c.rows.filter(
+        (row) =>
+          row[iSrc] !== null ||
+          row[iNoValue] === true ||
+          openValues.has(
+            identity(
+              row[iField] as string,
+              state ? (row[iFrom] as string) : null,
+              state ? ((row[iTo] as string | null) ?? null) : null,
+              null,
+              false,
+            ),
+          ),
+      ),
+    };
+  };
   const table: Change[] = [
     {
       kind: "rows_replace",
@@ -321,7 +348,7 @@ export async function planRebuildRow(
       rows: [],
     },
     { kind: "rows_insert", table: next.versions, columns, rows: carried },
-    ...changes.filter((c) => c.kind !== "counts_add"),
+    ...changes.filter((c) => c.kind !== "counts_add").map(withoutEmpty),
   ];
   const sources: Change[] =
     consts.length === 0
@@ -340,6 +367,13 @@ export async function planRebuildRow(
         ];
   return { table, sources };
 }
+
+/** A cell of a field empty where nothing gives it a value. */
+const emptyOf = (c: {
+  readonly by: unknown;
+  readonly value: FieldValue;
+  readonly noValue?: true;
+}) => c.by === null && c.value === null && c.noValue !== true;
 
 const identity = (
   field: string,

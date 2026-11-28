@@ -16,6 +16,7 @@ import {
   eventsOf,
   query,
   type ReadTx,
+  history as readHistory,
   reconcileLog,
   schemaDraft,
   write,
@@ -408,18 +409,22 @@ describe("a switch rebuilding tables", () => {
         oldBudget: (await tx.query<Any>(`SELECT count(*)::int AS n FROM "t_t2_v1__ver"`)).rows[0].n,
       }));
       const note = runsT.fields.find((f: Any) => f.name === "distance").id === "f1" ? "f2" : "f1";
-      // The shoe, added, is empty on both runs: a cell of the switch, which no ver counts.
-      const shoe = id(runsT, "shoe");
-      expect(cells.newRuns.map((c: Any) => [c.field_id, c.rec_from, c.rec_to])).toEqual([
-        ...cells.oldRuns
+      // Every cell carried but the note's; the shoe, added and empty, gets no cell from the switch
+      // (a switch makes no version but its constants'), and reads as empty.
+      expect(cells.newRuns.map((c: Any) => [c.field_id, c.rec_from, c.rec_to])).toEqual(
+        cells.oldRuns
           .filter((c: Any) => c.field_id !== note)
           .map((c: Any) => [c.field_id, c.rec_from, c.rec_to]),
-        [shoe, sw.op, null],
-        [shoe, sw.op, null],
+      );
+      const asOf: Any = await readHistory(s.store, ctx(), {
+        table: "runs",
+        row: h.run1,
+        mode: "as_of",
+        as_of: sw.op,
+      } as never);
+      expect(asOf.rows.map((r: Any) => r.values)).toEqual([
+        { distance: { value: "5123", unit: "m" }, shoe: null },
       ]);
-      expect(
-        cells.newRuns.filter((c: Any) => c.field_id === shoe).map((c: Any) => c.intent),
-      ).toEqual(["schema_switch", "schema_switch"]);
       const filled = cells.newBudget.filter((c: Any) => c.field_id === owner);
       expect(filled.map((c: Any) => [c.vf, c.rec_to, c.intent])).toEqual([
         ["2026-10-01", null, "schema_switch"],
