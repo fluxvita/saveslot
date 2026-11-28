@@ -444,7 +444,7 @@ This table changes with the hosts' documentation and is maintained together with
 
 ## 4. The command list
 
-Global options: `--profile <name>`, `--json` (outputs the structured result of the contract, see section 6), `--yes` (non-interactive confirmation, see section 5), `--limit` / `--cursor` (paging, same as the contract). `saveslot --version` (used alone) prints this saveslot's version and exits 0: it is the same version the service reports on `/health`, that `saveslot start` compares, and that `saveslot status` writes as "this saveslot"; it does not connect to the service. `saveslot --help` prints the usage. The "Appears in" column corresponds to the implementation steps in section 7.
+Global options: `--home <dir>` (the home, default `~/.saveslot`: the configuration, the credentials, the local service's runtime directory and its socket are all under it), `--profile <name>`, `--json` (outputs the structured result of the contract, see section 6), `--yes` (non-interactive confirmation, see section 5), `--limit` / `--cursor` (paging, same as the contract). `saveslot --version` (used alone) prints this saveslot's version and exits 0: it is the same version the service reports on `/health`, that `saveslot start` compares, and that `saveslot status` writes as "this saveslot"; it does not connect to the service. `saveslot --help` prints the usage. The "Appears in" column corresponds to the implementation steps in section 7.
 
 ### 4.1 The service (local only; it manages the process and is not a contract operation)
 
@@ -763,7 +763,7 @@ At the end of P1 the CLI can already complete the whole getting-started flow of 
 | The data directory is created by `init` with 0700; one placed outside the home with `--data-dir` has its owner and permissions checked when the service starts, and startup is refused if they do not fit (section 3 step 2) | Other system users on the same machine reading and writing the tenant database: the files that storage creates would be readable and writable by others, and only the directory keeps them out |
 | Local mode provides no configuration to bind to a non-loopback address | A misconfiguration exposing personal data to the network; for use across devices use server mode (our cloud service, or self-hosting, which is another startup form with OAuth, not opening a port for local mode) |
 
-The CLI and `saveslot mcp` use only the fixed socket path under the home (`run/saveslot.sock`), and do not accept changing it to another address from an environment variable or an argument, which removes one way of being misled elsewhere by a misconfiguration; this is not a defense, since a program with the same permissions can change the files under the home all the same.
+The CLI and `saveslot mcp` use only the fixed socket path under the home (`run/saveslot.sock`; when `--home` names another home, the socket moves with it), and do not accept changing it on its own to another address from an environment variable or an argument, which removes one way of being misled elsewhere by a misconfiguration; this is not a defense, since a program with the same permissions can change the files under the home all the same.
 
 ### 8.2 The credential file
 

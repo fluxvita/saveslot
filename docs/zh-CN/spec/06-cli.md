@@ -444,7 +444,7 @@ My long-term records (things that change over time: spending, workouts, budgets,
 
 ## 4. 命令清单
 
-全局参数：`--profile <名字>`、`--json`（输出契约的结构化结果，见第 6 节）、`--yes`（非交互式确认，见第 5 节）、`--limit` / `--cursor`（分页，同契约）。`saveslot --version`（单独使用）打印这个 saveslot 的版本并退出 0：与服务在 `/health` 报的、`saveslot start` 比较的、`saveslot status` 写作"这个 saveslot"的是同一个版本；不连服务。`saveslot --help` 打印用法。"出现于"列对应第 7 节的实现步骤。
+全局参数：`--home <目录>`（主目录，缺省 `~/.saveslot`：配置、凭证、本机服务的运行目录与套接字都在它下面）、`--profile <名字>`、`--json`（输出契约的结构化结果，见第 6 节）、`--yes`（非交互式确认，见第 5 节）、`--limit` / `--cursor`（分页，同契约）。`saveslot --version`（单独使用）打印这个 saveslot 的版本并退出 0：与服务在 `/health` 报的、`saveslot start` 比较的、`saveslot status` 写作"这个 saveslot"的是同一个版本；不连服务。`saveslot --help` 打印用法。"出现于"列对应第 7 节的实现步骤。
 
 ### 4.1 服务（只在本地；管进程，不是契约操作）
 
@@ -763,7 +763,7 @@ P1 结束时 CLI 已能完成第 3 节的整条上手流程，含 `saveslot setu
 | 数据目录由 `init` 以 0700 建出；用 `--data-dir` 另放到 home 之外的，服务启动时核属主与权限，不符拒绝启动（第 3 节第 2 步） | 同机别的系统用户读写租户库：存储建出的文件是别人可读写的，只靠目录挡住 |
 | 本地模式不提供绑定到非回环地址的配置 | 误配置把个人数据暴露到网络；跨设备用服务器模式（我们的云服务，或自部署——那是另一套带 OAuth 的启动方式，不是给本机模式开一个端口） |
 
-CLI 与 `saveslot mcp` 只用 home 下固定的套接字路径（`run/saveslot.sock`），不接受从环境变量或参数改成别的地址，少一种被误配置引到别处的可能；这不是防护——同权限的程序照样能改 home 下的文件。
+CLI 与 `saveslot mcp` 只用 home 下固定的套接字路径（`run/saveslot.sock`；用 `--home` 换了 home，套接字随之换），不接受从环境变量或参数单独改成别的地址，少一种被误配置引到别处的可能；这不是防护——同权限的程序照样能改 home 下的文件。
 
 ### 8.2 凭证文件
 
