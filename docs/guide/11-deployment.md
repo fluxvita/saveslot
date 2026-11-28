@@ -46,6 +46,8 @@ For what to prepare for self-hosting and how to initialize and create accounts, 
 
 In the first version, local mode supports only macOS and Linux; Windows is later.
 
+On Linux the `saveslot` package needs glibc. musl distributions such as Alpine (`node:alpine` images included) are not supported yet. For server mode in a container, use a Debian-based image, as `deploy/Dockerfile` does.
+
 ## 2. How an agent connects
 
 An agent connects to saveslot through **MCP** (introduced in chapter 1: a general protocol by which an agent calls external tools, supported by agents such as Claude Code and Codex). Once connected, the agent's tool list gains a group of tools whose names begin with `saveslot_`.

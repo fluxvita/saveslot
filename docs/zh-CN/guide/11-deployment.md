@@ -46,6 +46,8 @@
 
 本机模式第一版只支持 macOS 和 Linux，Windows 放在后面。
 
+Linux 上 `saveslot` 这个包需要 glibc。Alpine 这类 musl 发行版（包括 `node:alpine` 镜像）暂不支持。服务器模式放进容器时用基于 Debian 的镜像，`deploy/Dockerfile` 就是这样做的。
+
 ## 2. Agent 怎么连
 
 Agent 经 **MCP** 连 saveslot（第 1 章介绍过：Agent 调用外部工具的一种通用协议，Claude Code、Codex 这类 Agent 都支持）。接上以后，Agent 的工具列表里会多出一组 `saveslot_` 开头的工具。
