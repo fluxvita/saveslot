@@ -24,7 +24,9 @@
 #
 # `pnpm check` runs as three jobs of the same scripts (check:static, test:unit, test:prop), each
 # with a timeout of its own, so one part running out of time does not take the others' results
-# with it. Locally it stays one command.
+# with it. Locally it stays one command. test:prop also runs the few slow tests that are not
+# property tests (`*.slow.test.ts`), so that test:unit, which every pull request waits for, stays
+# quick; the scheduled soak runs property tests only.
 #
 # A newer push to the same pull request, or to the same main line, cancels the run before it. A
 # nightly or by-hand run is never cancelled. Each job has a runner of its own, so the heavy jobs run
