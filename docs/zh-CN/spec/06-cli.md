@@ -133,7 +133,7 @@ Codex：已接入 · MacBook · Codex（ci_01JG…）
 
 **安装的前提**：`npm install -g` 要求 npm 的全局目录可写。Linux 上 Node 装在 `/usr/local` 时普通用户没有写权限，安装报 `EACCES`；说明文字给出 npm 的做法：设用户级的 prefix（`npm config set prefix ~/.npm-global`，并把 `~/.npm-global/bin` 加进 `PATH`），不建议用 `sudo`（装出来的文件属于 root，宿主登记的入口路径也随之落在系统目录里）。
 
-宿主命令的确切写法由 CLI 的宿主适配表维护（3.2），**每条都是实测过的写法，实测的宿主版本记在表里**。选择用编号切换的文本提示（输入编号切换某一项，直接回车确认），不进终端的原始模式、不加依赖；用方向键与空格勾选的样子留到桌面打包时再做。执行的宿主命令写的是在 `PATH` 里找到的绝对路径（3.2）。
+宿主命令的确切写法由 CLI 的宿主适配表维护（3.2），**表里逐条写明是否实测过、对哪个宿主版本实测，没写的还没有对宿主试过**。选择用编号切换的文本提示（输入编号切换某一项，直接回车确认），不进终端的原始模式、不加依赖；用方向键与空格勾选的样子留到桌面打包时再做。执行的宿主命令写的是在 `PATH` 里找到的绝对路径（3.2）。
 
 **分步做**（`setup` 调用的就是这几条命令；评测与脚本继续用它们）：
 
@@ -300,7 +300,7 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
 
 ### 3.2 签发连接实例、接入宿主
 
-`saveslot connect <宿主> --name <名字> [--scope …] [--slots <名字>,<名字>]` = `connections.issue`，再按宿主生成接入方式。下表是 CLI 的**宿主适配表**：每个宿主另记可执行文件名与取版本的参数（`saveslot setup` 用它发现本机装了哪些宿主，3.3）；命令的确切写法**都实测过，实测的宿主版本记在表里**。
+`saveslot connect <宿主> --name <名字> [--scope …] [--slots <名字>,<名字>]` = `connections.issue`，再按宿主生成接入方式。下表是 CLI 的**宿主适配表**：每个宿主另记可执行文件名与取版本的参数（`saveslot setup` 用它发现本机装了哪些宿主，3.3）；命令的确切写法：**表里逐条写明是否实测过、对哪个宿主版本实测，没写的还没有对宿主试过**。
 
 | 宿主 | 生成什么 | `setup` 能自动接 |
 |---|---|---|
@@ -316,7 +316,7 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
 
 - **宿主命令的写法**：服务名在前，`-e` / `--env` 在后，再接 `--` 与可执行文件。添加命令一律写**用户级**：saveslot 的数据按人不按项目，接入应当对这个用户的所有项目生效；Claude Code 的添加命令默认写"当前项目"这一档，所以显式带 `--scope user`，别的宿主有同类选项的同样处理。`vscode` 有添加命令，但 `--apply` 与 `setup` 都不执行它，只打印给用户自己执行：VS Code 的 MCP 宿主是 GitHub Copilot Chat 的 Agent 模式（Ask、Edit 模式不调用 MCP 工具），它的添加命令 `code --add-mcp '<JSON>'`（1.147.0 实测）写进用户级的 `mcp.json`（结构是 `{"servers": {"saveslot": {…}}, "inputs": []}`），同名时直接覆盖原条目、退出码 0、不提示，新建的文件权限是 0644，令牌落在本机其他用户可读的文件里；`code` 也没有查看单个条目的命令，3.3 第 7 条"先用宿主的查看命令判断已有条目"做不到。代为执行就等于悄悄覆盖用户已有的条目；收紧文件权限等于改宿主的配置文件，这两件 saveslot 都不做。所以 `connect vscode` 在命令下面写明：同名条目会被覆盖；令牌写进的 `mcp.json` 别的用户能读，写完自己 `chmod 600` 那个文件（macOS 与 Linux 各给出路径）。
 - **没有添加命令的宿主**（`cursor`、`claude-desktop`）只能手动粘贴，是第 1 节设计要求的已知例外。
-- **令牌只显示一次**：控制面只存哈希；丢了就吊销重签。`--apply` 时由 CLI 执行上表里宿主自己的添加命令，令牌不落进 CLI 的任何文件——**但会落在别处**：贴进终端的命令进了 shell 历史；`--apply` 执行宿主命令时令牌在进程参数里，执行期间本机其他用户能用 `ps` 看到；最后它住在宿主的配置文件里。`--apply` 执行成功时不再显示令牌：打印"已添加到 <宿主>"与执行的那条命令，令牌的位置写成 `<令牌>`（连接实例的 ID、名字与 scope 在签发那一行）；`--json` 的输出不变，仍是签发结果（含令牌）。"令牌只显示这一次"这句提示写到标准错误（`--json` 时也是），标准输出里只有要粘贴的东西。只用 unix socket 时这些暴露对别的系统用户无害（他们连不上套接字），打开回环 TCP 后就不是了（第 8.1 节）。各宿主命令的确切写法由 CLI 的宿主适配表维护，每条都是实测过的写法，实测的宿主版本记在表里。
+- **令牌只显示一次**：控制面只存哈希；丢了就吊销重签。`--apply` 时由 CLI 执行上表里宿主自己的添加命令，令牌不落进 CLI 的任何文件——**但会落在别处**：贴进终端的命令进了 shell 历史；`--apply` 执行宿主命令时令牌在进程参数里，执行期间本机其他用户能用 `ps` 看到；最后它住在宿主的配置文件里。`--apply` 执行成功时不再显示令牌：打印"已添加到 <宿主>"与执行的那条命令，令牌的位置写成 `<令牌>`（连接实例的 ID、名字与 scope 在签发那一行）；`--json` 的输出不变，仍是签发结果（含令牌）。"令牌只显示这一次"这句提示写到标准错误（`--json` 时也是），标准输出里只有要粘贴的东西。只用 unix socket 时这些暴露对别的系统用户无害（他们连不上套接字），打开回环 TCP 后就不是了（第 8.1 节）。各宿主命令的确切写法由 CLI 的宿主适配表维护，表里逐条写明是否实测过、对哪个宿主版本实测，没写的还没有对宿主试过。
 - **命令写绝对路径**：宿主启动 `saveslot mcp` 时的 PATH 未必包含 npm 全局目录（图形界面启动的宿主、用版本管理器切换 Node 的环境），所以生成的命令一律用 `saveslot` 可执行文件的绝对路径；`saveslot doctor` 经宿主自己的查看命令检查条目里的路径是否还在。
 - **入口文件可以直接执行**：宿主拿到的是入口文件的路径，由它直接执行，所以入口文件首行是 `#!/usr/bin/env node`，并带执行位；构建在编译之后给它设执行位，入口不以这一行开头时构建失败。从源码检出运行：`pnpm install && pnpm build` 之后入口是 `packages/saveslot/dist/bin.js`，直接执行它（`packages/saveslot/dist/bin.js setup`），或用 `node packages/saveslot/dist/bin.js setup`；两种写法登记给宿主的都是这个文件的绝对路径。
 - **`--scope` 的写法**：不给时是 `saveslot.read saveslot.write saveslot.schema`（读写，并能让 Agent 经 `saveslot_schema_draft` 新建 slot；不能删除，MCP 上也没有删 slot 的入口）。scope 在签发时定下，之后不变：之前签发的、没有 `saveslot.schema` 的连接实例要获得建 slot 的能力，重新 `connect`。两种写法，不能混用：
@@ -337,7 +337,7 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
 - **名字建议写"设备 · 宿主"**，它会出现在历史、事项发起者与读取审计里。
 - **连接器取得凭证**：连接器（定时把外部系统的数据搬进 saveslot 的程序，不是 saveslot 的一部分）用 `saveslot connect http --name "手环 · 连接器" --slots health` 取得一个只碰它负责的 slot 的静态令牌，经 HTTP 写入（[`05-surfaces.md`](05-surfaces.md) 第 13 节）。
 - **完成时的提示**：`connect` 与 `setup` 结束时在末尾提示一行"可选：saveslot snippet <宿主>"（3.4；`setup` 为每个接上的宿主各写一行）。`saveslot snippet` 不认的宿主没有这一行：`connect generic`、`connect http` 结束时不写，服务器 profile 上宿主自己登录的 `connect` 也不写。
-- **服务器模式（云服务或自部署）**：宿主走远程 MCP 自己做 OAuth 授权，`saveslot connect claude-code --profile cloud`（自部署换成它的 profile）打印远程形式的添加命令 `claude mcp add saveslot --scope user --transport http https://<域名>/mcp`（写法同样实测）；这条命令里**没有令牌**，所以 `--apply` 与 `saveslot setup --profile` 会代为执行它。授权页上由用户命名、选 scope，两项都有默认值；经授权得到的连接实例 slot 范围是全部，用户不改就只点一次"授权"（[`05-surfaces.md`](05-surfaces.md) 第 15 节）。授权完成后用 `saveslot connections list` 能看到它，改名、吊销照常。这时 CLI 不签发任何东西，`--name`、`--scope`、`--slots` 是用法错误（它们在授权页上定；要静态令牌用 `connect http`）；没有添加命令的宿主拿到的是要粘贴的条目（`cursor`：按公开资料它的远程授权要动态客户端注册，0.2.0 不提供，所以 0.2.0 里 Cursor 接服务器用 `connect http` 的静态令牌。输出不说"宿主自己授权"，而是写明这一点和签发的命令 `saveslot connect http --profile <profile> --name <名字>`，再给出 `mcpServers` 里的一项 `{"url": "https://<域名>/mcp", "headers": {"Authorization": "Bearer TOKEN"}}`，由用户把 `TOKEN` 换成签发的令牌，填进它的 `mcp.json`；`--json` 照样是 `{host, server, url}`。动态注册在后续版本，见 [`08-open-questions.md`](08-open-questions.md)；`generic`：`{"url": …}`）、只打印的添加命令（`vscode`：`code --add-mcp '{"name": "saveslot", "type": "http", "url": "https://<域名>/mcp"}'`，1.147.0 实测写进 `mcp.json` 的是 `{"type": "http", "url": …}`，它能不能凭这一项自己走完授权还没有实测；同名照样覆盖，条目里没有令牌，所以不提文件权限）或要在宿主界面里填的地址（`claude-desktop`：自定义连接器）。只有网页界面的宿主（Claude 网页端、ChatGPT）没有命令可执行，`saveslot connect <宿主> --profile cloud` 给出要在宿主界面里填的地址，这是设计要求的已知例外。没有 Agent 的脚本与连接器走不了 OAuth：`saveslot connect http --profile cloud [--slots …]` 由用户会话签发一个静态令牌，与本地一样按 scope 与 slot 范围、可吊销。
+- **服务器模式（云服务或自部署）**：宿主走远程 MCP 自己做 OAuth 授权，`saveslot connect claude-code --profile cloud`（自部署换成它的 profile）打印远程形式的添加命令 `claude mcp add saveslot --scope user --transport http https://<域名>/mcp`（这条还没有对宿主实测）；这条命令里**没有令牌**，所以 `--apply` 与 `saveslot setup --profile` 会代为执行它。授权页上由用户命名、选 scope，两项都有默认值；经授权得到的连接实例 slot 范围是全部，用户不改就只点一次"授权"（[`05-surfaces.md`](05-surfaces.md) 第 15 节）。授权完成后用 `saveslot connections list` 能看到它，改名、吊销照常。这时 CLI 不签发任何东西，`--name`、`--scope`、`--slots` 是用法错误（它们在授权页上定；要静态令牌用 `connect http`）；没有添加命令的宿主拿到的是要粘贴的条目（`cursor`：按公开资料它的远程授权要动态客户端注册，0.2.0 不提供，所以 0.2.0 里 Cursor 接服务器用 `connect http` 的静态令牌。输出不说"宿主自己授权"，而是写明这一点和签发的命令 `saveslot connect http --profile <profile> --name <名字>`，再给出 `mcpServers` 里的一项 `{"url": "https://<域名>/mcp", "headers": {"Authorization": "Bearer TOKEN"}}`，由用户把 `TOKEN` 换成签发的令牌，填进它的 `mcp.json`；`--json` 照样是 `{host, server, url}`。动态注册在后续版本，见 [`08-open-questions.md`](08-open-questions.md)；`generic`：`{"url": …}`）、只打印的添加命令（`vscode`：`code --add-mcp '{"name": "saveslot", "type": "http", "url": "https://<域名>/mcp"}'`，1.147.0 实测写进 `mcp.json` 的是 `{"type": "http", "url": …}`，它能不能凭这一项自己走完授权还没有实测；同名照样覆盖，条目里没有令牌，所以不提文件权限）或要在宿主界面里填的地址（`claude-desktop`：自定义连接器）。只有网页界面的宿主（Claude 网页端、ChatGPT）没有命令可执行，`saveslot connect <宿主> --profile cloud` 给出要在宿主界面里填的地址，这是设计要求的已知例外。没有 Agent 的脚本与连接器走不了 OAuth：`saveslot connect http --profile cloud [--slots …]` 由用户会话签发一个静态令牌，与本地一样按 scope 与 slot 范围、可吊销。
 
 ### 3.3 `saveslot setup`：一条命令完成上手
 
@@ -360,7 +360,7 @@ $ saveslot reads --connection "MacBook · Claude Code" --since 10m
 2. **多个宿主时怎么选**：交互式下是一个编号列表，输入编号切换选中与否，直接回车确认。有添加命令且已发现的宿主默认勾选；没有添加命令的宿主列出但不给编号（选不上），写明 `setup` 不接它、要用 `saveslot connect <宿主>` 手动配置。**每个宿主一个连接实例**，名字默认"<主机名> · <宿主显示名>"：主机名取第一段（`MacBook-Pro.local` 取 `MacBook-Pro`），最多 64 个码点（按码点截，不切开代理对）；主机名为空时名字只用宿主显示名；不让多个宿主共用一个连接实例，否则"谁读过、谁写的"分不开。
 3. **同意只问一次、默认执行**：第 5 步把全部宿主命令一起展示，令牌的位置写成 `<令牌>`，回答一次；直接回车是"执行"。**先同意、后签发**：用户拒绝时不签发任何连接实例、不动任何宿主，退出码 8，并提示"之后可用 saveslot connect <宿主> 单独接入"。
 4. **scope 与 slot 范围**：scope 默认 `saveslot.read saveslot.write saveslot.schema`，同意屏上如实列出这三项，`--scope` 可改，写法同 `saveslot connect`，对本次接入的所有宿主生效；要给各宿主不同的 scope，用 `saveslot connect` 分别接。`setup` 只签发 slot 范围为全部的连接实例，没有 `--slots`：它面向第一次上手，限定范围是有意的选择，用 `saveslot connect --slots` 单独做。
-5. **宿主的添加命令写用户级**，写法照 3.2（服务名在前，`-e` / `--env` 在后，再接 `--` 与可执行文件）；确切写法由适配表维护，每条都是实测过的写法，实测的宿主版本记在表里。
+5. **宿主的添加命令写用户级**，写法照 3.2（服务名在前，`-e` / `--env` 在后，再接 `--` 与可执行文件）；确切写法由适配表维护，表里逐条写明是否实测过、对哪个宿主版本实测，没写的还没有对宿主试过。
 6. **非交互环境**（标准输入不是终端，或提问所写的标准错误不是终端——`saveslot setup 2>log` 时人看不到问题，回车不能算同意）：
    - 没给 `--yes`：什么都不执行，把将要做的步骤写到标准错误，退出码 8（与 5.4 一致）。这时还没有签发任何连接实例，写出的宿主命令里令牌的位置同样写成 `<令牌>`。
    - 给了 `--yes`：选择全部来自参数——`--template <模板>`（可重复；slot 名取模板的默认名）、`--timezone`、`--host <宿主>`（可重复）、`--scope`。**没给的选择按"不做"处理**：没给 `--template` 就不建 slot，没给 `--host` 就不接任何宿主；不猜，也不取"全部已发现的宿主"。没有人看着的时候，少做比多做安全。
