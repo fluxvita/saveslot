@@ -478,7 +478,7 @@ schema 可以为事件类表与无时间表声明 `duplicate_keys`：一组或�
 | 信息 | 例子 | 用来做什么 |
 |---|---|---|
 | 数据之间的关系 | runs 被 weekly_mileage 派生；支出的 category 关联预算表 | Agent 知道怎么关联查询；要求定义 schema 时**声明表间关系**（外键 / 引用） |
-| 数据概况 | 行数、时间范围（最早 2026-03，最近 11-08）、字段取值示例 | 写查询前先判断"有没有、有多少" |
+| 数据概况 | 行数、时间范围（最早 2026-03，最近 11-08）；字段的取值示例第一版不给（[`../04-contract-types.md`](../04-contract-types.md) 0.2） | 写查询前先判断"有没有、有多少" |
 | 单位与语义 | distance 单位英里；date 按 Asia/Shanghai 的自然日 | 避免理解错数据 |
 
 ### 查得出：两档查询
@@ -549,7 +549,7 @@ schema 可以为事件类表与无时间表声明 `duplicate_keys`：一组或�
 
   | 对象 | 规则 |
   |---|---|
-  | 数据目录 | 只列范围内的 slot 与表；概况、取值示例、表间关系只涉及范围内的表。完整 schema 文档（`catalog` 的 `schema` 档，含带 `draft` 的读取）要 slot 的每张表都在范围内才给，否则与 slot 不存在相同 |
+  | 数据目录 | 只列范围内的 slot 与表；概况、表间关系只涉及范围内的表。完整 schema 文档（`catalog` 的 `schema` 档，含带 `draft` 的读取）要 slot 的每张表都在范围内才给，否则与 slot 不存在相同 |
   | `query`、`history`（含 `timeline`、`as_of`、`changes`） | 目标表须在范围内。`changes` 不给目标时是"一张表的变化"，表须在范围内 |
   | 受限 SQL | 语法树里引用的每张表都须在范围内，否则 `sql_rejected`（`unknown_name`）；可以引用范围内多个 slot 的表（见「查得出」）。汇总标记只统计范围内的行 |
   | 待处理事项、`resolve` | 事项属于某个 slot，按 slot 过滤；范围外的事项 ID 报 `not_found`。结果里的提示只算范围内的。`schema_change` 事项与 slot 的草稿（`catalog` 带 `draft` 的读取）关乎整个 slot 的 schema，要这个 slot 的每张表都在范围内才可见，否则与不存在相同 |

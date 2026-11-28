@@ -365,7 +365,7 @@ slot 策略的结构里为"某类操作只接受用户会话的确认"留了位�
 - **契约分两层**（成文见 [`04-contract.md`](04-contract.md) 的两部分；MCP 与 HTTP 各自的规则见 [`05-surfaces.md`](05-surfaces.md)）：
   - `contract-core`：数据的形状——值的编码、证据、标记、意图、领域错误（`validation_failed`、`schema_incompatible`、`derived_readonly` 等）。内核依赖它；
   - `contract`：对外的封装——外化面专用的字段与错误（`idempotency_key`、`cursor`、签名句柄、`insufficient_scope`、`rate_limited`）。服务层与外化面依赖它。
-- **`ops` 的签名在内核里手写**，由 `contract-core` 的类型约束；`contract` 由它们生成 HTTP 的 OpenAPI、MCP 的 `inputSchema`、将来 SDK 的接口。
+- **`ops` 的签名在内核里手写**，由 `contract-core` 的类型约束；`contract` 在它们之上定义对外的类型。HTTP 的路由、MCP 的 `inputSchema` 与 HTTP 客户端都照这些类型手写，不由契约生成（这一版没有 OpenAPI 描述）。
   这样对外契约加错误码、加分页参数，不改内核。
 - **标记是结构化字段**：`disputed`、`awaiting`、`stale` 等在契约里是字段，不是渲染出来的文字；外化面的渲染器**必须**把它们输出到文本（MCP）或保留在结构里（SDK），由渲染器测试保证。
 - **版本互相独立**：
@@ -603,7 +603,7 @@ interface AnchorStore {
 | `slots` | slot ID | 名称、时区、当前 `sv`（当前版本指针）、当前策略的 `seq` 与策略版本 | schema 生命周期、slot 策略变更、移除 slot | 是 |
 | `schema_versions` | `(slot ID, sv)` | 编译后的定义所在的 `seq`、草稿 ID、切换位置（`schema.switched` 的 `seq`，没切换前为空）、状态（待确认 / 当前 / 已退役 / 已被拒 / 已被取代 / 失败：版本号在编译时分配、不再使用，被拒、被取代与迁移失败的行留着）；已移除的 slot 的各版本留着（表号与 `slot_id` 不再使用） | schema 生命周期 | 是 |
 | `migrations` | 迁移 ID | slot、目标 `sv`、状态机的当前状态 | schema 生命周期 | 是 |
-| `catalog` | `(表 ID, sv)` | 表与字段的名字、类型、单位、说明；概况与取值示例 | schema 生命周期；概况随基础写入 | 结构是；概况与取值示例否 |
+| `catalog` | `(表 ID, sv)` | 表与字段的名字、类型、单位、说明；概况（第一版没有字段的取值示例，[`04-contract-types.md`](04-contract-types.md) 0.2） | schema 生命周期；概况随基础写入 | 结构是；概况否 |
 | 业务表 `t_<表ID>_v<n>` | 事件类 / 无时间：行 ID；状态类：`(实体 ID, 生效区间起点)` | 字段列 `f_<字段ID>`；`zoned_datetime` 字段另有 `__zone` 列与内部日期列；事件类与无时间表有已撤销标记，状态类表没有，另有区间终点（说明见下） | 基础写入、删除生命周期、切换 | 是 |
 | 版本表 `t_<表ID>_v<n>__ver` | `(行或实体 ID, 字段 ID, 业务区间起点, rec_from)`：一格是"某个字段在某段业务时间上、某段记录时间里的值"。事件类与无时间表的业务区间起点恒为空。（落格规则见下） | `rec_to`（都用操作号）、业务区间终点、值（列与业务表相同，含 `__zone` 列）、版本的意图、已撤销（`existence` 格）、无值（状态类表的字段格：实体在这一段没有值，这一格说明是谁让它没值的）、**产生这个值的贡献**（`write.base` 或删除事件的 `seq`、字段、项的下标；`backfill` 在没有贡献的位置给出的值，出处是那条 `schema.switched` 的 `seq`） | 同上 | 是 |
 | `base_sources` | `(事件 seq, 行或实体 ID, 字段 ID, 项的下标, 序号)`；"存在"项的字段 ID 用固定值 `existence`（主键与常量补值的说明见下） | 种类（值 / 操作 / schema 常量 / 区间）；指向源数据，或指向被搬运的贡献（事件、字段、项）；每一项的每种来源各写一行；这一项当前的生效状态与解析区间；最近一次给出这一项内容的块（`given_seq`、`given_path`）；是否佐证及其显式端点（`corroboration_ends`）；是否已被某次回掉登记（各列的说明见下） | 基础写入、删除生命周期、切换（转换旧版各项，登记常量 `backfill` 补出的贡献） | 是 |
@@ -878,11 +878,11 @@ schema 里由 Agent 写的说明与别名、写入回执里列出的已有的键
 | `contract-core` | 数据的形状：值编码、证据、标记、意图、领域错误；事件格式的类型 | 无 |
 | `kernel` | §4 的全部模块与 `ops`；两个端口的接口；锚点存储的文件实现 | contract-core；存储只依赖 §8 的接口 |
 | `store-pglite`、`store-postgres` | 两个后端 | kernel 的存储接口 |
-| `contract` | 对外契约：操作定义、外化面专用的字段与错误；生成 OpenAPI 与 MCP schema | contract-core |
+| `contract` | 对外契约：操作定义、外化面专用的字段与错误的类型 | contract-core |
 | `service` | §5 的全部组件，含控制面存储（文件、PostgreSQL 两个实现） | kernel、contract |
 | `server` | HTTP 与 MCP 适配器、MCP 文本渲染器 | service、contract |
 | `daemon` | 组装入口：选存储后端、组合服务层与适配器、读配置、启动进程；后台任务的调度器 | server、service、store-* |
-| `client` | 由契约生成的 HTTP 客户端 | contract |
+| `client` | HTTP 客户端：照契约的类型手写，每个操作对应哪条路由写在这里 | contract |
 | `cli` | 命令行：一律经 `client` 走 HTTP（本机 unix socket，云服务 HTTPS），默认凭用户会话，也可凭连接实例令牌（[`06-cli.md`](06-cli.md)）；导出文件的口令加密与导入前的解密在这里做 | client；`age-encryption`（官方的 age 实现，锁定版本；内核、服务层、`daemon` 都不依赖它）。口令只从终端、文件或文件描述符读，Windows 上只支持口令文件 |
 | `saveslot`（入口） | 可执行文件，只做分发：服务组命令（`init`、`start`、`stop`、`status`、`service`、`doctor`、`config`、`mcp`、`server …`）交给 `daemon`，其余交给 `cli`；`setup` 编排两边的命令（`init`、`start` 与 `slot create`、`connect`），放在入口包里 | cli、daemon |
 | `connector-ts` | 写连接器的 TypeScript SDK。连接器是以连接实例的身份代用户写入 saveslot 的程序（05-surfaces 第 13 节），通常把某个外部系统的记录存进一个 slot：开发者描述连接器（manifest）、声明要写的 slot 与表、把记录对应成行；SDK 只经 HTTP 完成其余的事（slot 不存在时提交一份 schema 草稿把它连同表建好，已存在时只核对、不改；分批写入；幂等键、重试与请求头）。声明了来源键的表按来源键写入（同一批记录每次同步再交一遍，有则按三方比较更新、无则新增）；别名与改已有 slot 随服务的后续阶段加入（07-scope-v1）。第三方的令牌不经过它。其他平台的 SDK 不在本仓库 | 无（只用运行时的 `fetch`；本机服务的 unix socket 由调用方经 `setFetch` 接入）。任何包都不导入它；它的测试另可导入 `daemon`、`service`、`store-pglite`，以启动真实的本机服务 |
@@ -902,7 +902,7 @@ schema 里由 Agent 写的说明与别名、写入回执里列出的已有的键
 ### 测试矩阵
 
 - **两个后端各跑一遍**：内核测试在 PGlite 与 PostgreSQL 上各跑一遍。同一批测试文件经 `test-backend` 开库，后端由运行时的环境变量选定；只测某一个后端自身机制的测试文件（PGlite 的目录锁、属主文件、DB Worker、宿主 fsync）不在另一个后端上跑，逐个列出并写明原因，对应的机制在另一个后端自己的测试里测。内核的测试文件在 `packages/store-pglite/src`，经 `test-backend` 开库；PostgreSQL 那一遍由 `scripts/test-postgres.ts` 启动，它设 `SAVESLOT_TEST_BACKEND=postgres` 切换后端，连接地址由 `SAVESLOT_TEST_POSTGRES_URL` 给出。
-- **重放对拍**：同一份日志在两个后端经 `apply` 重放，(b) 类里标"对拍：是"的表逐行一致（§8 的清单）；取值示例按确定性规则选（按 `seq` 取最近 K 个不同值）；另做"从空存储重放 = 线上状态"。
+- **重放对拍**：同一份日志在两个后端经 `apply` 重放，(b) 类里标"对拍：是"的表逐行一致（§8 的清单）；另做"从空存储重放 = 线上状态"。
 - **导出重放**：导出 → 向空存储重放 → (b) 类逻辑表与线上逐行一致，两个后端交叉各跑一遍（PGlite 导出重放进 PostgreSQL，反之亦然）；带"待删除"占位的导出，重放后日志末端的业务状态与线上一致。这是"导出能重放"这句承诺的检验。
 - **墓碑之后从头重放**：删除到期、墓碑落账之后，从空存储重放，(b) 类里标"对拍：是"的表与线上逐表一致。必须覆盖四种：按字段佐证之后删除首次写入（值没变、只换了给出者的字段）；常量 `backfill` 之后删除（补值位置照记录，不因删除重算）；补键之后删除补键那次的证据（键回到让出它的原行，之后的同步按"被撤销的行不复活"处理）；只带起点的撤销停在被删写入给出的挡点上、删除后重新解析而空洞仍在，以及之后回掉过一次在空洞里的填值（空洞与"已被回掉"的登记都由删除结果给出）。
 - **版本串不认识就停**：事件里的编译器版本、白名单版本（`compiled` 的与每条规则的）、规则版本、字面命中核对器版本取到内核不认识的值时，`apply` 停止并报错，不降级求值。
@@ -1055,7 +1055,7 @@ schema 里由 Agent 写的说明与别名、写入回执里列出的已有的键
 | 3 | 内核不变量 K1–K14 只依赖 §8 的两个端口，不依赖任何服务层组件 | 只有内核的一致性测试 |
 | 4 | 确认以"确认记录"（内容哈希 + `seq`）进内核，交互方式由外化面或宿主决定 | 同上 |
 | 5 | 可见范围在调用上下文里，第一版就经过目录、查询、SQL 改写、写入的执行路径 | 用 `scoped` 到表一级的可见范围跑目录、查询、受限 SQL、写入测试：按名字引用没列出的表、字段，与引用不存在的名字报同一个错误——该操作对不存在的名字本来报的那个（`unknown_table` / `unknown_field`；`sql` 报 `sql_rejected`（`unknown_name`）），附带的最接近的名字只取可见的；按 ID 引用不可见的目标报 `not_found`（写进 `ref` 字段的行 ID 指向不可见的行时，报的与目标不存在相同：`validation_failed`（`ref_not_found`））；派生表可见当且仅当它依赖的表与字段都可见 |
-| 6 | 对外契约从 `contract` 生成；内核只依赖 `contract-core` | 依赖检查 |
+| 6 | 对外契约的类型都来自 `contract`；内核只依赖 `contract-core` | 依赖检查 |
 | 7 | `ops` 调用上下文冻结、可序列化（为非 JS 宿主的 sidecar 留路） | 上下文的序列化往返测试 |
 | 8 | 到期任务在打开存储时补跑，不依赖常驻进程 | 关闭 25 小时后打开，宽限期已过的删除必须先完成 |
 

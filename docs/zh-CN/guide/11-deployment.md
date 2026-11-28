@@ -119,7 +119,7 @@ Agent 的宿主直接走远程 MCP，地址形如 `https://<域名>/mcp`。授�
 
 授权页上每一项都有默认值：名字取宿主自报的名称，权限是读 + 写；不改就只点一次。这样授权出来的连接实例能看到全部 slot（含以后新建的）。要一个只碰某几个 slot 的凭证（比如连接器），在命令行里用 `saveslot connect http --profile <名字> --slots …` 签发静态令牌。一次授权就是一个连接实例；之后在命令行里用 `saveslot connections list` 能看到它，改名、吊销照常。
 
-宿主那一侧的添加命令同样由 `saveslot connect <宿主> --profile cloud` 打印出来（自部署换成它的 profile）。这条命令里没有令牌，凭证由宿主自己走 OAuth 取得，所以加 `--apply` 时由 saveslot 代为执行。只有网页界面的宿主（Claude 网页端、ChatGPT 这类）没有命令可执行，要在它的界面里手动填地址：这一步 saveslot 消不掉。
+宿主那一侧的添加命令同样由 `saveslot connect <宿主> --profile cloud` 打印出来（自部署换成它的 profile）。这条命令里没有令牌，凭证由宿主自己走 OAuth 取得，所以加 `--apply` 时由 saveslot 代为执行。只有网页界面的宿主（Claude 网页端、ChatGPT 这类）没有命令可执行，要在它的界面里手动填地址：这一步 saveslot 消不掉。要填的地址用 `saveslot connect generic --profile cloud` 取得（`connect` 没有这些宿主的名字）。
 
 ### 没有 Agent 的程序：HTTP
 
