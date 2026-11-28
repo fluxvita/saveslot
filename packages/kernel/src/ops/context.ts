@@ -1,4 +1,5 @@
-// The call context of every `ops` entry (docs/zh-CN/spec/02-architecture.md §4 "`ops` 的调用上下文").
+// The call context of every `ops` entry (docs/zh-CN/spec/02-architecture.md §4
+// «`ops` 的调用上下文»).
 //
 // The context is the boundary between the kernel and the service layer (later an SDK host, possibly
 // across a process boundary): it is frozen, and it is plain JSON, so it crosses a process as is.
@@ -17,7 +18,7 @@ import {
   type TenantId,
 } from "@fluxvita/saveslot-contract-core";
 
-/** The background tasks that run as internal operations (§4 "契约操作与内部操作"). */
+/** The background tasks that run as internal operations (§4 «契约操作与内部操作»). */
 export const INTERNAL_OPERATIONS = [
   "openTenant",
   "flushReads",

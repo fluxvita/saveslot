@@ -1,5 +1,5 @@
 // Cross-checks the storage format v1 table list against the spec's table list
-// (docs/zh-CN/spec/02-architecture.md §8 "存储格式 v1"), so that either side changing alone fails.
+// (docs/zh-CN/spec/02-architecture.md §8 «存储格式 v1»), so that either side changing alone fails.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -14,7 +14,10 @@ interface SpecTable {
   reconcile: string | undefined;
 }
 
-/** Fixed kernel tables listed in §8, with their class and "对拍" cell. Dynamic tables are skipped. */
+/**
+ * Fixed kernel tables listed in §8, with their class and "Replay comparison" cell. Dynamic tables
+ * are skipped.
+ */
 function specTables(): SpecTable[] {
   const text = readFileSync(SPEC, "utf8");
   const start = text.indexOf("### 存储格式 v1");

@@ -1,6 +1,6 @@
 // A deletion's replay with other deletions pending, as the test fixture runs it in turn
 // (`DeletionSessionForTests`): rule 2 of the restatements by the deletion's own list of positions
-// (09 §5.9 rule 2, "本次清掉"; 03-deletion «多项删除各自列全位置»).
+// (09 §5.9 rule 2, "cleared by this deletion"; 03-deletion «多项删除各自列全位置»).
 
 import type { Op, TableSchema } from "@fluxvita/saveslot-reference";
 import { EVENT as EVENT_SCHEMA, STATE as STATE_SCHEMA } from "@fluxvita/saveslot-reference/testing";
@@ -99,8 +99,9 @@ describe("a deletion worked out with another one pending: rule 2 by its own list
   it("state table: a block its own list clears by a dep is restated as it is", () => {
     // B alone drops the take #50 made (its items carry #41's candidate, which B leaves
     // corroborating): its own list clears #50's blocks. With A pending, #50 is in effect as it
-    // was: rule 1 has nothing to say of it, rule 2 restates it as it is (09 §5.9 rule 2: "本次清掉"
-    // by its own list). Found by the delete operation's property (seed -227213934).
+    // was: rule 1 has nothing to say of it, rule 2 restates it as it is (09 §5.9 rule 2: "cleared
+    // by this deletion" by its own list). Found by the delete operation's property (seed
+    // -227213934).
     const g = (from: string, to: string | null) => ({
       valid: {
         from: { mode: "given", value: from },

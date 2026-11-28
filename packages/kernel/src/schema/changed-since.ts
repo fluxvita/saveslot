@@ -1,5 +1,5 @@
 // What changed incompatibly for old writes since a version (03-data-model/07-schema-evolution.md
-// «原则» 4; 04-contract §2 "什么算读到 sv"; 04-contract-types `schema_incompatible`): read off the
+// «原则» 4; 04-contract §2 «什么算读到 sv»; 04-contract-types `schema_incompatible`): read off the
 // `changes` each switched version's `schema.compiled` recorded, never compiled again (09 §5.5: a
 // replay reads the recorded judgement). A change with `compatible_with_old_writes: false` on a field
 // refuses old writes to that field; one on a table (`drop_table`) refuses them to the whole table,

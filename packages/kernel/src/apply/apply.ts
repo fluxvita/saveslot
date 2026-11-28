@@ -224,7 +224,7 @@ function depOf(r: Obj): { dep_event: Seq; dep_field: string; dep_k: number } {
 }
 
 /**
- * The block dependency index of an event (§5.12 块依赖索引, §3.5): each present data block's
+ * The block dependency index of an event (§5.12 «块依赖索引», §3.5): each present data block's
  * `deps`; the `carried` contributions of `sources/*` entries, and of the `sources` in a deletion
  * event's `results/…` and `restated/<k>`; the item a `restated/<k>` restates. Removed blocks
  * depend on nothing.
@@ -1600,7 +1600,7 @@ async function write(tx: Tx, seq: Seq, c: Change): Promise<void> {
           : [c.row_id, x.field, x.rec_from];
         const rec = c.state ? "$4" : "$3";
         // A cell this operation opened is overwritten in place: the version table keeps one
-        // version per cell and operation (02-architecture §8 版本表).
+        // version per cell and operation (02-architecture §8 «版本表»).
         if (x.rec_from === c.op) {
           await tx.query(
             `DELETE FROM "${c.table}" WHERE row_id = $1 AND field_id = $2${at} AND rec_from = ${rec}`,

@@ -2,17 +2,18 @@
 // read (./document.ts). Each finding is a detail with its position; all are collected, in document
 // order. Rules and their places in the spec:
 //
-// - aliases: 07-schema-evolution.md «schema 文档格式» 别名 (alias_invalid, untrusted_marker)
-// - names: 03-data-model/10-types-and-units.md «字段类型与取值范围» (名字, 名字不分 ASCII 大小写唯一)
+// - aliases: 07-schema-evolution.md «schema 文档格式 · 别名» (alias_invalid, untrusted_marker)
+// - names: 03-data-model/10-types-and-units.md «字段类型与取值范围» («名字»,
+//   «名字不分 ASCII 大小写唯一»)
 // - descriptions: 04-contract «schema_draft» (description_missing), 10 «字段类型与取值范围» (500 code
-//   points), 04-contract §8 入口一侧 (untrusted_marker)
-// - types and per-type keys: 07-schema-evolution.md «文档结构» 字段 row; 10 type table; 09 §7
+//   points), 04-contract §8 «入口一侧» (untrusted_marker)
+// - types and per-type keys: 07-schema-evolution.md «文档结构 · 字段» row; 10 type table; 09 §7
 // - units and precision: 10 «单位词表», «精度与舍入»
-// - time, keys, groups: 07 «文档结构» (事件类表, 状态类表, 来源键, 字段组, 疑似重复 rows), 07 «字段组»;
-//   09 §7 table keys
+// - time, keys, groups: 07 «文档结构» («事件类表», «状态类表», «来源键», «字段组», «疑似重复»
+//   rows), 07 «字段组»; 09 §7 table keys
 // - ref: 07 «类型» (same slot), 07 «从未被写入的表上改结构» (ref.target matches the time type),
 //   07 «表间关系» (refs are between base tables)
-// - derived tables: 07 «文档结构» 派生表 row (rule, field declarations); keys only base tables or
+// - derived tables: 07 «文档结构 · 派生表» row (rule, field declarations); keys only base tables or
 //   base fields take: 04-contract «schema_draft» (key_not_applicable, external_key_table_kind)
 
 import { FIELD_TYPES } from "@fluxvita/saveslot-contract-core";
@@ -39,7 +40,7 @@ const MARKERS = ["<untrusted-data-", "</untrusted-data-"];
 
 const codePoints = (s: string): number => [...s].length;
 
-/** Keys only some field types take (07 «文档结构» 字段 row; 09 §7 base table fields). */
+/** Keys only some field types take (07 «文档结构 · 字段» row; 09 §7 base table fields). */
 const KEY_TYPES: Readonly<Record<string, readonly string[]>> = {
   min: ["integer", "decimal", "quantity"],
   max: ["integer", "decimal", "quantity"],
@@ -120,12 +121,14 @@ function description(d: string | undefined, at: string, out: Findings): void {
   }
 }
 
-/** At most this many aliases of one table or field, each at most this many code points (07 别名). */
+/**
+ * At most this many aliases of one table or field, each at most this many code points (07 «别名»).
+ */
 const ALIASES_MAX = 8;
 const ALIAS_LENGTH_MAX = 64;
 
 /**
- * The aliases of a table or a field (07 «schema 文档格式» 别名), already in NFC. One finding per
+ * The aliases of a table or a field (07 «schema 文档格式 · 别名»), already in NFC. One finding per
  * alias at its position: `untrusted_marker` for a boundary marker, else `alias_invalid` with the
  * rule it breaks as `reason`: a count or a length (with `max`), an empty text, a control character
  * or a line or paragraph separator (U+2028, U+2029), surrounding white space, a repeat in the same

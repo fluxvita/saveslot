@@ -432,7 +432,7 @@ export async function readPositionIndex(
 /**
  * The positions a `deletion.confirmed` lists, as its block gives them (§5.9), by the deletion's
  * event seq; none when the event is not there or its `positions` block was removed. For the
- * deletion replay's "列在位置列表里" as much as for the grace period's reads.
+ * deletion replay's "listed in the position list" as much as for the grace period's reads.
  */
 export async function readDeletionPositions(
   tx: ReadTx,

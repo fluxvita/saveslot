@@ -1,5 +1,5 @@
 // Reconciling the deletion registry with the log in normal opening
-// (docs/zh-CN/spec/03-data-model/03-deletion.md "删除登记：恢复备份不让删除复活", the first table):
+// (docs/zh-CN/spec/03-data-model/03-deletion.md «删除登记：恢复备份不让删除复活», the first table):
 // the log is the truth, the registry is corrected. Pure: the caller reads the registry's entries
 // and what the log says of each deletion, and applies the actions returned, in the order of the
 // spec's total rule — the registry never has less to delete than the committed log.

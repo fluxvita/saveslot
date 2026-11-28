@@ -1,5 +1,5 @@
 // Which fields of a target differ between two states, and how (docs/zh-CN/spec/03-data-model/
-// 02-integrity-and-records.md «写入的前提»: 检测, 同值判据).
+// 02-integrity-and-records.md «写入的前提 · 检测», the same-value criterion).
 
 import type { FieldId, FieldValue } from "@fluxvita/saveslot-contract-core";
 import { sameValue } from "./same-value.ts";
@@ -142,9 +142,10 @@ function existenceStretches(
  * given.
  *
  * - `value`: the two values are not the same value (`sameValue`); empty and non-empty differ.
- * - `source_only`: the same value, with other 出处项 (`SourceKey`). It serves only what a read shows;
- *   a premise is judged by `value` alone. States that carry it cost one more query, against the
- *   sources table (`stateAt` with `sources`); without it every source is empty and none is given.
+ * - `source_only`: the same value, with other origin items (`SourceKey`). It serves only what a
+ *   read shows; a premise is judged by `value` alone. States that carry it cost one more query,
+ *   against the sources table (`stateAt` with `sources`); without it every source is empty and none
+ *   is given.
  * - Presence. Every position is `absent` (never had a value), `live` (has a value, its fields may
  *   be null) or `revoked` (no value, because of a revoke). A difference in presence is an
  *   `existence` entry; its `before` and `after` are booleans (true: `live`, false: `revoked`),

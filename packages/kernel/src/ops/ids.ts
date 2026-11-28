@@ -1,4 +1,4 @@
-// New identifiers (docs/zh-CN/spec/03-data-model/01-objects.md「标识的写法」): a prefix and random
+// New identifiers (docs/zh-CN/spec/03-data-model/01-objects.md «标识的写法»): a prefix and random
 // Crockford Base32 characters.
 
 import { randomBytes } from "node:crypto";

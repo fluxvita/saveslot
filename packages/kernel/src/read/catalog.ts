@@ -9,9 +9,10 @@
 //   with every table of the slot in range.
 // Not in this version: the value examples of the fields and `described_by` (P2), migration status
 // (no migrations yet). A table has its profile (./profile.ts). Aliases
-// (07 «schema 文档格式» 别名) are given where a table or field has them: `list` the tables', `table`
-// the tables' and the fields', `schema` in the document as submitted. They are not names. The read is recorded (`operation: catalog`), counting as reading the `sv` of each
-// slot it shows (04-contract §2 «什么算读到 sv»).
+// (07 «schema 文档格式 · 别名») are given where a table or field has them: `list` the tables',
+// `table` the tables' and the fields', `schema` in the document as submitted. They are not names.
+// The read is recorded (`operation: catalog`), counting as reading the `sv` of each slot it shows
+// (04-contract §2 «什么算读到 sv»).
 
 import type {
   CompiledBaseField,

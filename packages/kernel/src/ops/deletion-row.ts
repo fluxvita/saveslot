@@ -1,7 +1,8 @@
 // What a deletion's replay of one row needs from a log that already has deletions on it
-// (03-deletion «撤回与宽限期», «多项删除各自列全位置»; 09 §5.7 "被撤回的删除给出的块不算", §5.9):
-// the other deletions still pending and what they take away, and the blocks last given with the
-// earlier deletions' and cancellations' restatements laid over in log order.
+// (03-deletion «撤回与宽限期», «多项删除各自列全位置»; 09 §5.7 "Blocks given by a cancelled
+// deletion do not count", §5.9): the other deletions still pending and what they take away, and the
+// blocks last given with the earlier deletions' and cancellations' restatements laid over in log
+// order.
 //
 // Two sets of blocks last given: the deletion's event (its `restated/<k>`, `results`, the item
 // layer) is worked out with the other pending deletions; its list of positions with this deletion

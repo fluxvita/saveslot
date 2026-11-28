@@ -1,4 +1,4 @@
-// The anchor store in a file (docs/zh-CN/spec/02-architecture.md §8 "锚点存储", §5 控制面存储:
+// The anchor store in a file (docs/zh-CN/spec/02-architecture.md §8 «锚点存储», §5 «控制面存储»:
 // local mode keeps it in `control/anchor.json`; §11: the kernel ships this implementation, for its
 // tests and for hosts that embed it with a path of their choosing).
 //
@@ -11,7 +11,8 @@
 //
 // Durability: every write goes to a temporary file in the same directory, which is fsynced, renamed
 // over the file and followed by an fsync of the directory; the promise resolves after all of that
-// (§8 本机控制面: 临时文件 → 落盘 → 改名覆盖 → 目录落盘). A crash at any point leaves either the
+// (§8, the local control plane: "write to a temporary file in the same directory → flush to disk
+// → rename over the target → flush the directory"). A crash at any point leaves either the
 // whole old file or the whole new one. Each operation reads the file, changes it and writes it
 // back; nothing is cached, so a failed write leaves no half-new state in memory either.
 //

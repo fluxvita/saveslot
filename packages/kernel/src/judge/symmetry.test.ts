@@ -1,4 +1,4 @@
-// Where the conflict criterion's symmetry clause (09-references-conflict-sync «冲突判据», 对称)
+// Where the conflict criterion's symmetry clause (09-references-conflict-sync «冲突判据 · 对称»)
 // says more than the rules give, as it stands: two writes from the same version, in either order
 // ((c) also with a corroboration). Pinned as it is, not as a fault: whether the clause or the rules
 // change is open (08 «P3 前», the symmetry clause). The subset the clause does hold on is

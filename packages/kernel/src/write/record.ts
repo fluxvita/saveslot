@@ -371,7 +371,7 @@ export function encodeOp(
   if (e.intent === "insert" && (seen.seen !== r.op - 1 || seen.seenExplicit)) {
     throw inconsistent("an insert has no ver: it sees the state just before it");
   }
-  // Creating by key is a creation too: no `ver` (09 §5.7: 新增时没有 ver).
+  // Creating by key is a creation too: no `ver` (09 §5.7: "When adding there is no `ver`").
   const creates = e.byEntityKey === true && e.created === true;
   const ver =
     e.intent === "insert"

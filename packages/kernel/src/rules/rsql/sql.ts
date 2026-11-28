@@ -359,7 +359,7 @@ function read(sql: string): Read {
   };
 }
 
-/** `$1 … $n`, from `$1` on without gaps, as many as `params` has (11 «名字» 参数). */
+/** `$1 … $n`, from `$1` on without gaps, as many as `params` has (11 «名字 · 参数»). */
 function checkParams(used: ReadonlyMap<number, number>, given: number): number {
   const n = used.size === 0 ? 0 : Math.max(...used.keys());
   if (n > LIMITS.params) throw stop("limit", used.get(n), `a parameter above $${LIMITS.params}`);

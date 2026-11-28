@@ -27,7 +27,7 @@ import {
 import type { Expr, RuleStatement } from "./ir.ts";
 import { CASTS, type SqlType } from "./whitelist.ts";
 
-/** ASCII case folding: names are unique without ASCII case (11 «名字» 大小写与引号). */
+/** ASCII case folding: names are unique without ASCII case (11 «名字 · 大小写与引号»). */
 const fold = (s: string) => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
 
 /** Scales are 0–12 (10 «精度与舍入»); inferred scales are capped there. */
@@ -169,7 +169,7 @@ function sharedRounding(tys: readonly Ty[]): Rounding | undefined {
 }
 
 const DATE_LIT = /^\d{4}-\d{2}-\d{2}$/;
-/** Instant literal: must carry an offset (11 «类型» 字面量). */
+/** Instant literal: must carry an offset (11 «类型 · 字面量»). */
 const INSTANT_LIT = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(Z|[+-]\d{2}:\d{2})$/;
 
 function validDate(s: string): boolean {
@@ -578,7 +578,7 @@ export abstract class ExprTyper {
     return unitless ? { unitless: true } : {};
   }
 
-  /** Operands that are compared with each other (11 «运算符» 比较). */
+  /** Operands that are compared with each other (11 «运算符», the comparison operators). */
   protected comparable(xs: readonly Ty[], loc: number): void {
     this.unify(xs, loc, true);
   }
@@ -605,7 +605,7 @@ export abstract class ExprTyper {
     const [cls] = [...classes];
     if (comparing && cls === "timestamp")
       reject("rule_sql_rejected", "type", loc, "a comparison of timestamps (cast back to date)");
-    // String literals take the other side's type, checked as that type (11 «类型» 字面量).
+    // String literals take the other side's type, checked as that type (11 «类型 · 字面量»).
     for (const x of xs) {
       if (x.t !== "unknown" || x.param !== undefined) continue;
       const lit = x.lit ?? "";
@@ -836,7 +836,7 @@ export abstract class ExprTyper {
     }
   }
 
-  /** Units of a product or quotient (11 «单位» 乘除). */
+  /** Units of a product or quotient (11 «单位», multiplication and division). */
   protected product(a: Ty, b: Ty, divide: boolean): Pick<Ty, "unit" | "unitless"> {
     if (a.unitless || b.unitless) return { unitless: true };
     if (a.unit !== undefined && b.unit === undefined) return { unit: a.unit };
@@ -1430,7 +1430,7 @@ export function children(e: Expr): readonly Expr[] {
   }
 }
 
-/** The output column's name: its AS name, or the name of a bare column (07 «文档结构», 派生表). */
+/** The output column's name: its AS name, or the name of a bare column (07 «文档结构 · 派生表»). */
 function outputName(t: RuleStatement["targets"][number]): string | undefined {
   if (t.name !== undefined) return t.name;
   if (t.expr.k === "col") return t.expr.parts[t.expr.parts.length - 1];

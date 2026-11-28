@@ -24,7 +24,7 @@ const c = (where: Case["where"], want: string, sql: string, params?: readonly un
   ...(params !== undefined ? { params } : {}),
 });
 
-/** Not one SELECT at all (11 «语句形状» 整条报 `not_select`). */
+/** Not one SELECT at all (11 «语句形状 · 整条报 `not_select` 的»). */
 export const NOT_SELECT: readonly Case[] = [
   "INSERT INTO runs (laps) VALUES (1)",
   "UPDATE runs SET laps = 1",
@@ -81,7 +81,9 @@ export const NOT_SELECT: readonly Case[] = [
   "/* only a comment */",
 ].map((s) => c("stmt", `${SR}/not_select`, s));
 
-/** Refused inside a SELECT as a node or a form of one (11 «语句形状» `SELECT` 之内报 `node`). */
+/**
+ * Refused inside a SELECT as a node or a form of one (11 «语句形状 · `SELECT` 之内报 `node` 的»).
+ */
 export const NODE_STMT: readonly Case[] = [
   c("stmt", `${SR}/node`, "SELECT 1 INTO x"),
   c("stmt", `${SR}/node`, "SELECT laps INTO TEMP t FROM runs"),
@@ -153,7 +155,7 @@ export const NODE_STMT: readonly Case[] = [
   c("select", `${SR}/node`, "SELECT 1 FROM runs x (a, b, c, d, e, f, g, h, i, j, k, l, m)"),
 ];
 
-/** Expressions refused as nodes (11 «语句形状», «白名单» 节点). */
+/** Expressions refused as nodes (11 «语句形状», «白名单 · 语法树节点»). */
 export const NODE_EXPR: readonly Case[] = [
   "ARRAY[laps]",
   "ROW(laps, 1)",

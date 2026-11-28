@@ -227,11 +227,12 @@ export function judgeWrite(state: RowState, w: WriteInput, replay?: ReplayOption
   // value at the position compared, every field that defines "has a value" is given by it (not
   // empty) or has a value there already (with none, any field it gives). There an optional field
   // written empty is as one not given: read as empty, not as no value (10-types-and-units «清空字段»:
-  // 新增时显式写 null 与"原来没有值"同值). Elsewhere a piece without a value stays one (a write of
-  // optional fields alone does not fill it). Judged at the position compared, as the token is: the
-  // version seen for the same-value step, the current one for whether a corroboration still holds
-  // (05-time «用同样的值写»: a part changed since the version seen is an ordinary write). The fields
-  // are those of existence (`valued`, 05-time «无值区间»), the ones a token of "no value" reads.
+  // "Explicitly writing `null` on insertion has the same value as 'there was no value before'").
+  // Elsewhere a piece without a value stays one (a write of optional fields alone does not fill
+  // it). Judged at the position compared, as the token is: the version seen for the same-value
+  // step, the current one for whether a corroboration still holds (05-time «用同样的值写»: a part
+  // changed since the version seen is an ordinary write). The fields are those of existence
+  // (`valued`, 05-time «无值区间»), the ones a token of "no value" reads.
   const givenRes = new Map<string, Resolved | null>();
   const givenOn = (g: FieldId, s: Interval, at: Limit) => {
     const x = w.fields[g];
@@ -364,7 +365,8 @@ export function judgeWrite(state: RowState, w: WriteInput, replay?: ReplayOption
 
   // `ver` and conflicts (step 4), by conflict unit: a conflict anywhere in the unit makes every
   // part W judges there a candidate, as a whole (conflict criterion ⑤). Corroborated parts above
-  // stay as they are. A conflict with a revoke targets existence (撤销与并发修改).
+  // stay as they are. A conflict with a revoke targets existence (09-references-conflict-sync
+  // «撤销与并发修改»).
   const conflicts: Conflict[] = [];
   const units = new Map<string, Part[]>();
   for (const p of ordinary) {
@@ -486,7 +488,7 @@ export function judgeWrite(state: RowState, w: WriteInput, replay?: ReplayOption
     }
   }
   const awaiting = erased.length > 0 && !acknowledged;
-  // A target protected by deviation two never awaits (03-deletion «重放规则» 已生效的保持生效).
+  // A target protected by deviation two never awaits (03-deletion «重放规则 · 已生效的保持生效»).
   for (const d of applied) {
     const protects = replay?.protect.has(d.target) === true;
     // Decided by a person, or of a rejected write: awaiting, whatever its impact now.
@@ -498,8 +500,8 @@ export function judgeWrite(state: RowState, w: WriteInput, replay?: ReplayOption
   const warnings = awaiting || !state.isState ? [] : coveredCorroborations(state, applied, curAt);
   const items = numbered(drafts);
   // A write is one candidate in one item: every part of it that met a revoke goes to the one
-  // conflict on existence (09-references-conflict-sync «撤销与并发修改»; 09 §5.8 "同一条
-  // write.base 在同一个事项里至多是一个候选").
+  // conflict on existence (09-references-conflict-sync «撤销与并发修改»; 09 §5.8 "the same
+  // `write.base` is at most one candidate in the same item").
   const onExistence = conflicts.filter((c) => c.unit === "existence");
   if (onExistence.length > 1) {
     const first = conflicts.indexOf(onExistence[0] as Conflict);
@@ -871,8 +873,9 @@ export function judgeRevoke(state: RowState, r: RevokeInput, replay?: ReplayOpti
   } else if (!state.isState && state.revoked(curAt)) {
     return none; // Revoking a revoked row again is a no-op.
   }
-  // A revoke changes existence, which meets every conflict unit (撤销与并发修改). Deletion events
-  // after the version seen count where their record says they changed a field (L's interval).
+  // A revoke changes existence, which meets every conflict unit (09-references-conflict-sync
+  // «撤销与并发修改»). Deletion events after the version seen count where their record says they
+  // changed a field (L's interval).
   const withOps = [
     ...state
       .opsBetween(seenOf(r), n)

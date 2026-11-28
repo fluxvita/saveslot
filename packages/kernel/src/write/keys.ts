@@ -136,7 +136,10 @@ export async function existingKeys(
     .map(([, k]) => keyText(t, k));
 }
 
-/** Entities compared for `similar_keys`, the most recently written first (10 «比较范围», 初值). */
+/**
+ * Entities compared for `similar_keys`, the most recently written first (10 «比较范围», initial
+ * value).
+ */
 export const SIMILAR_SCOPE = 5000;
 /** `similar_keys` given at most. */
 export const SIMILAR_MAX = 5;

@@ -1,17 +1,19 @@
 // `detail: "detailed"` (04-contract-types §4.1 `RowDetail`; 04-contract §10 `detail`): for the rows
 // of a page, the operation that last changed each and when it was recorded; each field read with
-// its literal result and source level (03-deletion «字段的来源级别»: 现算——仍在的值来源里，字面命中
-// 的那些证据段的声明级别取最高), and a ref field with a summary of the row it names; the premises
-// are the rows' own (./rows.ts `premiseEntries`). A fixed number of statements, whatever the page.
+// its literal result and source level (03-deletion «字段的来源级别»: "computed on the spot: among
+// the value sources of the field that are still there, the highest declared level among the
+// evidence portions that have a literal match is taken"), and a ref field with a summary of the row
+// it names; the premises are the rows' own (./rows.ts `premiseEntries`). A fixed number of
+// statements, whatever the page.
 //
-// A field's literal result, over the 出处项 of its cells on the row (a state table: on the row's
-// stretch), followed through carried references to the items that wrote them (09 §5.7: a carried
-// item has no `literal` block, "它的核对结果看被搬运的那一项"), and over each item's evidence
-// segments (`literal/<field>/<k>`): any segment `hit` → `hit`; else any `miss` → `miss`; else `na`
-// (every segment `na`, or none: a value from a schema constant, no value, an empty one). The level,
-// with a `hit` only: the highest declared level (`user_stated` over `agent_inferred`) of the
-// segments that hit. An item a deletion removed is not among the 出处项; a block a deletion
-// cleared or holds pending is not read.
+// A field's literal result, over the origin items of its cells on the row (a state table: on the
+// row's stretch), followed through carried references to the items that wrote them (09 §5.7: a
+// carried item has no `literal` block, "and its check result is that of the item it was carried
+// from"), and over each item's evidence segments (`literal/<field>/<k>`): any segment `hit` →
+// `hit`; else any `miss` → `miss`; else `na` (every segment `na`, or none: a value from a schema
+// constant, no value, an empty one). The level, with a `hit` only: the highest declared level
+// (`user_stated` over `agent_inferred`) of the segments that hit. An item a deletion removed is not
+// among the origin items; a block a deletion cleared or holds pending is not read.
 //
 // The summary of a referenced row (`ref.values`): its fields' values as reading it gives them, read
 // at the same position as the page (a state entity: at the read's moment, the day in the slot's
@@ -102,7 +104,7 @@ export async function rowDetails(
     for (const x of r.rows) recorded.set(Number(x.seq), x.at);
   }
 
-  // The 出处项 of each field cell of the page's rows.
+  // The origin items of each field cell of the page's rows.
   const cells = await cellsOfRows(tx, t, ids, at);
   // Read at a record position (an `as_of` point, a later page): a corroboration taken back only
   // by what was registered by then (04-contract §10 `as_of`, §15: the answer of that position).

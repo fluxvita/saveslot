@@ -4,7 +4,7 @@
 // as the pipeline does by the version table.
 //
 // A step gives a new version exactly when the row's cells in the version table change: a value,
-// or where a value comes from (04-contract §2 `ver`; 02-architecture §8 版本表). Whether the
+// or where a value comes from (04-contract §2 `ver`; 02-architecture §8 «版本表»). Whether the
 // step's record has an item in effect does not decide it: an undo writing back what an earlier
 // undo already wrote back has one, and leaves every cell as it was.
 //
@@ -13,10 +13,11 @@
 // `settleState` in apply/settle.ts. On event tables and tables without time, the view with
 // `noValueGivers` lists the values and the items giving them (including `no_value` write-backs);
 // their "existence" cell is a rule read from 02-architecture §8 rather than computed from the
-// judged state: a revoke adds an existence cell, and so does a restore ("恢复也加一格（出处是那条
-// 恢复项）"), so a step with a revoke or restore item in effect gives a new version, unless the row
-// is in the version table neither before nor after it: a row that neither exists (its required
-// fields are not all given) nor is revoked has no cells at all, so a restore on it gives none.
+// judged state: a revoke adds an existence cell, and so does a restore ("a restore also adds a cell
+// (its provenance is that restore item)"), so a step with a revoke or restore item in effect gives
+// a new version, unless the row is in the version table neither before nor after it: a row that
+// neither exists (its required fields are not all given) nor is revoked has no cells at all, so a
+// restore on it gives none.
 
 import { view } from "./judge.ts";
 import type { Judgement } from "./model.ts";
@@ -32,7 +33,7 @@ const covers = (valid: readonly Piece[], s: Piece) =>
   );
 
 /**
- * A state table's cells as the version table settles them (02-architecture §8 版本表; matching
+ * A state table's cells as the version table settles them (02-architecture §8 «版本表»; matching
  * apply/settle.ts): where the entity has a value, every field has a cell (its value and giver, or
  * empty with its no-value giver or none); where it has none, only the fields defining "has a value"
  * count — a no-value item emptying one gives that field a no-value cell, and the latest revoke

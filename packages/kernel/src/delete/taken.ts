@@ -7,7 +7,8 @@
 //   count; a value carried from another contribution goes, or not, in the replay, by what it
 //   carries.
 // - Every target of a write or revoke goes when any source of its interval (`valid_sources`) is
-//   deleted ("区间的来源被删，这次写入在该实体上整体没有贡献"): a revoke over an interval has its
+//   deleted (03-deletion «来源：值来源与操作来源»: "When the source of the interval is deleted,
+//   this write has no contribution on that entity as a whole"): a revoke over an interval has its
 //   interval as its only content.
 // - Operation sources (`op_sources`) take nothing away: they only satisfy K4 and the audit.
 //
